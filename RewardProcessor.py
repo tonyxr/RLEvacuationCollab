@@ -26,7 +26,7 @@ if os.getenv("EVAC_ENABLE_PYG", "0") == "1":
 
 class RewardProcessor:
     def __init__(self, 
-        mode: str = "simple",
+        mode: str = "full",
         alpha: float = 1.0,
         beta: float = 0.01,
         gamma_u_sh: float = 0.1,
