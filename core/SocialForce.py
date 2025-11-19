@@ -10,7 +10,7 @@ import math
 from typing import Any, Optional, Tuple, Union
 
 try:
-    from Cell import Cell as CellType
+    from .Cell import Cell as CellType
 except Exception:
     CellType = Any
     

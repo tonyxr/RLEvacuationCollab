@@ -6,7 +6,7 @@
 7/30: constructed the skeletons
 """
 
-from Guidance import Guidance
+from .Guidance import Guidance
 
 class GuidanceDS:
     def __init__(self, candidateVol, initVol):

@@ -16,9 +16,9 @@ from dataclasses import dataclass
 import os
 import math
 
-from GNN import EvacPolicy, fit_gnn, grid_edge_index
-from RewardProcessor import RewardProcessor, extract_reward_terms
-from Cell import Cell
+from .GNN import EvacPolicy, fit_gnn, grid_edge_index
+from .RewardProcessor import RewardProcessor, extract_reward_terms
+from ..core.Cell import Cell
 
 import time
 

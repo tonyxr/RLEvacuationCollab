@@ -9,7 +9,7 @@
 
 import numpy as np
 import math
-from Hazard import hazardAgent
+from .Hazard import hazardAgent
 
 class HazardDS:
     def __init__(self, hazardNum, casualtyRate, spreadRate, speedReduct):

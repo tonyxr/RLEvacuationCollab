@@ -6,7 +6,7 @@
 8/5: Constructed the function skeletons
 """
 
-from Shelter import Shelter
+from .Shelter import Shelter
 import math
 
 class ShelterDS:
