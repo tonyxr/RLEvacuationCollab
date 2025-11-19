@@ -12,7 +12,7 @@ from RLBridge import RLBridge
 from Core import Core
 
 def Script(machine):
-    core = Core()
+    core = Core(machine)
     
     rl = RLBridge(core,
                   mode = "simple",
