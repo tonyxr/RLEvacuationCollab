@@ -358,7 +358,7 @@ class Core:
                     print("RL model optimizier is: ", self.optimizer)
             
                 line += 1
-    
+                
     """Controls the main execution of functions in the Simulator, all functionalities for t >= 1"""
     """Still need to add input parameters to function calls"""
     def simulationEnumerator(self):

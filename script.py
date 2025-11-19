@@ -12,31 +12,15 @@ from RLBridge import RLBridge
 from Core import Core
 
 def Script(machine):
+    replications = 5
+    machine = "a"
+    
     core = Core(machine)
     
-    rl = RLBridge(core,
-                  mode = "simple",
-                  reward_interval = 5,
-                  )
-    
-    num_episodes = 50
-    
-    for ep in range(num_episodes):
-        core.reset()
-        done = False
+    for r in range(replications):
+        print(f"\n=== Starting replication {r+1}/{replications} ===")
         
-        while not done:
-            core.step()
-            done = core.is_done()
-            
-        rl.end_episode()
-        print(r"Episode {ep} finished")
-    
-if __name__ == '__main__':
-    print("Enter the number of replications")
-    replications = 5
-    print("Enter machine index")
-    machine = "a"
-    simulator = Script(machine)
-    for i in range(0, replications):
-        simulator.initSimulator(i, machine)
+        core.initSimulator(replications, machine)
+        
+if __name__ == "__main__":
+    Script()
