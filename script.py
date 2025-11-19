@@ -34,9 +34,9 @@ def Script(machine):
     
 if __name__ == '__main__':
     print("Enter the number of replications")
-    replications = int(input())
+    replications = 5
     print("Enter machine index")
-    machine = input()
+    machine = "a"
     simulator = Script(machine)
     for i in range(0, replications):
         simulator.initSimulator(i, machine)
