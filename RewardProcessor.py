@@ -67,6 +67,8 @@ class RewardProcessor:
         return float(totalReward)
     
     def rewardMode(self, **kwargs) -> float:
+        self.mode = "full"
+        
         if self.mode == "simple":
             return self.simpleReward(kwargs["numCasualties"], kwargs["t"])
         else:
