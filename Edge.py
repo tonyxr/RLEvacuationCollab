@@ -7,7 +7,7 @@ Log:
 7/30: structure created, first version done
 """
 
-from .Node import Node
+from Node import Node
 
 class Edge: 
     def __init__(self, startNode, endNode, edgeID, OSMID, edgeLen, edgeCap, edgeFlow, cellID):

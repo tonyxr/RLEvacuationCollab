@@ -8,8 +8,8 @@ Created on Tue Nov 18 16:16:55 2025
 
 import torch
 
-from rl.RLBridge import RLBridge
-from core.Core import Core
+from RLBridge import RLBridge
+from Core import Core
 
 def Script(machine):
     core = Core()

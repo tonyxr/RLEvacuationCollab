@@ -7,9 +7,9 @@
 
 """
 
-from .Edge import Edge
-from .Node import Node
-from .Route import Route
+from Edge import Edge
+from Node import Node
+from Route import Route
 
 import os
 import osmnx as OSM

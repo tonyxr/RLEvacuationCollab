@@ -8,7 +8,7 @@
 
 """
 
-from .Cell import Cell
+from Cell import Cell
 import math
 import numpy as np
 

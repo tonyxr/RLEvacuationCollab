@@ -6,8 +6,8 @@
 8/4: Constructed the skeletons
 """
 
-from .Edge import Edge
-from .Node import Node
+from Edge import Edge
+from Node import Node
 
 class Route:
     def __init__(self, startNode, endNode, nodeRemained, edgeRemained):

@@ -19,18 +19,18 @@ import torch
 #import torch.optim as optim
 
 """Import other main Simulator modules"""
-from .OSMProcessor import OSMProcessor
-from .MapDatabase import MapDS
-from .HazardDatabase import HazardDS
-from .GuidanceDatabase import GuidanceDS
-from .ShelterDatabase import ShelterDS
-from .PedestrianDatabase import PedDS
-from .CAProcessor import CellTracker
-from .SocialForce import ForceProcessor
+from OSMProcessor import OSMProcessor
+from MapDatabase import MapDS
+from HazardDatabase import HazardDS
+from GuidanceDatabase import GuidanceDS
+from ShelterDatabase import ShelterDS
+from PedestrianDatabase import PedDS
+from CAProcessor import CellTracker
+from SocialForce import ForceProcessor
 
 """Import RL components"""
-from ..rl.RLBridge import RLBridge
-from ..rl.TrainingLogger import trainingLog
+from RLBridge import RLBridge
+from TrainingLogger import trainingLog
 
 """Helpers of RL, help track training progress and timestep progress"""
 try:

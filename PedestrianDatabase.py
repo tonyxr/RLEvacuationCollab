@@ -8,7 +8,7 @@
 
 import numpy as np
 import math
-from .Pedestrian import Pedestrian
+from Pedestrian import Pedestrian
 from collections import defaultdict
 
 class PedDS: 
