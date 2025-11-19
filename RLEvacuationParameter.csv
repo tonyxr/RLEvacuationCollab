@@ -1,0 +1,8 @@
+TimeLimit,Address,MaxSpeed,PedNum,HazardNum,CellXNum,CellYNum
+120,"Seattle, WA, USA",64,2000,1,4,4
+GuCanNum,ShCanNum,InitShNum,InitGuNum,,,
+50,50,5,5,,,
+HazardCasualtyRateMean,HazardCasualtyRateVar,HazardSpreadRateMean,HazardSpreadRateVar,HazardSpeedReductMean,HazardSpeedReductVar,
+2,4,1,2,10,5,
+LearningRate,ExplorationRate,Optimizer,,,,
+0.1,0.5,,,,,
