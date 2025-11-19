@@ -58,13 +58,14 @@ class RLBridge:
                  clip_eps=0.2, lr=3e-4,
                  epochs=4, minibatch_size=4,
                  entropy_coef=0.01, value_coef=0.5,
-                 print_every=1, debug=True):
+                 print_every=1, debug=True, reward_interval: int = 1):
         self.core = core
         self.gamma = gamma; self.lam = lam
         self.clip_eps = clip_eps; self.lr = lr
         self.epochs = epochs; self.minibatch_size = minibatch_size
         self.entropy_coef = entropy_coef; self.value_coef = value_coef
         self.print_every = print_every; self.debug = debug
+        self.reward_interval = reward_interval
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.rew = RewardProcessor(mode=mode)
@@ -163,19 +164,25 @@ class RLBridge:
             if gid is not None: added_gu = 1
 
         # Compute reward
-        pedRes = self.core.pedDS.result
-        count_casualty = int(pedRes.get("casualty", 0))
-        terms = extract_reward_terms(self.core.cellTracker)
-        r = self.rew.rewardMode(
-            numCasualties=count_casualty,
-            t=self.t,
-            wellnessPenaltySum=terms["wellnessPenaltySum"],
-            fulfillmentSum=terms["fulfillmentSum"],
-            guidedSum=terms["guidedSum"],
-            totalShelters=len(self.core.shelterDS.shelterList),
-            totalGuidances=len(self.core.guidanceDS.guidanceList)
-        )
+        if (self.t % self.reward_interval) == 0:
+            pedRes = self.core.pedDS.result
+            count_casualty = int(pedRes.get("casualty", 0))
+            terms = extract_reward_terms(self.core.cellTracker)
+            r = self.rew.rewardMode(
+                numCasualties=count_casualty,
+                t=self.t,
+                wellnessPenaltySum=terms["wellnessPenaltySum"],
+                fulfillmentSum=terms["fulfillmentSum"],
+                guidedSum=terms["guidedSum"],
+                totalShelters=len(self.core.shelterDS.shelterList),
+                totalGuidances=len(self.core.guidanceDS.guidanceList)
+            )
+        else:
+            # no new reward signal this step
+            r = 0.0
+
         reward = torch.as_tensor([r], dtype=torch.float32, device=self.device)
+        
         done = torch.as_tensor([0.0], dtype=torch.float32, device=self.device)  # episode end flagged by Core
 
         # Store transition

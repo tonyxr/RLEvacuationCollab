@@ -17,7 +17,7 @@ def Script(machine):
     rl = RLBridge(core,
                   mode = "simple",
                   reward_interval = 5,
-                  debug = True)
+                  )
     
     num_episodes = 50
     
