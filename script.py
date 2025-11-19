@@ -11,7 +11,7 @@ import torch
 from RLBridge import RLBridge
 from Core import Core
 
-def Script(machine):
+def Script():
     replications = 5
     machine = "a"
     
