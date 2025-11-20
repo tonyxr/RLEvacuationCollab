@@ -42,6 +42,11 @@ class RewardProcessor:
          self.lambda_u_gu = lambda_u_gu
          self.zeta_cost_sh = zeta_cost_sh
          self.eta_cost_gu = eta_cost_gu
+         
+         self.currGuidedVol = 0
+         self.lastGuidedVol = 0
+         self.currFulfillment = 0
+         self.lastFulfillment = 0
     
     """Simple reward mechanism, equation 9"""
     def simpleReward(self, 
@@ -63,7 +68,7 @@ class RewardProcessor:
         
         forceReward = self.gamma_u_sh * float(fulfillmentSum) + self.lambda_u_gu * float(guidedSum)
         
-        totalReward = -self.alpha * float(numCasualties) - self.beta * float(wellnessPenaltySum) + actionReward + forceReward
+        totalReward = -self.alpha * float(numCasualties) + forceReward
         return float(totalReward)
     
     def rewardMode(self, **kwargs) -> float:
