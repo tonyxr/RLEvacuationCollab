@@ -47,6 +47,9 @@ class RewardProcessor:
          self.lastGuidedVol = 0
          self.currFulfillment = 0
          self.lastFulfillment = 0
+         
+         self.currCasualty = 0
+         self.lastCasualty = 0
     
     """Simple reward mechanism, equation 9"""
     def simpleReward(self, 
@@ -64,11 +67,19 @@ class RewardProcessor:
                    totalGuidances: int
                    ) -> float:
         
+        guidedVolDiff = int(guidedSum - self.lastGuidedVol)
+        fulfillmentDiff = int(fulfillmentSum - self.lastFulfillment)
+        casualtyDiff = int(numCasualties - self.lastCasualty)
+        
         actionReward = -self.zeta_cost_sh * float(totalShelters) - self.eta_cost_gu * float(totalGuidances)
         
-        forceReward = self.gamma_u_sh * float(fulfillmentSum) + self.lambda_u_gu * float(guidedSum)
+        effectReward = self.gamma_u_sh * float(guidedVolDiff) + self.lambda_u_gu * float(fulfillmentDiff)
         
-        totalReward = -self.alpha * float(numCasualties) + forceReward
+        totalReward = -self.alpha * float(numCasualties) + effectReward
+        
+        self.lastFulfillment = fulfillmentSum
+        self.lastGuidedVol = guidedSum
+        self.lastCasualty = numCasualties
         return float(totalReward)
     
     def rewardMode(self, **kwargs) -> float:
