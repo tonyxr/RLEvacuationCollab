@@ -50,6 +50,9 @@ class RewardProcessor:
          
          self.currCasualty = 0
          self.lastCasualty = 0
+         
+         self.lastTotalSHInstalled = 0
+         self.lastTotalGUInstalled = 0
     
     """Simple reward mechanism, equation 9"""
     def simpleReward(self, 
@@ -75,7 +78,7 @@ class RewardProcessor:
         
         effectReward = self.gamma_u_sh * float(guidedVolDiff) + self.lambda_u_gu * float(fulfillmentDiff)
         
-        totalReward = -self.alpha * float(numCasualties) + effectReward
+        totalReward = -self.alpha * float(casualtyDiff) + effectReward
         
         self.lastFulfillment = fulfillmentSum
         self.lastGuidedVol = guidedSum

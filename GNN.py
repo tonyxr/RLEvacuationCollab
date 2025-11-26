@@ -124,7 +124,7 @@ class EvacPolicy(nn.Module):
         self.verbose = bool(verbose)
         
         # whether to try torch_geometric GATConv
-        self.use_pyg = (_HAS_PYG and not force_mlp)
+        self.use_pyg = False
         
         # whether to run multihead self-attention across cells
         self.use_attention = use_attention
