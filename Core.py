@@ -300,7 +300,8 @@ class Core:
         print("Wire competency checked!")
 
         """!!! Currently stuck here !!!"""
-        self.rl = RLBridge(self, mode = "simple")
+        # use action-sensitive reward shaping for better policy learning signal
+        self.rl = RLBridge(self, mode = "full")
         self.logger = trainingLog(run_dir = self.run_dir, window = 100, use_tensorboard = True)
         
         self.simulationEnumerator()

@@ -53,7 +53,7 @@ class Transition:
 
 
 class RLBridge:
-    def __init__(self, core, mode="simple",
+    def __init__(self, core, mode="full",
                  gamma=0.99, lam=0.95,
                  clip_eps=0.2, lr=3e-4,
                  epochs=4, minibatch_size=4,
