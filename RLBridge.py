@@ -58,7 +58,9 @@ class RLBridge:
                  clip_eps=0.2, lr=3e-4,
                  epochs=4, minibatch_size=4,
                  entropy_coef=0.01, value_coef=0.5,
-                 print_every=1, debug=True, reward_interval: int = 1):
+                 print_every=1, debug=True, reward_interval: int = 1,
+                 train_mode: bool = True):
+        
         self.core = core
         self.gamma = gamma; self.lam = lam
         self.clip_eps = clip_eps; self.lr = lr
@@ -66,6 +68,7 @@ class RLBridge:
         self.entropy_coef = entropy_coef; self.value_coef = value_coef
         self.print_every = print_every; self.debug = debug
         self.reward_interval = reward_interval
+        self.train_mode = bool(train_mode)
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.rew = RewardProcessor(mode=mode)
@@ -135,8 +138,12 @@ class RLBridge:
         sh_logits, gu_logits, value = self.policy(gnn_input)  # (1, A), (1, A), (1,)
         sh_dist = torch.distributions.Categorical(logits=sh_logits)
         gu_dist = torch.distributions.Categorical(logits=gu_logits)
-        a_sh = sh_dist.sample()
-        a_gu = gu_dist.sample()
+        if self.train_mode:
+            a_sh = sh_dist.sample()
+            a_gu = gu_dist.sample()
+        else:
+            a_sh = torch.argmax(sh_logits, dim=-1)
+            a_gu = torch.argmax(gu_logits, dim=-1)
         return a_sh, a_gu, sh_dist.log_prob(a_sh), gu_dist.log_prob(a_gu), value
 
     @staticmethod
@@ -199,6 +206,10 @@ class RLBridge:
     # ---- called by Core at episode end ----
     def end_episode(self):
         if not self.traj:
+            return
+        if not self.train_mode:
+            self.traj.clear()
+            self.t = 0
             return
 
         # Build tensors

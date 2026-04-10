@@ -177,11 +177,18 @@ class Core:
     
     """Handles all functionality at t = 0"""
     """Still need to add input parameters to function calls"""
-    def initSimulator(self, replication, machine):
+    def initSimulator(self, replication, machine, config_overrides = None, phase: str = "train", train_mode: bool = True):
         # read all input data
         self.readInputCSV()
+        
+        # runtime override for experiment scripts
+        if config_overrides:
+            for k, v in config_overrides.items():
+                if hasattr(self, k):
+                    setattr(self, k, v)
         # For automated model excution once uploaded to a cloud-based computing platform
-        self.run_dir = "run" + str(replication) + str(machine)
+        self.run_dir = os.path.join("runs", str(phase), f"rep_{int(replication):03d}_{machine}")
+        os.makedirs(self.run_dir, exist_ok = True)
         
         # Call OSMProcessor to get relevant map data
         self.OSMProcessor = OSMProcessor(self.address)
@@ -301,7 +308,7 @@ class Core:
 
         """!!! Currently stuck here !!!"""
         # use action-sensitive reward shaping for better policy learning signal
-        self.rl = RLBridge(self, mode = "full")
+        self.rl = RLBridge(self, mode = "full", train_mode = train_mode)
         self.logger = trainingLog(run_dir = self.run_dir, window = 100, use_tensorboard = True)
         
         self.simulationEnumerator()
@@ -440,4 +447,9 @@ class Core:
                     print(f"[WIRE CHECK] {name} missing or wrong length")
         if self.rl is not None and hasattr(self.rl, "end_episode"):
             self.rl.end_episode()
+            
+        if self.logger is not None:
+            self.logger.plot_png("reward_curve.png")
+            self.logger.plot_metrics_png(out_name = "core_metrics_curve.png", metric_cols = ["casualty", "evacuated", "arrival"])
+            self.logger.close()
     

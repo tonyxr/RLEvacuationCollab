@@ -147,3 +147,29 @@ class trainingLog:
         plt.savefig(os.path.join(self.run_dir, out_name))
         plt.close()
         
+    def plot_metrics_png(self, out_name: str = "core_metrics_curve.png", metric_cols = None):
+        if metric_cols is None:
+            metric_cols = ["casualty", "evacuated", "arrival"]
+        
+        if not os.path.exists(self.csv_path):
+            return
+        
+        df = pd.read_csv(self.csv_path)
+        if "timestep" not in df.columns:
+            return
+        
+        use_cols = [c for c in metric_cols if c in df.columns]
+        if not use_cols:
+            return
+        
+        plt.figure()
+        for c in use_cols:
+            plt.plot(df["timestep"], df[c], label=c)
+        
+        plt.xlabel("timestep")
+        plt.ylabel("count")
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.run_dir, out_name))
+        plt.close()
+        
