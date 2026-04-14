@@ -86,18 +86,20 @@ class RewardProcessor:
         return float(totalReward)
     
     def rewardMode(self, **kwargs) -> float:
-        self.mode = "full"
         
         if self.mode == "simple":
-            return self.simpleReward(kwargs["numCasualties"], kwargs["t"])
+            return self.simpleReward(
+                kwargs.get("numCasualties", 0),
+                kwargs.get("t", 0),
+            )
         else:
             return self.fullReward(
-                kwargs["numCasualties"],
-                kwargs["wellnessPenaltySum"],
-                kwargs["fulfillmentSum"],
-                kwargs["guidedSum"],
-                kwargs["totalShelters"],
-                kwargs["totalGuidances"]
+                kwargs.get("numCasualties", 0),
+                kwargs.get("wellnessPenaltySum", 0.0),
+                kwargs.get("fulfillmentSum", 0.0),
+                kwargs.get("guidedSum", 0.0),
+                kwargs.get("totalShelters", 0),
+                kwargs.get("totalGuidances", 0),
             )
 
 def _safe_sum(x, default = 0.0) -> float:

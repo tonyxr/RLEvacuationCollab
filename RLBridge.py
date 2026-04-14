@@ -173,6 +173,7 @@ class RLBridge:
                 fulfillmentSum=terms["fulfillmentSum"],
                 guidedSum=terms["guidedSum"],
                 totalShelters=len(self.core.shelterDS.shelterList),
+                totalGuidances=len(self.core.guidanceDS.guidanceList),
             )
         else:
             # no new reward signal this step
