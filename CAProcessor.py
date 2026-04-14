@@ -33,6 +33,11 @@ class CellTracker:
         
         self.cellYLen = 0.0
         
+        self.xEdges = None
+        
+        self.yEdges = None
+        
+        
         # [(northwest), (northeast), (southwest), (southeast)]
         self.cutBorders = None
         
@@ -52,27 +57,39 @@ class CellTracker:
     def getCut(self):
         return self.cellXLen, self.cellYLen
     
-    def initialCut(self, networkXLength, networkYLength):
+    def initialCut(self, networkXLength, networkYLength, xEdges = None, yEdges = None):
         
         # check if necessary preparation is made for this function
         if self.cellXNum <= 0 or self.cellYNum <= 0:
             raise ValueError("cellXNum and cellYNum must be positive integers")
         
-        # Step 1: Cut both X and Y ranges into equal-length segments of the defined dimensions (so each cell is either a square or rectangle)
-        self.cellXLen = float(networkXLength) / self.cellXNum
-        self.cellYLen = float(networkYLength) / self.cellYNum
+        # Step 1: Cut both X and Y ranges into segments of the defined dimensions.
+        # If xEdges/yEdges are provided, use those as adaptive boundaries.
+        if xEdges is not None and len(xEdges) == self.cellXNum + 1:
+            self.xEdges = [float(v) for v in xEdges]
+            self.cellXLen = float(networkXLength) / self.cellXNum
+        else:
+            self.cellXLen = float(networkXLength) / self.cellXNum
+            self.xEdges = [i * self.cellXLen for i in range(self.cellXNum)] + [float(networkXLength)]
+            
+        if yEdges is not None and len(yEdges) == self.cellYNum + 1:
+            self.yEdges = [float(v) for v in yEdges]
+            self.cellYLen = float(networkYLength) / self.cellYNum
+        else:
+            self.cellYLen = float(networkYLength) / self.cellYNum
+            self.yEdges = [j * self.cellYLen for j in range(self.cellYNum)] + [float(networkYLength)]
         
         cutBorders = [[None for _ in range(self.cellYNum)] for _ in range(self.cellXNum)]
         
         # Step 2: (Double for loop) Create a 2D list that contains the [northwest, northeast, southwest, southeast] coordinates of each cell, identifiable via cell\_dim[i][j] for $c_{ij}$
         
         for i in range(self.cellXNum):
-            XLeft = i * self.cellXLen
-            XRight = (i + 1) * self.cellXLen if i < self.cellXNum - 1 else float(networkXLength)
+            XLeft = self.xEdges[i]
+            XRight = self.xEdges[i + 1]
             
             for j in range(self.cellYNum):
-                YDown = j * self.cellYLen
-                YUp = (j + 1) * self.cellYLen if j < self.cellYNum - 1 else float(networkYLength)
+                YDown = self.yEdges[j]
+                YUp = self.yEdges[j + 1]
                 
                 northWest = (XLeft, YDown)
                 northEast = (XRight, YDown)
@@ -306,8 +323,18 @@ class CellTracker:
         if self.cellXLen == 0 or self.cellYLen == 0.0:
             raise RuntimeError("Call initialCut() before locateCell().")
         
-        XID = int(float(XPos) // self.cellXLen)
-        YID = int(float(YPos) // self.cellYLen)
+        x_val = float(XPos)
+        y_val = float(YPos)
+        
+        if self.xEdges is not None and len(self.xEdges) == self.cellXNum + 1:
+            XID = int(np.searchsorted(self.xEdges, x_val, side = "right") - 1)
+        else:
+            XID = int(x_val // self.cellXLen)
+            
+        if self.yEdges is not None and len(self.yEdges) == self.cellYNum + 1:
+            YID = int(np.searchsorted(self.yEdges, y_val, side = "right") - 1)
+        else:
+            YID = int(y_val // self.cellYLen)
         
         # Cap values
         if XID < 0: XID = 0

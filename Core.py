@@ -42,6 +42,7 @@ except Exception:
 #from reporter import log
 
 import time
+import math
 
 """Timer: efficiency debugging (how much step each step take)"""
 class Timer:
@@ -251,10 +252,38 @@ class Core:
         xLength = abs(float(x1) - float(x0))
         yLength = abs(float(y1) - float(y0))
         
+        # Build adaptive cell boundaries from actual node distribution in meter space.
+        # This keeps cell partitions proportional to the spatial network occupancy
+        # instead of only global bounding-box distance.
+        x_vals = []
+        y_vals = []
+        for _, data in self.OSMProcessor.nodeList:
+            lon = float(data["x"])
+            lat = float(data["y"])
+            x_m, y_m = self.mapDS.coordToMeters(lon, lat)
+            x_vals.append(float(x_m))
+            y_vals.append(float(y_m))
+        
+        def _adaptive_edges(vals, bins, total_length):
+            if not vals or bins <= 0:
+                return [i * (float(total_length) / bins) for i in range(bins)] + [float(total_length)]
+            arr = np.asarray(vals, dtype = float)
+            q = np.linspace(0.0, 1.0, int(bins) + 1)
+            edges = np.quantile(arr, q).astype(float)
+            edges[0] = 0.0
+            edges[-1] = float(total_length)
+            for idx in range(1, len(edges)):
+                if not math.isfinite(edges[idx]) or edges[idx] <= edges[idx - 1]:
+                    edges[idx] = min(float(total_length), edges[idx - 1] + 1e-6)
+            return list(edges)
+        
+        x_edges = _adaptive_edges(x_vals, int(self.cellX), xLength)
+        y_edges = _adaptive_edges(y_vals, int(self.cellY), yLength)
+        
         print("network X length: ", xLength)
         print("network Y length: ", yLength)
         
-        self.cellTracker.initialCut(xLength, yLength)
+        self.cellTracker.initialCut(xLength, yLength, xEdges = x_edges, yEdges = y_edges)
         
         N = int(self.cellX * self.cellY)
         def _init_vec(name):

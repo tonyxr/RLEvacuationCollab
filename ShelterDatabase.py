@@ -56,7 +56,28 @@ class ShelterDS:
         for i in range(cellXNum):
             for j in range(cellYNum):
                 self.shelterCanByCell[i][j].sort(key = lambda n: float(getattr(n, "nodeCap", 0.0)), reverse = True)
-        # Step 3: Sort each sublist by descending shelter capacity 
+        # Step 3: Sort each sublist by descending shelter capacity
+        
+        # Step 4: Optionally rebalance candidates across cells (round-robin by cell)
+        # so the RL can deploy shelters throughout the network instead of being
+        # concentrated in one dense cell.
+        target = int(self.candidateVol) if int(self.candidateVol) > 0 else None
+        if target is not None:
+            balanced = self.ensureGrid(cellXNum, cellYNum)
+            filled = 0
+            while filled < target:
+                any_picked = False
+                for i in range(cellXNum):
+                    for j in range(cellYNum):
+                        if filled >= target:
+                            break
+                        if self.shelterCanByCell[i][j]:
+                            balanced[i][j].append(self.shelterCanByCell[i][j].pop(0))
+                            filled += 1
+                            any_picked = True
+                if not any_picked:
+                    break
+            self.shelterCanByCell = balanced
         
         self.shelterPerCellList = self.shelterCanByCell
         

@@ -156,8 +156,10 @@ class RLBridge:
 
         # Map actions to environment (A-1 = no-op)
         added_sh = 0
+        attempted_sh = 0
         shelter_decision = "no-op"
         if int(a_sh.item()) < self.num_cells:
+            attempted_sh = 1
             cell = self._idx_to_cell(int(a_sh.item()), self.ny)
             sid = self.core.shelterDS.newShelter({"cell": cell}, self.core.cellTracker)
             if sid is not None:
@@ -177,8 +179,11 @@ class RLBridge:
                 wellnessPenaltySum=terms["wellnessPenaltySum"],
                 fulfillmentSum=terms["fulfillmentSum"],
                 guidedSum=terms["guidedSum"],
+                evacuatedTotal=int(pedRes.get("evacuated", 0)),
                 totalShelters=len(self.core.shelterDS.shelterList),
                 totalGuidances=len(self.core.guidanceDS.guidanceList),
+                shelterInstalledThisStep=added_sh,
+                shelterInstallAttemptsThisStep=attempted_sh,
             )
         else:
             # no new reward signal this step
