@@ -14,10 +14,15 @@ import os
 import geopandas as gpd
 from shapely.geometry import Point
 import pandas as pd
+import copy
 
 
 class OSMProcessor:
-    def __init__(self, address):
+    _location_cache = {}
+    _network_feature_cache = {}
+    _building_feature_cache = {}
+
+    def __init__(self, address, verbose: bool = False):
         
         self.locationDrive = None
         
@@ -29,6 +34,7 @@ class OSMProcessor:
         
         self.address = str(address) if address else "State College, PA, USA"
         #self.address = str(address) if address else "State College, PA, USA"
+        self.verbose = bool(verbose)
                 
         self.interStreetCount = {}
         
@@ -63,29 +69,38 @@ class OSMProcessor:
     """Extracts the corresponding map data package according to the input address string, the result dataset is spatial and includes only location coordinates of nodes and edges"""
     # By default simplify = True, retain_all = False, dist_type = "bbox", custom_filter = None
     def setLocationDrive(self):
+        if self.address in self._location_cache:
+            self.locationDrive = copy.deepcopy(self._location_cache[self.address])
+            self.mapStat = OSM.stats.basic_stats(self.locationDrive)
+            return
+        
         self.locationDrive = OSM.graph.graph_from_place(self.address, network_type = "walk", truncate_by_edge = False)
         self.locationDrive = OSM.routing.add_edge_speeds(self.locationDrive, fallback = 6.5)
         
-        #OSM.plot.plot_graph(self.locationDrive)
-        
-        #self.locationDrive = OSM.simplification.consolidate_intersections(self.locationDrive, tolerance = 5)
-        
         OSM.distance.add_edge_lengths(self.locationDrive)
         self.mapStat = OSM.stats.basic_stats(self.locationDrive)
+        self._location_cache[self.address] = copy.deepcopy(self.locationDrive)
     
     """This function extracts the necessary buildings, land use, amenity, and road information"""
     def setNetworkFeature(self):
+        cache_key = (self.address, tuple(sorted(self.tags.items())), 1000)
+        if cache_key in self._network_feature_cache:
+            self.networkFeature = self._network_feature_cache[cache_key].copy()
+            return
         self.networkFeature = OSM.features.features_from_address(self.address, self.tags, dist = 1000)
+        self._network_feature_cache[cache_key] = self.networkFeature.copy()
     
     """This function extracts the node and edge sets as separate Python Lists from the LocationDrive"""
     def setNodeEdgeSets(self):
         self.nodeList = list(self.locationDrive.nodes(data = True))
-        for i in range(min(9, len(self.nodeList))):      
-            print(self.nodeList[i])
+        if self.verbose:
+            for i in range(min(9, len(self.nodeList))):      
+                print(self.nodeList[i])
         
         self.edgeList = list(self.locationDrive.edges(data = True))
-        for i in range(min(9, len(self.edgeList))):      
-            print(self.edgeList[i])
+        if self.verbose:
+            for i in range(min(9, len(self.edgeList))):      
+                print(self.edgeList[i])
     
     def setIntersectionStreetCount(self, min_streets = 3):
         # Step 1: Get a dictionary of number of street connections by each node, labeled by node ID
@@ -105,7 +120,12 @@ class OSMProcessor:
             raise RuntimeError("Call setLocationDrive() before setBuildingOnly().")
         
         tags = {"building": True}
-        buildings = OSM.features.features_from_address(self.address, tags, dist = 1000)
+        cache_key = (self.address, "building", 1000)
+        if cache_key in self._building_feature_cache:
+            buildings = self._building_feature_cache[cache_key].copy()
+        else:
+            buildings = OSM.features.features_from_address(self.address, tags, dist = 1000)
+            self._building_feature_cache[cache_key] = buildings.copy()
         
         if buildings.empty:
             for nid in self.locationDrive.nodes:
@@ -149,8 +169,9 @@ class OSMProcessor:
 
         self.nodeList = list(self.locationDrive.nodes(data=True))
         
-        for i in range(min(9, len(self.nodeList))):
-            print(self.nodeList[i])
+        if self.verbose:
+            for i in range(min(9, len(self.nodeList))):
+                print(self.nodeList[i])
 
         n_with = sum(1 for _, d in self.nodeList if d.get('building_type') is not None)
         print(f"Stamped building_type on nodes: {n_with} / {self.locationDrive.number_of_nodes()}")
@@ -185,7 +206,8 @@ class OSMProcessor:
         counts = OSM.stats.streets_per_node(rawIntersections)
         # Step 2: convert format and match
         
-        print("checkpoint 1")
+        if self.verbose:
+            print("checkpoint 1")
 
         nodes_any = OSM.graph_to_gdfs(rawIntersections, nodes=True, edges=False)
         nodes_gdf = nodes_any[0] if isinstance(nodes_any, tuple) else nodes_any
@@ -201,7 +223,8 @@ class OSMProcessor:
             self.interStreetCount = {}
             print("intersection nodes 0 (none above threshold)")
             return
-        print("checkpoint 2")
+        if self.verbose:
+            print("checkpoint 2")
 
         sub = nodes_gdf.loc[valid_ids]
         self.intersectionNodes = [(int(idx), geom) for idx, geom in zip(sub.index, sub.geometry)]

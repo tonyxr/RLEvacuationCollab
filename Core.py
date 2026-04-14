@@ -142,6 +142,9 @@ class Core:
         self.logName = ""
         
         self.currReplication = 0
+        self.verbose = False
+        self.profile_timing = False
+        self.optimize_guidance = False
 
     """Getter Functions"""
     
@@ -186,21 +189,25 @@ class Core:
             for k, v in config_overrides.items():
                 if hasattr(self, k):
                     setattr(self, k, v)
+                    
+        if not self.optimize_guidance:
+            self.guidanceCanVol = 0
+            self.initGuidanceVol = 0
+        
         # For automated model excution once uploaded to a cloud-based computing platform
         self.run_dir = os.path.join("runs", str(phase), f"rep_{int(replication):03d}_{machine}")
         os.makedirs(self.run_dir, exist_ok = True)
         
         # Call OSMProcessor to get relevant map data
-        self.OSMProcessor = OSMProcessor(self.address)
+        self.OSMProcessor = OSMProcessor(self.address, verbose = self.verbose)
         
         # Call relevant OSMProcessor functions in order
         # Extract all relevant map data and setup the node, edges, intersection, buildings dataset
         # locationDrive is the overall container of all map data
         self.OSMProcessor.setLocationDrive()
         print("Network geometry extracted")
-        # features include nodes, edges and such
-        self.OSMProcessor.setNetworkFeature()
-        print("Network features extracted")
+        # NOTE: OSMProcessor.setNetworkFeature() is intentionally skipped here:
+        # it is not consumed downstream in the simulation path and is very expensive.
         # formally establish the node and edge set
         self.OSMProcessor.setNodeEdgeSets()
         print("Nodes and edge sets extracted")
@@ -274,19 +281,24 @@ class Core:
         self.forceTracker.setupCellTracker(self.cellTracker)
         
         self.guidanceDS.guidanceCanList = self.mapDS.guidanceCanList
-        print("Guidance candidates list: ", self.guidanceDS.guidanceCanList)
+        print(f"Guidance candidates detected: {len(self.guidanceDS.guidanceCanList)}")
         self.shelterDS.shelterCanList = self.mapDS.shelterCanList
-        print("Shelter candidates list: ", self.shelterDS.shelterCanList)
+        print(f"Shelter candidates detected: {len(self.shelterDS.shelterCanList)}")
 
         self.guidanceDS.pointPerCell(self.cellTracker, self.cellX, self.cellY)
-        self.guidanceDS.initGuidance()
-        print("Initial guidance installations completed!")
-        print("Guidance Points list: ", self.guidanceDS.guidanceList)
+        if self.optimize_guidance:
+            self.guidanceDS.initGuidance()
+            print("Initial guidance installations completed!")
+            if self.verbose:
+                print("Guidance Points list: ", self.guidanceDS.guidanceList)
+        else:
+            print("Guidance optimization disabled: skipping initial guidance installation.")
                 
         self.shelterDS.shelterPerCell(self.cellTracker, self.cellX, self.cellY)
         self.shelterDS.initShelter()
         print("Initial shelter installations completed!")
-        print("Shelters list: ", self.shelterDS.shelterList)
+        if self.verbose:
+            print("Shelters list: ", self.shelterDS.shelterList)
         
         self.hazardDS.initHazard(self.mapDS, self.cellTracker)
         print("Hazard generation completed!")
@@ -309,7 +321,7 @@ class Core:
         """!!! Currently stuck here !!!"""
         # use action-sensitive reward shaping for better policy learning signal
         self.rl = RLBridge(self, mode = "full", train_mode = train_mode)
-        self.logger = trainingLog(run_dir = self.run_dir, window = 100, use_tensorboard = True)
+        self.logger = trainingLog(run_dir = self.run_dir, window = 100, use_tensorboard = False)
         
         self.simulationEnumerator()
         
@@ -380,45 +392,45 @@ class Core:
             if not _HAS_TQDM:
                 print("Current timestep is: ", time)
                 
-            tmr = Timer()
+            tmr = Timer() if self.profile_timing else None
                 
             self.pedDS.startDocument()
-            tmr.lap("startDocument")
+            if tmr is not None: tmr.lap("startDocument")
 
             self.hazardDS.spreadUpdate()
-            tmr.lap("hazard.spreadUpdate")
+            if tmr is not None: tmr.lap("hazard.spreadUpdate")
 
             self.hazardDS.heatUpdate()
-            tmr.lap("hazard.heatUpdate")
+            if tmr is not None: tmr.lap("hazard.heatUpdate")
 
             self.hazardDS.smokeUpdate()
-            tmr.lap("hazard.smokeUpdate")
+            if tmr is not None: tmr.lap("hazard.smokeUpdate")
 
             # === PED/GU/SH LOOKUPS ===
             self.pedDS.loadGuShLookup(self.guidanceDS.guidanceByOSMID, self.shelterDS.shelterByOSMID)
-            tmr.lap("ped.loadGuShLookup")
+            if tmr is not None: tmr.lap("ped.loadGuShLookup")
 
             # === PEDESTRIAN INTERACTIONS ===
             self.pedDS.pedestrianHazardInteraction()
-            tmr.lap("ped.hazardInteraction")
+            if tmr is not None: tmr.lap("ped.hazardInteraction")
 
             self.pedDS.interPedestrianInteraction()
-            tmr.lap("ped.interPedInteraction")
+            if tmr is not None: tmr.lap("ped.interPedInteraction")
 
             self.pedDS.pedestrianNetworkInteraction()
-            tmr.lap("ped.networkInteraction")
+            if tmr is not None: tmr.lap("ped.networkInteraction")
 
             # === CELL UPDATE ===
             self.cellTracker.cellUpdate(pedDS=self.pedDS, forceTracker=self.forceTracker)
-            tmr.lap("cellTracker.cellUpdate")
+            if tmr is not None: tmr.lap("cellTracker.cellUpdate")
 
             # === RL ===
             rl_out = self.rl.step()
-            tmr.lap("rl.step")
+            if tmr is not None: tmr.lap("rl.step")
 
             # === DOCU/LOG ===
             self.pedDS.docuStatus()
-            tmr.lap("ped.docuStatus")
+            if tmr is not None: tmr.lap("ped.docuStatus")
             
             cumuResult = self.pedDS.result
             metrics = {
@@ -438,7 +450,7 @@ class Core:
                       f"arr={metrics['arrival']} cas={metrics['casualty']} evac={metrics['evacuated']} "
                       f"guided={metrics['guided']} affected={metrics['affected']} | "
                       f"added_sh={metrics['added_shelters']} added_gu={metrics['added_guidances']}")
-            tmr.lap("logger.log_step")
+            if tmr is not None: tmr.lap("logger.log_step")
        
             for name in ["countByCell","avgVelocityByCell","heatByCell","smokeByCell",
                 "dangerLevelByCell","shelterFulfillByCell","guidanceInterByCell","wellnessPenaltyByCell"]:

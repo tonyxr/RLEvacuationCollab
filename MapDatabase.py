@@ -64,6 +64,8 @@ class MapDS:
         
         self.idx_uv_to_edges = defaultdict(list)
         self.idx_uv_best = {}
+        self._node_pool = np.array([], dtype = object)
+        self._shortest_path_osmid_cache = {}
         
     """Getter functions"""
     
@@ -206,6 +208,8 @@ class MapDS:
             # Step 6: conditionally put the node in ShelterList
             if buildingType in shelterCanType:
                 self.shelterCanList[localID] = newNode
+         
+        self._node_pool = np.array(list(self.nodeListByLocalID.values()), dtype = object)
             
             
     """This function receives the edge list from OSMProcessor and create node instances in the network"""
@@ -320,7 +324,9 @@ class MapDS:
         # Step 1: (Randomly) sample a numerical placement
         
         # Step 2: Assign specific node through np.random.choice
-        chosenNode = np.random.choice(list(self.nodeListByLocalID.values()))
+        if self._node_pool.size == 0:
+            self._node_pool = np.array(list(self.nodeListByLocalID.values()), dtype = object)
+        chosenNode = np.random.choice(self._node_pool)
         #print("generation node is: ", chosenNode)
         return chosenNode
     
@@ -328,12 +334,14 @@ class MapDS:
         # Step 1: Sum the capacity of all building and normalize (building's capacity over capacity sum)
         
         # Step 2: Assign specific node through np.random.choice
-        chosenNode = np.random.choice(list(self.nodeListByLocalID.values()))
+        if self._node_pool.size == 0:
+            self._node_pool = np.array(list(self.nodeListByLocalID.values()), dtype = object)
+        chosenNode = np.random.choice(self._node_pool)
 
         # Step 3: Check so the pedestrian's generation node is not the same as selected termination node
         if chosenNode == startNode:
             while chosenNode == startNode:
-                chosenNode = np.random.choice(list(self.nodeListByLocalID.values()))
+                chosenNode = np.random.choice(self._node_pool)
         
         #print("termination node is: ", chosenNode)
         return chosenNode
@@ -369,18 +377,27 @@ class MapDS:
         startNode = startNode
         terminationNode = terminationNode
         
-        # Step 1: Generate the shortest path with OSM.routing.shortest_path
-        pathContainer = OSM.routing.shortest_path(self.locationDrive, int(startNode.OSMID), int(terminationNode.OSMID), weight="length")
+        src = int(startNode.OSMID)
+        dst = int(terminationNode.OSMID)
+        key = (src, dst)
+        pathContainer = self._shortest_path_osmid_cache.get(key)
+        if pathContainer is None:
+            # Step 1: Generate the shortest path with OSM.routing.shortest_path
+            pathContainer = OSM.routing.shortest_path(self.locationDrive, src, dst, weight = "length")
+            if pathContainer:
+                self._shortest_path_osmid_cache[key] = tuple(pathContainer)
         # Step 2: Map the result route into a list of node and edge entities through OSM IDs, create route obj
         if not pathContainer:
             startNode = self.assignGenerationNode()
             terminationNode = self.assignTerminationNode(startNode)
-            pathContainer = OSM.routing.shortest_path(
-                self.locationDrive,
-                int(startNode.OSMID),
-                int(terminationNode.OSMID),
-                weight="length"
-            )
+            src = int(startNode.OSMID)
+            dst = int(terminationNode.OSMID)
+            key = (src, dst)
+            pathContainer = self._shortest_path_osmid_cache.get(key)
+            if pathContainer is None:
+                pathContainer = OSM.routing.shortest_path(self.locationDrive, src, dst, weight = "length")
+                if pathContainer:
+                    self._shortest_path_osmid_cache[key] = tuple(pathContainer)
         if not pathContainer:
             return None  # still no path
 

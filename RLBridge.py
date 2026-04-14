@@ -44,9 +44,7 @@ class Transition:
     obs_haz: torch.Tensor
     obs_inf: torch.Tensor
     action_sh: torch.Tensor
-    action_gu: torch.Tensor
     logp_sh: torch.Tensor
-    logp_gu: torch.Tensor
     value: torch.Tensor
     reward: torch.Tensor
     done: torch.Tensor
@@ -58,7 +56,7 @@ class RLBridge:
                  clip_eps=0.2, lr=3e-4,
                  epochs=4, minibatch_size=4,
                  entropy_coef=0.01, value_coef=0.5,
-                 print_every=1, debug=True, reward_interval: int = 1,
+                 print_every=20, debug=False, reward_interval: int = 1,
                  train_mode: bool = True):
         
         self.core = core
@@ -86,7 +84,7 @@ class RLBridge:
             d_ped=self.d_ped, d_hazard=self.d_haz, d_infra=self.d_inf,
             embed_dim=32, heads=2,
             action_dim_shelter=self.num_cells + 1,   # +1 = no-op
-            action_dim_guidance=self.num_cells + 1,
+            action_dim_guidance=1,
             force_mlp=True, verbose=False
         ).to(self.device)
         self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=self.lr)
@@ -137,14 +135,11 @@ class RLBridge:
     def _select_actions(self, gnn_input):
         sh_logits, gu_logits, value = self.policy(gnn_input)  # (1, A), (1, A), (1,)
         sh_dist = torch.distributions.Categorical(logits=sh_logits)
-        gu_dist = torch.distributions.Categorical(logits=gu_logits)
         if self.train_mode:
             a_sh = sh_dist.sample()
-            a_gu = gu_dist.sample()
         else:
             a_sh = torch.argmax(sh_logits, dim=-1)
-            a_gu = torch.argmax(gu_logits, dim=-1)
-        return a_sh, a_gu, sh_dist.log_prob(a_sh), gu_dist.log_prob(a_gu), value
+        return a_sh, sh_dist.log_prob(a_sh), value
 
     @staticmethod
     def _idx_to_cell(idx, ny):
@@ -157,19 +152,15 @@ class RLBridge:
         # Build obs and run policy
         x_ped, x_haz, x_inf = self._get_obs_tensors()          # (N, D)
         g = fit_gnn(x_ped, x_haz, x_inf)                       # batch dim = 1
-        a_sh, a_gu, lp_sh, lp_gu, value = self._select_actions(g)
+        a_sh, lp_sh, value = self._select_actions(g)
 
         # Map actions to environment (A-1 = no-op)
-        added_sh = 0; added_gu = 0
+        added_sh = 0
         if int(a_sh.item()) < self.num_cells:
             cell = self._idx_to_cell(int(a_sh.item()), self.ny)
             sid = self.core.shelterDS.newShelter({"cell": cell}, self.core.cellTracker)
             if sid is not None: added_sh = 1
-        if int(a_gu.item()) < self.num_cells:
-            cell = self._idx_to_cell(int(a_gu.item()), self.ny)
-            gid = self.core.guidanceDS.newPoint({"cell": cell}, self.core.cellTracker)
-            if gid is not None: added_gu = 1
-
+            
         # Compute reward
         if (self.t % self.reward_interval) == 0:
             pedRes = self.core.pedDS.result
@@ -182,7 +173,6 @@ class RLBridge:
                 fulfillmentSum=terms["fulfillmentSum"],
                 guidedSum=terms["guidedSum"],
                 totalShelters=len(self.core.shelterDS.shelterList),
-                totalGuidances=len(self.core.guidanceDS.guidanceList)
             )
         else:
             # no new reward signal this step
@@ -195,13 +185,13 @@ class RLBridge:
         # Store transition
         self.traj.append(Transition(
             obs_ped=x_ped.detach(), obs_haz=x_haz.detach(), obs_inf=x_inf.detach(),
-            action_sh=a_sh.detach(), action_gu=a_gu.detach(),
-            logp_sh=lp_sh.detach(), logp_gu=lp_gu.detach(),
+            action_sh=a_sh.detach(),
+            logp_sh=lp_sh.detach(),
             value=value.detach(), reward=reward.detach(), done=done
         ))
         self.t += 1
 
-        return {"reward": float(r), "added_shelters": added_sh, "added_guidances": added_gu}
+        return {"reward": float(r), "added_shelters": added_sh, "added_guidances": 0}
 
     # ---- called by Core at episode end ----
     def end_episode(self):
@@ -240,10 +230,8 @@ class RLBridge:
         obs_inf = torch.stack([tr.obs_inf for tr in self.traj])   # (T, N,3)
 
         acts_sh = torch.stack([tr.action_sh for tr in self.traj]).squeeze(-1)  # (T,)
-        acts_gu = torch.stack([tr.action_gu for tr in self.traj]).squeeze(-1)
 
         old_lp_sh = torch.stack([tr.logp_sh for tr in self.traj]).detach()
-        old_lp_gu = torch.stack([tr.logp_gu for tr in self.traj]).detach()
 
         T = obs_ped.shape[0]
         idx = torch.randperm(T, device=self.device)
@@ -275,17 +263,14 @@ class RLBridge:
                     batch=batch_vec,
                 )
         
-                sh_logits, gu_logits, values_now = self.policy(g)   # shapes: (bs, A), (bs, A), (bs,)
+                sh_logits, _, values_now = self.policy(g)   # shapes: (bs, A), (bs, 1), (bs,)
                 sh_dist = torch.distributions.Categorical(logits=sh_logits)
-                gu_dist = torch.distributions.Categorical(logits=gu_logits)
         
                 lp_sh = sh_dist.log_prob(acts_sh[sel])              # (bs,)
-                lp_gu = gu_dist.log_prob(acts_gu[sel])              # (bs,)
-                entropy = (sh_dist.entropy() + gu_dist.entropy()).mean()
+                entropy = sh_dist.entropy().mean()
         
                 ratio_sh = torch.exp(lp_sh - old_lp_sh[sel])        # (bs,)
-                ratio_gu = torch.exp(lp_gu - old_lp_gu[sel])        # (bs,)
-                ratio = 0.5 * (ratio_sh + ratio_gu)                 # (bs,)
+                ratio = ratio_sh                                    # (bs,)
         
                 adv_now = adv[sel]                                  # (bs,)
                 surr1 = ratio * adv_now

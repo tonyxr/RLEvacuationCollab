@@ -16,7 +16,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 class trainingLog:
-    def __init__(self, run_dir: str = "runs/default", window: int = 100, use_tensorboard: bool = True):
+    def __init__(self, run_dir: str = "runs/default", window: int = 100, use_tensorboard: bool = False):
         self.run_dir = run_dir
         os.makedirs(self.run_dir, exist_ok = True)
         
