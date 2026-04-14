@@ -156,14 +156,19 @@ class RLBridge:
 
         # Map actions to environment (A-1 = no-op)
         added_sh = 0
+        shelter_decision = "no-op"
         if int(a_sh.item()) < self.num_cells:
             cell = self._idx_to_cell(int(a_sh.item()), self.ny)
             sid = self.core.shelterDS.newShelter({"cell": cell}, self.core.cellTracker)
-            if sid is not None: added_sh = 1
+            if sid is not None:
+                added_sh = 1
+                shelter_decision = f"installed shelter_id={sid} at cell={cell}"
+            else:
+                shelter_decision = f"attempted install at cell={cell} (no candidate available)"
             
         # Compute reward
+        pedRes = self.core.pedDS.result
         if (self.t % self.reward_interval) == 0:
-            pedRes = self.core.pedDS.result
             count_casualty = int(pedRes.get("casualty", 0))
             terms = extract_reward_terms(self.core.cellTracker)
             r = self.rew.rewardMode(
@@ -178,6 +183,14 @@ class RLBridge:
         else:
             # no new reward signal this step
             r = 0.0
+        
+        print(
+            f"[RL decision] t={self.t} reward={float(r):.3f} "
+            f"casualty={int(pedRes.get('casualty', 0))} "
+            f"evacuated={int(pedRes.get('evacuated', 0))} "
+            f"shelter={shelter_decision}",
+            flush=True,
+        )
 
         reward = torch.as_tensor([r], dtype=torch.float32, device=self.device)
         

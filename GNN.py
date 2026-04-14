@@ -207,7 +207,6 @@ class EvacPolicy(nn.Module):
             print("[EvacPolicy.forward] enter")
         
         """Feature Extraction"""
-        print("Forward step 1: Feature extraction", flush = True)
         """encode per-cell features"""
         if self.use_pyg:
             if g.edge_index is None:
@@ -228,7 +227,6 @@ class EvacPolicy(nn.Module):
         
         # (N, 3*out_dim)
         """Feature Concatnation"""
-        print("Forward step 2: Feature Concatnation", flush = True)
         # (num_cells, fused_dim)
         node_feat = torch.cat([ped_emb, hazard_emb, inf_emb], dim = -1)
         
@@ -269,7 +267,6 @@ class EvacPolicy(nn.Module):
             # shape = (B, F)
             graph_embed = torch.cat(graphs, dim = 0)
                 
-        print("Forward step 3", flush = True)
         """Actor block"""
         # shape = (B, 256)
         dense = F.gelu(self.fc1(graph_embed))
@@ -282,7 +279,6 @@ class EvacPolicy(nn.Module):
         guidance_logits = self.actor_guidance(dense)
         
         """Critic head"""
-        print("Forward step 4", flush = True)
         # shape = (B,)
         value = self.critic(graph_embed).squeeze(-1)
         
