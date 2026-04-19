@@ -248,13 +248,7 @@ class Core:
         
         self.hazardDS.setCellTracker(self.cellTracker)
 
-        x0, x1, y0, y1 = self.mapDS.boundMeters  
-        xLength = abs(float(x1) - float(x0))
-        yLength = abs(float(y1) - float(y0))
         
-        # Build adaptive cell boundaries from actual node distribution in meter space.
-        # This keeps cell partitions proportional to the spatial network occupancy
-        # instead of only global bounding-box distance.
         x_vals = []
         y_vals = []
         for _, data in self.OSMProcessor.nodeList:
@@ -264,24 +258,55 @@ class Core:
             x_vals.append(float(x_m))
             y_vals.append(float(y_m))
         
-        def _adaptive_edges(vals, bins, total_length):
-            if not vals or bins <= 0:
-                return [i * (float(total_length) / bins) for i in range(bins)] + [float(total_length)]
+        def _axis_stats(vals):
+            if not vals:
+                return 0.0, 1.0
             arr = np.asarray(vals, dtype = float)
-            q = np.linspace(0.0, 1.0, int(bins) + 1)
+            vmin = float(np.nanmin(arr))
+            vmax = float(np.nanmax(arr))
+            if not math.isfinite(vmin):
+                vmin = 0.0
+            if not math.isfinite(vmax):
+                vmax = vmin + 1.0
+            if vmax <= vmin:
+                vmax = vmin + 1.0
+            return vmin, vmax
+
+        xMin, xMax = _axis_stats(x_vals)
+        yMin, yMax = _axis_stats(y_vals)
+        xLength = float(xMax - xMin)
+        yLength = float(yMax - yMin)
+
+        # Build adaptive cell boundaries from actual node distribution in meter space.
+        # Use observed axis min/max instead of global bbox anchors so partitions
+        # match the true occupied road-network extent.
+        def _adaptive_edges(vals, bins, axis_min, axis_max):
+            bins = int(bins)
+            if bins <= 0:
+                raise ValueError("bins must be > 0")
+            if not vals:
+                step = (float(axis_max) - float(axis_min)) / bins
+                return [float(axis_min) + i * step for i in range(bins)] + [float(axis_max)]
+            
+            arr = np.asarray(vals, dtype = float)
+            q = np.linspace(0.0, 1.0, bins + 1)
             edges = np.quantile(arr, q).astype(float)
-            edges[0] = 0.0
-            edges[-1] = float(total_length)
+            edges[0] = float(axis_min)
+            edges[-1] = float(axis_max)
             for idx in range(1, len(edges)):
-                if not math.isfinite(edges[idx]) or edges[idx] <= edges[idx - 1]:
-                    edges[idx] = min(float(total_length), edges[idx - 1] + 1e-6)
+                if (not math.isfinite(edges[idx])) or edges[idx] <= edges[idx - 1]:
+                    edges[idx] = min(float(axis_max), edges[idx - 1] + 1e-6)
+            edges[-1] = max(edges[-1], edges[-2] + 1e-6)
             return list(edges)
         
-        x_edges = _adaptive_edges(x_vals, int(self.cellX), xLength)
-        y_edges = _adaptive_edges(y_vals, int(self.cellY), yLength)
         
-        print("network X length: ", xLength)
-        print("network Y length: ", yLength)
+        x_edges = _adaptive_edges(x_vals, int(self.cellX), xMin, xMax)
+        y_edges = _adaptive_edges(y_vals, int(self.cellY), yMin, yMax)
+
+        print("network X span (occupied): ", xLength)
+        print("network Y span (occupied): ", yLength)
+        print("network X range (occupied): ", (xMin, xMax))
+        print("network Y range (occupied): ", (yMin, yMax))
         
         self.cellTracker.initialCut(xLength, yLength, xEdges = x_edges, yEdges = y_edges)
         

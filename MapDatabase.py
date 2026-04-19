@@ -161,7 +161,7 @@ class MapDS:
         """
         
         """Need to print out the set of all building types to see if any other types should be added"""
-        shelterCanType = ["hospital", "school", "public", "civic", "community_centre", "stadium", "place_of_worship", "library"]
+        shelterCanType = ["hospital", "school", "public", "civic", "community_centre", "stadium", "place_of_worship", "library", "fire_station", "police", "social_facility", "shelter"]
         
         if self.convertUnitX is None or self.convertUnitY is None:
             self.computeConvertUnit()
@@ -180,9 +180,12 @@ class MapDS:
             
             streetCount = int(node[1].get("street_count", 0))
             buildingType = node[1].get('building_type', None)
+            amenityType = node[1].get('amenity_type', None)
             
             if buildingType is not None:
                 buildingType = str(buildingType).lower()
+            if amenityType is not None:
+                amenityType = str(amenityType).lower()
             
             # Step 2: assign unique local ID (+1 after declare each node)
             localID = localNodeID 
@@ -206,7 +209,7 @@ class MapDS:
                 self.guidanceCanList[localID] = newNode
             
             # Step 6: conditionally put the node in ShelterList
-            if buildingType in shelterCanType:
+            if (buildingType in shelterCanType) or (amenityType in shelterCanType):
                 self.shelterCanList[localID] = newNode
          
         self._node_pool = np.array(list(self.nodeListByLocalID.values()), dtype = object)

@@ -119,27 +119,41 @@ class OSMProcessor:
         if self.locationDrive is None:
             raise RuntimeError("Call setLocationDrive() before setBuildingOnly().")
         
-        tags = {"building": True}
-        cache_key = (self.address, "building", 1000)
+        tags = {"building": True, "amenity": True}
+        cache_key = (self.address, "building+amenity", "place")
         if cache_key in self._building_feature_cache:
             buildings = self._building_feature_cache[cache_key].copy()
         else:
-            buildings = OSM.features.features_from_address(self.address, tags, dist = 1000)
+            # IMPORTANT: query the same place-scale footprint as the road graph.
+            # Using features_from_address(..., dist=1000) can under-sample large cities
+            # and concentrate candidates near the geocoder centroid.
+            try:
+                buildings = OSM.features.features_from_place(self.address, tags)
+            except Exception:
+                # Fallback for environments/providers where place lookup is unavailable.
+                buildings = OSM.features.features_from_address(self.address, tags, dist = 1000)
             self._building_feature_cache[cache_key] = buildings.copy()
         
         if buildings.empty:
             for nid in self.locationDrive.nodes:
                 self.locationDrive.nodes[nid]['building_type'] = None
+                self.locationDrive.nodes[nid]['amenity_type'] = None
                 
             self.nodeList = list(self.locationDrive.nodes(data = True))
             print("Stamped building_type: 0 (no buildings found)")
+            print("Stamped amenity_type: 0 (no amenities found)")
             return
         
         b_3857 = buildings.to_crs(3857)
         b_3857 = b_3857.copy()
         b_3857['centroid'] = b_3857.geometry.centroid
+        if 'building' not in b_3857.columns:
+            b_3857['building'] = None
+        if 'amenity' not in b_3857.columns:
+            b_3857['amenity'] = None
+            
         b_ctr = gpd.GeoDataFrame(
-            {'building': b_3857['building']},
+            {'building': b_3857['building'], 'amenity': b_3857['amenity']},
             geometry=b_3857['centroid'],
             crs=3857
         )        
@@ -162,10 +176,13 @@ class OSMProcessor:
             )
         
         if max_dist_m is not None:
-            joined.loc[joined['dist_m'] > float(max_dist_m), 'building'] = None
+            too_far = joined['dist_m'] > float(max_dist_m)
+            joined.loc[too_far, 'building'] = None
+            joined.loc[too_far, 'amenity'] = None
         
-        for nid, btype in zip(joined.index, joined['building']):
+        for nid, btype, atype in zip(joined.index, joined['building'], joined['amenity']):
             self.locationDrive.nodes[nid]['building_type'] = (str(btype) if pd.notna(btype) else None)
+            self.locationDrive.nodes[nid]['amenity_type'] = (str(atype) if pd.notna(atype) else None)
 
         self.nodeList = list(self.locationDrive.nodes(data=True))
         
@@ -175,9 +192,13 @@ class OSMProcessor:
 
         n_with = sum(1 for _, d in self.nodeList if d.get('building_type') is not None)
         print(f"Stamped building_type on nodes: {n_with} / {self.locationDrive.number_of_nodes()}")
+        n_with_building = sum(1 for _, d in self.nodeList if d.get('building_type') is not None)
+        n_with_amenity = sum(1 for _, d in self.nodeList if d.get('amenity_type') is not None)
+        print(f"Stamped building_type on nodes: {n_with_building} / {self.locationDrive.number_of_nodes()}")
+        print(f"Stamped amenity_type on nodes: {n_with_amenity} / {self.locationDrive.number_of_nodes()}")
         
         self.buildingNodes = {int(nid): data for nid, data in self.locationDrive.nodes(data=True)
-                              if data.get('building_type') is not None}
+                              if (data.get('building_type') is not None) or (data.get('amenity_type') is not None)}
         
         """
         building_nodes_with_types = set()
