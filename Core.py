@@ -385,7 +385,7 @@ class Core:
             value_coef = 0.7,
             target_kl = 0.02,
             value_clip_eps = 0.2,
-            shelter_action_interval = 3,
+            shelter_action_interval = 5,
             exploration_rate = float(self.explorationRate),
             optimizer_name = str(self.optimizer),
             max_episode_steps = int(self.stopTime),
@@ -509,6 +509,7 @@ class Core:
                 "guided": cumuResult.get("guided", 0),
                 "affected": cumuResult.get("affected", 0),
                 "added_shelters": rl_out.get("added_shelters", 0),
+                "active_remaining": len(self.pedDS.pedAgentList),
             }
             
             self.logger.log_step(t=time, reward=float(rl_out["reward"]), metrics=metrics)
@@ -525,10 +526,23 @@ class Core:
                 arr = getattr(self.cellTracker, name, None)
                 if arr is None or len(np.asarray(arr).reshape(-1)) != (self.cellX * self.cellY):
                     print(f"[WIRE CHECK] {name} missing or wrong length")
+        pending_before_finalize = len(self.pedDS.pedAgentList)
+        finalized_remaining = 0
+        if pending_before_finalize > 0 and hasattr(self.pedDS, "finalize_remaining_pedestrians"):
+            finalized_remaining = int(self.pedDS.finalize_remaining_pedestrians(event="Arrival"))
+            self.pedDS.docuStatus()
+            print(f"[EPISODE FINALIZE] forced_arrival={finalized_remaining} previously_active={pending_before_finalize}")
+            
         if self.rl is not None and hasattr(self.rl, "end_episode"):
             self.rl.end_episode()
             if hasattr(self.shelterDS, "remainingCandidateCount"):
                 print(f"[SHELTER POOL] remaining_candidates={self.shelterDS.remainingCandidateCount()} active_shelters={len(self.shelterDS.shelterList)}")
+                
+        total_classified = int(self.pedDS.result.get("arrival", 0)) + int(self.pedDS.result.get("evacuated", 0)) + int(self.pedDS.result.get("casualty", 0))
+        if total_classified != int(self.pedVol):
+            print(f"[RESULT CHECK] classified={total_classified} pedVol={int(self.pedVol)} (difference={int(self.pedVol)-total_classified})")
+        else:
+            print(f"[RESULT CHECK] classified={total_classified} pedVol={int(self.pedVol)} (balanced)")
             
         if self.logger is not None:
             self.logger.plot_png("reward_curve.png")

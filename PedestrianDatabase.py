@@ -41,6 +41,7 @@ class PedDS:
         """Other key parameters"""
         self.currTime = 0
         self.maxSpeed = None
+        self.minOperationalSpeed = 1.0
 
         # allow to wait until X timesteps after simulation starts to document results 
         # (after the system is more stablized)
@@ -57,6 +58,12 @@ class PedDS:
         self.guidance_osmid_map = None
         
         self.groups = defaultdict(set)
+        
+    
+    def _speed_floor_value(self):
+        base = float(self.maxSpeed) if self.maxSpeed is not None else 0.0
+        dynamic_floor = 0.05 * base
+        return float(max(self.minOperationalSpeed, dynamic_floor))
         
         
     def _distance_sq_to_node(self, ped, node):
@@ -81,6 +88,27 @@ class PedDS:
         if edge_dest is not None:
             return edge_dest
         return getattr(ped, "currNode", None)
+    
+    
+    def _route_distance(self, start_node, end_node):
+        """
+        Compute shortest-path distance between two nodes from route edge lengths.
+        Returns +inf when no path can be found.
+        """
+        if start_node is None or end_node is None or self.mapDS is None:
+            return float("inf")
+        if int(getattr(start_node, "OSMID", -1)) == int(getattr(end_node, "OSMID", -2)):
+            return 0.0
+        try:
+            route = self.mapDS.shortestPath(start_node, end_node)
+        except Exception:
+            route = None
+        if route is None:
+            return float("inf")
+        dist = 0.0
+        for edge in (getattr(route, "edgeRemained", None) or []):
+            dist += float(max(0.0, getattr(edge, "edgeLen", 0.0)))
+        return float(dist)
     
     @staticmethod
     def _cell_in_moore_ring(cell, center_cell):
@@ -175,39 +203,43 @@ class PedDS:
         new_node = getattr(newShelter, "nodeMapped", None)
         if new_node is None:
             return 0
-        new_cell = getattr(newShelter, "cellLocated", None)
-
         for ped in list(self.pedAgentList.values()):
             if getattr(ped, "terminated", False):
                 continue
-            
-            # only pedestrians in the 8 neighboring cells around new shelter cell
-            if not self._cell_in_moore_ring(getattr(ped, "currCell", None), new_cell):
+            anchor = self._route_anchor_node(ped)
+            if anchor is None:
                 continue
-
             route = getattr(ped, "routeFollowing", None)
-            if route is None:
-                continue
-            old_target = getattr(route, "endNode", None)
-            if old_target is None:
-                continue
+            old_target = getattr(route, "endNode", None) if route is not None else None
+            old_shelter = shelter_by_osmid.get(getattr(old_target, "OSMID", None)) if old_target is not None else None
 
-            # Only compare when the current target is an active shelter.
-            old_shelter = shelter_by_osmid.get(getattr(old_target, "OSMID", None))
-            if old_shelter is None:
-                continue
-            if not self._shelter_has_remaining_capacity(old_shelter):
-                continue
+            compare_shelter = old_shelter
+            if compare_shelter is None:
+                compare_shelter = self._closest_open_shelter_from_ped(
+                    ped,
+                    exclude_osmid=getattr(new_node, "OSMID", None),
+                )
+            
+            old_node = getattr(compare_shelter, "nodeMapped", None) if compare_shelter is not None else None
+            old_dist = self._route_distance(anchor, old_node) if old_node is not None else float("inf")
+            new_dist = self._route_distance(anchor, new_node)
+            if not np.isfinite(new_dist):
+                new_dist = math.sqrt(max(0.0, self._distance_sq_to_node(ped, new_node)))
+                old_dist = math.sqrt(max(0.0, self._distance_sq_to_node(ped, old_node))) if old_node is not None else float("inf")
 
-            d_old = self._distance_sq_to_node(ped, old_target)
-            d_new = self._distance_sq_to_node(ped, new_node)
-            if not (d_new + 1e-6 < d_old):
-                continue
-
-            if self._reroute_pedestrian_to_shelter(ped, newShelter):
+            if new_dist + 1e-6 < old_dist and self._reroute_pedestrian_to_shelter(ped, newShelter):
                 rerouted += 1
 
         return rerouted
+    
+    def remaining_active_count(self):
+        return int(sum(0 if getattr(p, "terminated", False) else 1 for p in self.pedAgentList.values()))
+
+    def finalize_remaining_pedestrians(self, event: str = "Arrival") -> int:
+        active = [p for p in list(self.pedAgentList.values()) if not getattr(p, "terminated", False)]
+        for ped in active:
+            self.terminatePedestrianAgent(ped, event)
+        return int(len(active))
 
     def reroute_if_target_shelter_unavailable(self, ped):
         """
@@ -245,6 +277,7 @@ class PedDS:
         if mapDS is not None: self.mapDS = mapDS
         if cellTracker is not None: self.cellTracker = cellTracker
         if maxSpeed is not None: self.maxSpeed = float(maxSpeed)
+        self.minOperationalSpeed = float(max(0.5, 0.05 * float(self.maxSpeed or 0.0)))
         if hazardDS is not None: self.hazardDS = hazardDS
         if shelterDS is not None:
             self.shelterDS = shelterDS
@@ -492,7 +525,7 @@ class PedDS:
             if gid is None:
                 continue
             if gid in group_min_speed:
-                ped.currSpeed = float(group_min_speed[gid])
+                ped.currSpeed = float(max(self._speed_floor_value(), group_min_speed[gid]))
         
     
     def pedestrianHazardInteraction(self):
@@ -518,7 +551,7 @@ class PedDS:
             reduct = float(self._default_speed_reduct.get(cellState, 0.0))
             reduct = max(0.0, min(0.95, reduct))
             base_speed = float(getattr(ped, "desired_speed", self.maxSpeed or ped.currSpeed or 0.0))
-            ped.currSpeed = max(0.0, base_speed * (1.0 - reduct))
+            ped.currSpeed = max(self._speed_floor_value(), base_speed * (1.0 - reduct))
             
             casualtyProb = float(self._default_casualty_prob.get(cellState, 0.0))
             casualtyProb = max(0.0, min(1.0, casualtyProb))
@@ -554,7 +587,7 @@ class PedDS:
             # keep intended shelter feasible as capacities evolve over time
             self.reroute_if_target_shelter_unavailable(ped)
             
-            step_left = max(0.0, float(ped.currSpeed))
+            step_left = max(self._speed_floor_value(), float(ped.currSpeed))
             
             while step_left > 1e-6 and not ped.terminated:
                 if ped.atNode: 

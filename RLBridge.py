@@ -122,6 +122,7 @@ class RLBridge:
         self.reward_ema = 0.0
         self.reward_var_ema = 1.0
         self.reward_norm_beta = 0.98
+        self.pending_shelter_eval = []
 
     # ---- helpers ----
     def _get_obs_tensors(self):
@@ -193,6 +194,7 @@ class RLBridge:
         # Map actions to environment (A-1 = no-op)
         added_sh = 0
         attempted_sh = 0
+        installed_capacity = 0.0
         shelter_decision = "no-op"
         shelter_gate_open = ((self.t % self.shelter_action_interval) == 0)
         if shelter_gate_open and int(a_sh.item()) < self.num_cells:
@@ -204,6 +206,11 @@ class RLBridge:
                 rerouted = 0
                 ped_ds = getattr(self.core, "pedDS", None)
                 new_sh = self.core.shelterDS.shelterList.get(sid)
+                installed_capacity = float(max(0.0, getattr(new_sh, "shelterCap", 0.0))) if new_sh is not None else 0.0
+                self.pending_shelter_eval.append({
+                    "eval_t": int(self.t + 5),
+                    "shelter_id": sid,
+                })
                 if ped_ds is not None and hasattr(ped_ds, "reroute_to_new_shelter_if_closer"):
                     try:
                         rerouted = int(ped_ds.reroute_to_new_shelter_if_closer(new_sh))
@@ -226,16 +233,18 @@ class RLBridge:
         if (self.t % self.reward_interval) == 0:
             count_casualty = int(pedRes.get("casualty", 0))
             terms = extract_reward_terms(self.core.cellTracker)
-            total_capacity = 0.0
-            used_capacity = 0.0
-            open_shelters = 0
-            for sh in self.core.shelterDS.shelterList.values():
-                cap = float(getattr(sh, "shelterCap", 0.0))
-                flow = float(getattr(sh, "shelterFlow", 0.0))
-                total_capacity += max(0.0, cap)
-                used_capacity += min(max(0.0, flow), max(0.0, cap))
-                if int(getattr(sh, "status", 0)) == 0:
-                    open_shelters += 1
+            delayed_new_shelter_evac = 0.0
+            if self.pending_shelter_eval:
+                unresolved = []
+                for pending in self.pending_shelter_eval:
+                    if int(pending.get("eval_t", -1)) <= self.t:
+                        sid = pending.get("shelter_id")
+                        sh = self.core.shelterDS.shelterList.get(sid)
+                        if sh is not None:
+                            delayed_new_shelter_evac += float(max(0.0, getattr(sh, "shelterFlow", 0.0)))
+                    else:
+                        unresolved.append(pending)
+                self.pending_shelter_eval = unresolved
             r = self.rew.rewardMode(
                 numCasualties=count_casualty,
                 t=self.t,
@@ -243,12 +252,8 @@ class RLBridge:
                 fulfillmentSum=terms["fulfillmentSum"],
                 evacuatedTotal=int(pedRes.get("evacuated", 0)),
                 totalShelters=len(self.core.shelterDS.shelterList),
-                shelterInstalledThisStep=added_sh,
-                shelterInstallAttemptsThisStep=attempted_sh,
-                usedShelterCapacity=used_capacity,
-                totalShelterCapacity=total_capacity,
-                openShelterCount=open_shelters,
-                episodeProgress=float(self.t) / float(max(1, self.max_episode_steps - 1)),
+                installedShelterCapacityThisStep=installed_capacity,
+                delayedNewShelterEvac=delayed_new_shelter_evac,
             )
         else:
             # no new reward signal this step
