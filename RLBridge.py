@@ -50,7 +50,10 @@ class RLBridge:
                  train_mode: bool = True,
                  target_kl: float = 0.03,
                  value_clip_eps: float = 0.2,
-                 shelter_action_interval: int = 5):
+                 shelter_action_interval: int = 5,
+                 exploration_rate: float = 0.15,
+                 optimizer_name: str = "Adam",
+                 max_episode_steps: int = 120):
         
         self.core = core
         self.gamma = gamma; self.lam = lam
@@ -65,6 +68,9 @@ class RLBridge:
         self.shelter_action_interval = max(1, int(shelter_action_interval))
         self.base_lr = float(lr)
         self.base_entropy_coef = float(entropy_coef)
+        self.exploration_rate = min(0.9, max(0.0, float(exploration_rate)))
+        self.exploration_floor = 0.05
+        self.max_episode_steps = max(1, int(max_episode_steps))
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.rew = RewardProcessor(mode=mode)
@@ -84,7 +90,13 @@ class RLBridge:
             action_dim_shelter=self.num_cells + 1,   # +1 = no-op
             force_mlp=True, verbose=False
         ).to(self.device)
-        self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=self.lr)
+        opt_name = str(optimizer_name).strip().lower()
+        if opt_name == "adamw":
+            self.optimizer = torch.optim.AdamW(self.policy.parameters(), lr=self.lr, weight_decay=1e-4)
+        elif opt_name == "rmsprop":
+            self.optimizer = torch.optim.RMSprop(self.policy.parameters(), lr=self.lr, alpha=0.99)
+        else:
+            self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=self.lr)
         self.lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer, mode="max", factor=0.8, patience=2, min_lr=1e-5
         )
@@ -153,7 +165,14 @@ class RLBridge:
 
         sh_dist = torch.distributions.Categorical(logits=masked_logits)
         if self.train_mode:
-            a_sh = sh_dist.sample()
+            decay_steps = max(10.0, 0.4 * float(self.max_episode_steps))
+            eps_t = self.exploration_floor + (self.exploration_rate - self.exploration_floor) * math.exp(-float(self.t) / decay_steps)
+            if torch.rand((), device=self.device).item() < eps_t:
+                valid_idx = torch.where(mask[0])[0]
+                pick = int(torch.randint(low=0, high=int(valid_idx.shape[0]), size=(1,), device=self.device).item())
+                a_sh = valid_idx[pick].unsqueeze(0)
+            else:
+                a_sh = sh_dist.sample()
         else:
             a_sh = torch.argmax(masked_logits, dim=-1)
         return a_sh, mask, sh_dist.log_prob(a_sh), value
@@ -199,6 +218,16 @@ class RLBridge:
         if (self.t % self.reward_interval) == 0:
             count_casualty = int(pedRes.get("casualty", 0))
             terms = extract_reward_terms(self.core.cellTracker)
+            total_capacity = 0.0
+            used_capacity = 0.0
+            open_shelters = 0
+            for sh in self.core.shelterDS.shelterList.values():
+                cap = float(getattr(sh, "shelterCap", 0.0))
+                flow = float(getattr(sh, "shelterFlow", 0.0))
+                total_capacity += max(0.0, cap)
+                used_capacity += min(max(0.0, flow), max(0.0, cap))
+                if int(getattr(sh, "status", 0)) == 0:
+                    open_shelters += 1
             r = self.rew.rewardMode(
                 numCasualties=count_casualty,
                 t=self.t,
@@ -208,6 +237,10 @@ class RLBridge:
                 totalShelters=len(self.core.shelterDS.shelterList),
                 shelterInstalledThisStep=added_sh,
                 shelterInstallAttemptsThisStep=attempted_sh,
+                usedShelterCapacity=used_capacity,
+                totalShelterCapacity=total_capacity,
+                openShelterCount=open_shelters,
+                episodeProgress=float(self.t) / float(max(1, self.max_episode_steps - 1)),
             )
         else:
             # no new reward signal this step
@@ -355,14 +388,14 @@ class RLBridge:
         
                 self.optimizer.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(self.policy.parameters(), 1.0)
+                nn.utils.clip_grad_norm_(self.policy.parameters(), 0.5)
                 self.optimizer.step()
                 
                 loss_history.append((policy_loss.item(), value_loss.item()))
                 entropy_history.append(entropy.item())
                 approx_kl_history.append(approx_kl)
                 clipfrac_history.append(clipfrac)
-                if approx_kl > 1.5 * self.target_kl:
+                if approx_kl > self.target_kl:
                     stop_early = True
                     break
 
@@ -391,6 +424,12 @@ class RLBridge:
                self.clip_eps = max(0.08, self.clip_eps * 0.9)
            elif cf < 0.15:
                self.clip_eps = min(0.22, self.clip_eps * 1.05)
+           if kl > self.target_kl * 1.2:
+               for pg in self.optimizer.param_groups:
+                   pg["lr"] = max(1e-5, float(pg["lr"]) * 0.85)
+           elif kl < self.target_kl * 0.5:
+               for pg in self.optimizer.param_groups:
+                   pg["lr"] = min(self.base_lr, float(pg["lr"]) * 1.03)
            self.lr_scheduler.step(avg_r)
            current_lr = float(self.optimizer.param_groups[0]["lr"])
            print(

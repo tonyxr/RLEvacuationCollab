@@ -29,11 +29,15 @@ class RewardProcessor:
         mode: str = "full",
         alpha: float = 1.0,
         beta: float = 0.01,
-        delta_evac: float = 0.15,
-        gamma_u_sh: float = 0.1,
+        delta_evac: float = 0.18,
+        gamma_u_sh: float = 0.12,
         zeta_cost_sh: float = 0.001,
-        install_bonus_sh: float = 0.2,
-        failed_install_penalty_sh: float = 0.05
+        install_bonus_sh: float = 0.12,
+        failed_install_penalty_sh: float = 0.08,
+        capacity_waste_penalty_sh: float = 0.10,
+        timely_fill_bonus_sh: float = 0.16,
+        open_shelter_penalty_sh: float = 0.01,
+        wellness_penalty_coef: float = 0.005
     ):
          # which reward (simple or full) mechanism to use
          self.mode = mode
@@ -44,6 +48,10 @@ class RewardProcessor:
          self.zeta_cost_sh = zeta_cost_sh
          self.install_bonus_sh = install_bonus_sh
          self.failed_install_penalty_sh = failed_install_penalty_sh
+         self.capacity_waste_penalty_sh = capacity_waste_penalty_sh
+         self.timely_fill_bonus_sh = timely_fill_bonus_sh
+         self.open_shelter_penalty_sh = open_shelter_penalty_sh
+         self.wellness_penalty_coef = wellness_penalty_coef
          
          self.currFulfillment = 0
          self.lastFulfillment = 0
@@ -54,6 +62,7 @@ class RewardProcessor:
          
          self.lastTotalSHInstalled = 0
          self.lastTotalGUInstalled = 0
+         self.lastUsedShelterCapacity = 0.0
     
     """Simple reward mechanism, equation 9"""
     def simpleReward(self, 
@@ -69,7 +78,11 @@ class RewardProcessor:
                    evacuatedTotal: int,
                    totalShelters: int,
                    shelterInstalledThisStep: int = 0,
-                   shelterInstallAttemptsThisStep: int = 0
+                   shelterInstallAttemptsThisStep: int = 0,
+                   usedShelterCapacity: float = 0.0,
+                   totalShelterCapacity: float = 0.0,
+                   openShelterCount: int = 0,
+                   episodeProgress: float = 0.0
                    ) -> float:
         
         fulfillmentDiff = int(fulfillmentSum - self.lastFulfillment)
@@ -78,22 +91,38 @@ class RewardProcessor:
         
         actionReward = -self.zeta_cost_sh * float(totalShelters)        
         effectReward = self.gamma_u_sh * float(fulfillmentDiff)
+        wellness_penalty = self.wellness_penalty_coef * float(max(0.0, wellnessPenaltySum))
         
         install_penalty = float(max(0, int(shelterInstallAttemptsThisStep) - int(shelterInstalledThisStep))) * self.failed_install_penalty_sh
         install_reward = float(max(0, int(shelterInstalledThisStep))) * self.install_bonus_sh
+        used_now = float(max(0.0, usedShelterCapacity))
+        cap_now = float(max(0.0, totalShelterCapacity))
+        used_diff = max(0.0, used_now - float(self.lastUsedShelterCapacity))
+        utilization = used_now / cap_now if cap_now > 1e-6 else 0.0
+        unused_ratio = max(0.0, 1.0 - utilization)
+        progress = float(min(1.0, max(0.0, episodeProgress)))
+        early_weight = max(0.2, 1.0 - progress)
+        timely_fill_reward = self.timely_fill_bonus_sh * used_diff * (1.0 + early_weight)
+        waste_penalty = self.capacity_waste_penalty_sh * unused_ratio * float(totalShelters) * (0.5 + 0.5 * progress)
+        open_penalty = self.open_shelter_penalty_sh * float(max(0, int(openShelterCount)))
         
         totalReward = (
             -self.alpha * float(casualtyDiff)
             + self.delta_evac * float(evacDiff)
             + effectReward
+            + timely_fill_reward
             + install_reward
             - install_penalty
             + actionReward
+            - waste_penalty
+            - open_penalty
+            - wellness_penalty
         )
         
         self.lastFulfillment = fulfillmentSum
         self.lastCasualty = numCasualties
         self.lastEvacuated = evacuatedTotal
+        self.lastUsedShelterCapacity = used_now
         return float(totalReward)
     
     def rewardMode(self, **kwargs) -> float:
@@ -112,6 +141,10 @@ class RewardProcessor:
                 kwargs.get("totalShelters", 0),
                 kwargs.get("shelterInstalledThisStep", 0),
                 kwargs.get("shelterInstallAttemptsThisStep", 0),
+                kwargs.get("usedShelterCapacity", 0.0),
+                kwargs.get("totalShelterCapacity", 0.0),
+                kwargs.get("openShelterCount", 0),
+                kwargs.get("episodeProgress", 0.0),
             )
 
 def _safe_sum(x, default = 0.0) -> float:

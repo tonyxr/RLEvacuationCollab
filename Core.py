@@ -378,14 +378,17 @@ class Core:
             lr = rl_lr,
             gamma = 0.995,
             lam = 0.97,
-            clip_eps = 0.15,
-            epochs = 8,
-            minibatch_size = 8,
-            entropy_coef = 0.003,
+            clip_eps = 0.12,
+            epochs = 6,
+            minibatch_size = 16,
+            entropy_coef = 0.004,
             value_coef = 0.7,
-            target_kl = 0.03,
+            target_kl = 0.02,
             value_clip_eps = 0.2,
-            shelter_action_interval = 5,
+            shelter_action_interval = 3,
+            exploration_rate = float(self.explorationRate),
+            optimizer_name = str(self.optimizer),
+            max_episode_steps = int(self.stopTime),
         )
         self.logger = trainingLog(run_dir = self.run_dir, window = 100, use_tensorboard = False)
         
