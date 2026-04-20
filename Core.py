@@ -342,7 +342,6 @@ class Core:
         self.guidanceDS.pointPerCell(self.cellTracker, self.cellX, self.cellY)
         if self.optimize_guidance:
             self.guidanceDS.initGuidance()
-            print("Initial guidance installations completed!")
             if self.verbose:
                 print("Guidance Points list: ", self.guidanceDS.guidanceList)
         else:
@@ -350,15 +349,12 @@ class Core:
                 
         self.shelterDS.shelterPerCell(self.cellTracker, self.cellX, self.cellY)
         self.shelterDS.initShelter()
-        print("Initial shelter installations completed!")
         if self.verbose:
             print("Shelters list: ", self.shelterDS.shelterList)
         
         self.hazardDS.initHazard(self.mapDS, self.cellTracker)
-        print("Hazard generation completed!")
         
         self.pedDS.initPedestrianAgent(self.mapDS, self.cellTracker, self.maxSpeed)
-        print("Pedestrian generation completed!")
         
         self.guidanceDS.guidanceByOSMID = {gu.nodeMapped.OSMID: gu for gu in self.guidanceDS.guidanceList.values()}  
         self.shelterDS.shelterByOSMID   = {sh.nodeMapped.OSMID: sh for sh in self.shelterDS.shelterList.values()}    
@@ -370,11 +366,24 @@ class Core:
                               shelterDS = self.shelterDS,
                               guidanceDS = self.guidanceDS,
                               forceTracker = self.forceTracker)
-        print("Wire competency checked!")
 
-        """!!! Currently stuck here !!!"""
-        # use action-sensitive reward shaping for better policy learning signal
-        self.rl = RLBridge(self, mode = "full", train_mode = train_mode)
+        rl_lr = float(self.learningRate) if self.learningRate > 0 else 3e-4
+        if rl_lr > 1e-2:
+            rl_lr = 1e-3
+            print("[RL CONFIG] Input learning rate too high; clamped to 1e-3 for PPO stability.")
+        self.rl = RLBridge(
+            self,
+            mode = "full",
+            train_mode = train_mode,
+            lr = rl_lr,
+            gamma = 0.995,
+            lam = 0.97,
+            clip_eps = 0.15,
+            epochs = 8,
+            minibatch_size = 8,
+            entropy_coef = 0.003,
+            value_coef = 0.7,
+        )
         self.logger = trainingLog(run_dir = self.run_dir, window = 100, use_tensorboard = False)
         
         self.simulationEnumerator()
@@ -494,7 +503,6 @@ class Core:
                 "guided": cumuResult.get("guided", 0),
                 "affected": cumuResult.get("affected", 0),
                 "added_shelters": rl_out.get("added_shelters", 0),
-                "added_guidances": rl_out.get("added_guidances", 0)
             }
             
             self.logger.log_step(t=time, reward=float(rl_out["reward"]), metrics=metrics)
@@ -503,7 +511,7 @@ class Core:
                 print(f"[CORE] t={time} | reward={rl_out['reward']:.3f} | "
                       f"arr={metrics['arrival']} cas={metrics['casualty']} evac={metrics['evacuated']} "
                       f"guided={metrics['guided']} affected={metrics['affected']} | "
-                      f"added_sh={metrics['added_shelters']} added_gu={metrics['added_guidances']}")
+                      f"added_sh={metrics['added_shelters']}")
             if tmr is not None: tmr.lap("logger.log_step")
        
             for name in ["countByCell","avgVelocityByCell","heatByCell","smokeByCell",
@@ -513,6 +521,8 @@ class Core:
                     print(f"[WIRE CHECK] {name} missing or wrong length")
         if self.rl is not None and hasattr(self.rl, "end_episode"):
             self.rl.end_episode()
+            if hasattr(self.shelterDS, "remainingCandidateCount"):
+                print(f"[SHELTER POOL] remaining_candidates={self.shelterDS.remainingCandidateCount()} active_shelters={len(self.shelterDS.shelterList)}")
             
         if self.logger is not None:
             self.logger.plot_png("reward_curve.png")

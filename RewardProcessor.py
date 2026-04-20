@@ -31,9 +31,7 @@ class RewardProcessor:
         beta: float = 0.01,
         delta_evac: float = 0.15,
         gamma_u_sh: float = 0.1,
-        lambda_u_gu: float = 0.05,
         zeta_cost_sh: float = 0.001,
-        eta_cost_gu: float = 0.001,
         install_bonus_sh: float = 0.2,
         failed_install_penalty_sh: float = 0.05
     ):
@@ -43,14 +41,10 @@ class RewardProcessor:
          self.beta = beta
          self.delta_evac = delta_evac
          self.gamma_u_sh = gamma_u_sh
-         self.lambda_u_gu = lambda_u_gu
          self.zeta_cost_sh = zeta_cost_sh
-         self.eta_cost_gu = eta_cost_gu
          self.install_bonus_sh = install_bonus_sh
          self.failed_install_penalty_sh = failed_install_penalty_sh
          
-         self.currGuidedVol = 0
-         self.lastGuidedVol = 0
          self.currFulfillment = 0
          self.lastFulfillment = 0
          
@@ -72,22 +66,18 @@ class RewardProcessor:
                    numCasualties: int, 
                    wellnessPenaltySum: float,
                    fulfillmentSum: float,
-                   guidedSum: float,
                    evacuatedTotal: int,
                    totalShelters: int,
-                   totalGuidances: int,
                    shelterInstalledThisStep: int = 0,
                    shelterInstallAttemptsThisStep: int = 0
                    ) -> float:
         
-        guidedVolDiff = int(guidedSum - self.lastGuidedVol)
         fulfillmentDiff = int(fulfillmentSum - self.lastFulfillment)
         casualtyDiff = int(numCasualties - self.lastCasualty)
         evacDiff = int(evacuatedTotal - self.lastEvacuated)
         
-        actionReward = -self.zeta_cost_sh * float(totalShelters) - self.eta_cost_gu * float(totalGuidances)
-        
-        effectReward = self.gamma_u_sh * float(guidedVolDiff) + self.lambda_u_gu * float(fulfillmentDiff)
+        actionReward = -self.zeta_cost_sh * float(totalShelters)        
+        effectReward = self.gamma_u_sh * float(fulfillmentDiff)
         
         install_penalty = float(max(0, int(shelterInstallAttemptsThisStep) - int(shelterInstalledThisStep))) * self.failed_install_penalty_sh
         install_reward = float(max(0, int(shelterInstalledThisStep))) * self.install_bonus_sh
@@ -102,7 +92,6 @@ class RewardProcessor:
         )
         
         self.lastFulfillment = fulfillmentSum
-        self.lastGuidedVol = guidedSum
         self.lastCasualty = numCasualties
         self.lastEvacuated = evacuatedTotal
         return float(totalReward)
@@ -119,10 +108,8 @@ class RewardProcessor:
                 kwargs.get("numCasualties", 0),
                 kwargs.get("wellnessPenaltySum", 0.0),
                 kwargs.get("fulfillmentSum", 0.0),
-                kwargs.get("guidedSum", 0.0),
                 kwargs.get("evacuatedTotal", 0),
                 kwargs.get("totalShelters", 0),
-                kwargs.get("totalGuidances", 0),
                 kwargs.get("shelterInstalledThisStep", 0),
                 kwargs.get("shelterInstallAttemptsThisStep", 0),
             )
@@ -140,10 +127,8 @@ def _safe_sum(x, default = 0.0) -> float:
 def extract_reward_terms(cellTracker) -> Dict[str, float]:
     wellness = getattr(cellTracker, "wellnessPenaltyByCell", None)
     fulfill = getattr(cellTracker, "shelterFulfillByCell", None)
-    guided  = getattr(cellTracker, "guidanceInterByCell", None)    
     
     return dict(
         wellnessPenaltySum = _safe_sum(wellness, 0.0),
         fulfillmentSum = _safe_sum(fulfill, 0.0),
-        guidedSum = _safe_sum(guided, 0.0),
     )

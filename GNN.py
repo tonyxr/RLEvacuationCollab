@@ -55,7 +55,6 @@ def fit_gnn(
         batch: Optional[torch.Tensor] = None
     ) -> GNNInput: 
     
-    print("Fit GNN running")
     n = x_ped.size(0)
     if batch is None:
         batch = torch.zeros(n, dtype = torch.long, device = x_ped.device)
@@ -106,18 +105,12 @@ class EvacPolicy(nn.Module):
         embed_dim: int = 32,
         heads: int = 2,
         action_dim_shelter: int = 1,
-        action_dim_guidance: int = 1,
         force_mlp: bool = True,
         verbose: bool = False
     ):
         attn_heads = 8
         use_attention = False
-        d_ped = 2
-        d_hazard = 3
-        d_infra = 3
         
-        # check dimension of action inputs
-        print("Model Step 1", flush = True)
         super().__init__()
         
         # if we are in debugging mode, if so, prinout debugging test outputs
@@ -129,7 +122,6 @@ class EvacPolicy(nn.Module):
         # whether to run multihead self-attention across cells
         self.use_attention = use_attention
 
-        print("Model Step 2", flush = True)
         
         """IMPORTANT: Defines NN layers"""
         """IMPORTANT: Defines the feature extraction layers (use or not use GNN)"""
@@ -150,7 +142,6 @@ class EvacPolicy(nn.Module):
         fused_dim = self._out_dim * 3
         
         """Multi-head self-attention"""
-        print("Model Step 3", flush = True)
         # optional and explicitly defined head across all cells
         if self.use_attention:
             self.attn = nn.MultiheadAttention(
@@ -167,7 +158,6 @@ class EvacPolicy(nn.Module):
         
         """Bi-variate actor layers (shelter, guidance)"""
         self.actor_shelter = nn.Linear(128, action_dim_shelter)
-        self.actor_guidance = nn.Linear(128, action_dim_guidance)
         
         """Critic layer"""
         self.critic = nn.Sequential(
@@ -183,7 +173,7 @@ class EvacPolicy(nn.Module):
             print(
                 f"[EvacPolicy::__init__] use_pyg={self.use_pyg} "
                 f"use_attention={self.use_attention} "
-                f"action_dims=({action_dim_shelter},{action_dim_guidance})"
+                f"action_dim_shelter={action_dim_shelter}"
             )
     
     """feed forward"""
@@ -198,7 +188,6 @@ class EvacPolicy(nn.Module):
         g.batch      : (N,) long, graph id per node. MAY be None, in which case we assume a single graph.
         Returns:
             shelter_logits : (B, action_dim_shelter)
-            guidance_logits: (B, action_dim_guidance)
             value          : (B,)  predicted state value(s)
         
         """
@@ -275,8 +264,6 @@ class EvacPolicy(nn.Module):
         
         # shape = (B, action_shelter)
         shelter_logits = self.actor_shelter(dense)
-        # shape = (B, action_guidance)
-        guidance_logits = self.actor_guidance(dense)
         
         """Critic head"""
         # shape = (B,)
@@ -286,9 +273,8 @@ class EvacPolicy(nn.Module):
             print(
                 f"[EvacPolicy.forward] B={graph_embed.size(0)} "
                 f"shelter_logits.shape={shelter_logits.shape} "
-                f"guidance_logits.shape={guidance_logits.shape} "
                 f"value.shape={value.shape}"
             )
         
-        return shelter_logits, guidance_logits, value
+        return shelter_logits, value
     

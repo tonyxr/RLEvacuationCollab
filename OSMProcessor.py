@@ -192,9 +192,7 @@ class OSMProcessor:
 
         n_with = sum(1 for _, d in self.nodeList if d.get('building_type') is not None)
         print(f"Stamped building_type on nodes: {n_with} / {self.locationDrive.number_of_nodes()}")
-        n_with_building = sum(1 for _, d in self.nodeList if d.get('building_type') is not None)
         n_with_amenity = sum(1 for _, d in self.nodeList if d.get('amenity_type') is not None)
-        print(f"Stamped building_type on nodes: {n_with_building} / {self.locationDrive.number_of_nodes()}")
         print(f"Stamped amenity_type on nodes: {n_with_amenity} / {self.locationDrive.number_of_nodes()}")
         
         self.buildingNodes = {int(nid): data for nid, data in self.locationDrive.nodes(data=True)

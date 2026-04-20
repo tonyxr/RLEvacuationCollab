@@ -315,9 +315,6 @@ class MapDS:
         return qspec * float(width_m)
             
     def computeNodeCapSum(self):
-        print(self.nodeListByLocalID[0].buildingType, self.nodeListByLocalID[1].buildingType)
-        print(self.nodeListByLocalID[0].nodeCap, self.nodeListByLocalID[1].nodeCap)
-        
         self.nodeCapSum = 0
         for _, node in self.nodeListByLocalID.items():
             self.nodeCapSum += float(node.nodeCap)

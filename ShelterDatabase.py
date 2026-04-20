@@ -26,6 +26,12 @@ class ShelterDS:
         self.nextID = 0
         
         self.shelterPerCellList = None
+        
+    
+    def remainingCandidateCount(self) -> int:
+        if self.shelterCanByCell is None:
+            return 0
+        return int(sum(len(cell) for row in self.shelterCanByCell for cell in row))
     
     """Helper functions"""
     def allocID(self):
@@ -78,6 +84,7 @@ class ShelterDS:
                 if not any_picked:
                     break
             self.shelterCanByCell = balanced
+            print(f"Shelter candidates sampled for deployment: {filled} (from detected pool)")
         
         self.shelterPerCellList = self.shelterCanByCell
         

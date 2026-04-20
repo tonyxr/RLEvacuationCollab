@@ -6,7 +6,7 @@ Created on Mon Sep 29 08:50:12 2025
 @author: Xiaoru Shi
 """
 
-from typing import Optional, Tuple, Dict
+from typing import Dict
 import numpy as np
 import torch
 import torch.optim as optim
@@ -26,17 +26,6 @@ torch.manual_seed(0)
 if torch.cuda.is_available():
     torch.cuda.manual_seed_all(0)
 
-SAFE_NO_ACTION = -1
-
-class _Timer:
-    def __init__(self, name=""): 
-        self.t0 = time.perf_counter()
-        self.name = name
-    def lap(self, label):
-        t = time.perf_counter()
-        dt = t - self.t0
-        self.t0 = t
-        print(f"[RL-TIMER] {self.name} {label}: {dt:.3f}s")
     
 @dataclass
 class Transition:
@@ -44,6 +33,7 @@ class Transition:
     obs_haz: torch.Tensor
     obs_inf: torch.Tensor
     action_sh: torch.Tensor
+    action_mask: torch.Tensor
     logp_sh: torch.Tensor
     value: torch.Tensor
     reward: torch.Tensor
@@ -52,10 +42,10 @@ class Transition:
 
 class RLBridge:
     def __init__(self, core, mode="full",
-                 gamma=0.99, lam=0.95,
-                 clip_eps=0.2, lr=3e-4,
-                 epochs=4, minibatch_size=4,
-                 entropy_coef=0.01, value_coef=0.5,
+                 gamma=0.995, lam=0.97,
+                 clip_eps=0.15, lr=3e-4,
+                 epochs=8, minibatch_size=8,
+                 entropy_coef=0.003, value_coef=0.7,
                  print_every=20, debug=False, reward_interval: int = 1,
                  train_mode: bool = True):
         
@@ -84,7 +74,6 @@ class RLBridge:
             d_ped=self.d_ped, d_hazard=self.d_haz, d_infra=self.d_inf,
             embed_dim=32, heads=2,
             action_dim_shelter=self.num_cells + 1,   # +1 = no-op
-            action_dim_guidance=1,
             force_mlp=True, verbose=False
         ).to(self.device)
         self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=self.lr)
@@ -131,15 +120,29 @@ class RLBridge:
         ], dim=-1)                                     # (N,3)
 
         return ped.to(self.device), haz.to(self.device), inf.to(self.device)
+    
+    def _build_action_mask(self) -> torch.Tensor:
+        mask = torch.zeros((1, self.num_cells + 1), dtype=torch.bool, device=self.device)
+        if self.core.shelterDS.shelterCanByCell is not None:
+            for i in range(self.nx):
+                for j in range(self.ny):
+                    idx = i * self.ny + j
+                    if self.core.shelterDS.shelterCanByCell[i][j]:
+                        mask[:, idx] = True
+        mask[:, -1] = True  # no-op always valid
+        return mask
 
     def _select_actions(self, gnn_input):
-        sh_logits, gu_logits, value = self.policy(gnn_input)  # (1, A), (1, A), (1,)
-        sh_dist = torch.distributions.Categorical(logits=sh_logits)
+        sh_logits, value = self.policy(gnn_input)  # (1, A), (1,)
+        mask = self._build_action_mask()
+        masked_logits = sh_logits.masked_fill(~mask, -1e9)
+
+        sh_dist = torch.distributions.Categorical(logits=masked_logits)
         if self.train_mode:
             a_sh = sh_dist.sample()
         else:
-            a_sh = torch.argmax(sh_logits, dim=-1)
-        return a_sh, sh_dist.log_prob(a_sh), value
+            a_sh = torch.argmax(masked_logits, dim=-1)
+        return a_sh, mask, sh_dist.log_prob(a_sh), value
 
     @staticmethod
     def _idx_to_cell(idx, ny):
@@ -152,7 +155,7 @@ class RLBridge:
         # Build obs and run policy
         x_ped, x_haz, x_inf = self._get_obs_tensors()          # (N, D)
         g = fit_gnn(x_ped, x_haz, x_inf)                       # batch dim = 1
-        a_sh, lp_sh, value = self._select_actions(g)
+        a_sh, action_mask, lp_sh, value = self._select_actions(g)
 
         # Map actions to environment (A-1 = no-op)
         added_sh = 0
@@ -178,10 +181,8 @@ class RLBridge:
                 t=self.t,
                 wellnessPenaltySum=terms["wellnessPenaltySum"],
                 fulfillmentSum=terms["fulfillmentSum"],
-                guidedSum=terms["guidedSum"],
                 evacuatedTotal=int(pedRes.get("evacuated", 0)),
                 totalShelters=len(self.core.shelterDS.shelterList),
-                totalGuidances=len(self.core.guidanceDS.guidanceList),
                 shelterInstalledThisStep=added_sh,
                 shelterInstallAttemptsThisStep=attempted_sh,
             )
@@ -205,12 +206,13 @@ class RLBridge:
         self.traj.append(Transition(
             obs_ped=x_ped.detach(), obs_haz=x_haz.detach(), obs_inf=x_inf.detach(),
             action_sh=a_sh.detach(),
+            action_mask=action_mask.detach(),
             logp_sh=lp_sh.detach(),
             value=value.detach(), reward=reward.detach(), done=done
         ))
         self.t += 1
 
-        return {"reward": float(r), "added_shelters": added_sh, "added_guidances": 0}
+        return {"reward": float(r), "added_shelters": added_sh}
 
     # ---- called by Core at episode end ----
     def end_episode(self):
@@ -249,12 +251,18 @@ class RLBridge:
         obs_inf = torch.stack([tr.obs_inf for tr in self.traj])   # (T, N,3)
 
         acts_sh = torch.stack([tr.action_sh for tr in self.traj]).squeeze(-1)  # (T,)
+        masks_sh = torch.stack([tr.action_mask for tr in self.traj]).squeeze(1)  # (T, A)
 
         old_lp_sh = torch.stack([tr.logp_sh for tr in self.traj]).detach()
 
         T = obs_ped.shape[0]
         idx = torch.randperm(T, device=self.device)
         mb = max(1, T // self.minibatch_size)
+        
+        loss_history = []
+        entropy_history = []
+        approx_kl_history = []
+        clipfrac_history = []
 
         for _ in range(self.epochs):
             for k in range(0, T, mb):
@@ -282,7 +290,8 @@ class RLBridge:
                     batch=batch_vec,
                 )
         
-                sh_logits, _, values_now = self.policy(g)   # shapes: (bs, A), (bs, 1), (bs,)
+                sh_logits, values_now = self.policy(g)   # shapes: (bs, A), (bs,)
+                sh_logits = sh_logits.masked_fill(~masks_sh[sel], -1e9)
                 sh_dist = torch.distributions.Categorical(logits=sh_logits)
         
                 lp_sh = sh_dist.log_prob(acts_sh[sel])              # (bs,)
@@ -290,6 +299,9 @@ class RLBridge:
         
                 ratio_sh = torch.exp(lp_sh - old_lp_sh[sel])        # (bs,)
                 ratio = ratio_sh                                    # (bs,)
+                
+                approx_kl = torch.mean(old_lp_sh[sel] - lp_sh).item()
+                clipfrac = torch.mean((torch.abs(ratio - 1.0) > self.clip_eps).float()).item()
         
                 adv_now = adv[sel]                                  # (bs,)
                 surr1 = ratio * adv_now
@@ -307,6 +319,11 @@ class RLBridge:
                 loss.backward()
                 nn.utils.clip_grad_norm_(self.policy.parameters(), 1.0)
                 self.optimizer.step()
+                
+                loss_history.append((policy_loss.item(), value_loss.item()))
+                entropy_history.append(entropy.item())
+                approx_kl_history.append(approx_kl)
+                clipfrac_history.append(clipfrac)
 
         # checkpoint
         try:
@@ -317,3 +334,17 @@ class RLBridge:
         # reset episode storage
         self.traj.clear()
         self.t = 0
+
+        if loss_history:
+           pol = float(np.mean([x[0] for x in loss_history]))
+           val = float(np.mean([x[1] for x in loss_history]))
+           ent = float(np.mean(entropy_history))
+           kl = float(np.mean(approx_kl_history))
+           cf = float(np.mean(clipfrac_history))
+           avg_r = float(rewards.mean().item())
+           print(
+               f"[RL LEARN CHECK] steps={T} avg_reward={avg_r:.4f} "
+               f"policy_loss={pol:.4f} value_loss={val:.4f} "
+               f"entropy={ent:.4f} approx_kl={kl:.5f} clipfrac={cf:.3f}",
+               flush=True,
+           )
