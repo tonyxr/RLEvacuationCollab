@@ -383,6 +383,9 @@ class Core:
             minibatch_size = 8,
             entropy_coef = 0.003,
             value_coef = 0.7,
+            target_kl = 0.03,
+            value_clip_eps = 0.2,
+            shelter_action_interval = 5,
         )
         self.logger = trainingLog(run_dir = self.run_dir, window = 100, use_tensorboard = False)
         

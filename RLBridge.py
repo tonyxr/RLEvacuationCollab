@@ -47,7 +47,10 @@ class RLBridge:
                  epochs=8, minibatch_size=8,
                  entropy_coef=0.003, value_coef=0.7,
                  print_every=20, debug=False, reward_interval: int = 1,
-                 train_mode: bool = True):
+                 train_mode: bool = True,
+                 target_kl: float = 0.03,
+                 value_clip_eps: float = 0.2,
+                 shelter_action_interval: int = 5):
         
         self.core = core
         self.gamma = gamma; self.lam = lam
@@ -57,6 +60,11 @@ class RLBridge:
         self.print_every = print_every; self.debug = debug
         self.reward_interval = reward_interval
         self.train_mode = bool(train_mode)
+        self.target_kl = max(1e-4, float(target_kl))
+        self.value_clip_eps = max(0.01, float(value_clip_eps))
+        self.shelter_action_interval = max(1, int(shelter_action_interval))
+        self.base_lr = float(lr)
+        self.base_entropy_coef = float(entropy_coef)
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.rew = RewardProcessor(mode=mode)
@@ -77,6 +85,9 @@ class RLBridge:
             force_mlp=True, verbose=False
         ).to(self.device)
         self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=self.lr)
+        self.lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer, mode="max", factor=0.8, patience=2, min_lr=1e-5
+        )
 
         # Disk checkpoint across replications
         self.ckpt_dir = os.path.join("runs", f"{str(core.address).replace(' ','_')}")
@@ -96,6 +107,9 @@ class RLBridge:
         # per-episode storage
         self.traj: list[Transition] = []
         self.t = 0
+        self.reward_ema = 0.0
+        self.reward_var_ema = 1.0
+        self.reward_norm_beta = 0.98
 
     # ---- helpers ----
     def _get_obs_tensors(self):
@@ -161,7 +175,8 @@ class RLBridge:
         added_sh = 0
         attempted_sh = 0
         shelter_decision = "no-op"
-        if int(a_sh.item()) < self.num_cells:
+        shelter_gate_open = ((self.t % self.shelter_action_interval) == 0)
+        if shelter_gate_open and int(a_sh.item()) < self.num_cells:
             attempted_sh = 1
             cell = self._idx_to_cell(int(a_sh.item()), self.ny)
             sid = self.core.shelterDS.newShelter({"cell": cell}, self.core.cellTracker)
@@ -170,6 +185,14 @@ class RLBridge:
                 shelter_decision = f"installed shelter_id={sid} at cell={cell}"
             else:
                 shelter_decision = f"attempted install at cell={cell} (no candidate available)"
+        elif not shelter_gate_open:
+            # Force no-op action on non-deployment timesteps.
+            a_sh = torch.as_tensor([self.num_cells], dtype=torch.long, device=self.device)
+            sh_logits, _ = self.policy(g)
+            masked_logits = sh_logits.masked_fill(~action_mask, -1e9)
+            sh_dist = torch.distributions.Categorical(logits=masked_logits)
+            lp_sh = sh_dist.log_prob(a_sh)
+            shelter_decision = f"no-op (placement gated; interval={self.shelter_action_interval})"
             
         # Compute reward
         pedRes = self.core.pedDS.result
@@ -189,6 +212,12 @@ class RLBridge:
         else:
             # no new reward signal this step
             r = 0.0
+        # Running normalization to improve stochastic training stability.
+        delta = float(r) - self.reward_ema
+        self.reward_ema += (1.0 - self.reward_norm_beta) * delta
+        self.reward_var_ema = self.reward_norm_beta * self.reward_var_ema + (1.0 - self.reward_norm_beta) * (delta * delta)
+        reward_scale = math.sqrt(max(self.reward_var_ema, 1e-6))
+        r_norm = float((float(r) - self.reward_ema) / reward_scale)
         
         print(
             f"[RL decision] t={self.t} reward={float(r):.3f} "
@@ -198,7 +227,7 @@ class RLBridge:
             flush=True,
         )
 
-        reward = torch.as_tensor([r], dtype=torch.float32, device=self.device)
+        reward = torch.as_tensor([r_norm], dtype=torch.float32, device=self.device)
         
         done = torch.as_tensor([0.0], dtype=torch.float32, device=self.device)  # episode end flagged by Core
 
@@ -254,6 +283,7 @@ class RLBridge:
         masks_sh = torch.stack([tr.action_mask for tr in self.traj]).squeeze(1)  # (T, A)
 
         old_lp_sh = torch.stack([tr.logp_sh for tr in self.traj]).detach()
+        old_values = torch.stack([tr.value for tr in self.traj]).detach().squeeze(-1)
 
         T = obs_ped.shape[0]
         idx = torch.randperm(T, device=self.device)
@@ -263,8 +293,11 @@ class RLBridge:
         entropy_history = []
         approx_kl_history = []
         clipfrac_history = []
-
+        
+        stop_early = False
         for _ in range(self.epochs):
+            if stop_early:
+                break
             for k in range(0, T, mb):
                 sel = idx[k:k+mb]              # indices of timesteps in this minibatch
                 bs = sel.shape[0]              # minibatch size (number of time steps)
@@ -311,7 +344,12 @@ class RLBridge:
                 ret_now = returns[sel]                              # (bs,)
                 # values_now is already (bs,) after squeeze
                 values_now = values_now.squeeze(-1)
-                value_loss = F.mse_loss(values_now, ret_now)
+                value_pred_clipped = old_values[sel] + torch.clamp(
+                    values_now - old_values[sel], -self.value_clip_eps, self.value_clip_eps
+                )
+                value_loss_unclipped = (values_now - ret_now) ** 2
+                value_loss_clipped = (value_pred_clipped - ret_now) ** 2
+                value_loss = 0.5 * torch.mean(torch.max(value_loss_unclipped, value_loss_clipped))
         
                 loss = policy_loss + self.value_coef * value_loss - self.entropy_coef * entropy
         
@@ -324,6 +362,9 @@ class RLBridge:
                 entropy_history.append(entropy.item())
                 approx_kl_history.append(approx_kl)
                 clipfrac_history.append(clipfrac)
+                if approx_kl > 1.5 * self.target_kl:
+                    stop_early = True
+                    break
 
         # checkpoint
         try:
@@ -342,9 +383,20 @@ class RLBridge:
            kl = float(np.mean(approx_kl_history))
            cf = float(np.mean(clipfrac_history))
            avg_r = float(rewards.mean().item())
+           # Adaptive entropy and clipping for highly stochastic scenarios.
+           reward_vol = float(rewards.std().item()) if rewards.numel() > 1 else 0.0
+           stochastic_scale = min(2.0, max(0.8, 1.0 + reward_vol))
+           self.entropy_coef = min(0.02, max(0.001, self.base_entropy_coef * stochastic_scale))
+           if cf > 0.45:
+               self.clip_eps = max(0.08, self.clip_eps * 0.9)
+           elif cf < 0.15:
+               self.clip_eps = min(0.22, self.clip_eps * 1.05)
+           self.lr_scheduler.step(avg_r)
+           current_lr = float(self.optimizer.param_groups[0]["lr"])
            print(
                f"[RL LEARN CHECK] steps={T} avg_reward={avg_r:.4f} "
                f"policy_loss={pol:.4f} value_loss={val:.4f} "
-               f"entropy={ent:.4f} approx_kl={kl:.5f} clipfrac={cf:.3f}",
+               f"entropy={ent:.4f} approx_kl={kl:.5f} clipfrac={cf:.3f} "
+               f"clip_eps={self.clip_eps:.3f} lr={current_lr:.6f}",
                flush=True,
            )
