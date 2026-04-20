@@ -201,7 +201,15 @@ class RLBridge:
             sid = self.core.shelterDS.newShelter({"cell": cell}, self.core.cellTracker)
             if sid is not None:
                 added_sh = 1
-                shelter_decision = f"installed shelter_id={sid} at cell={cell}"
+                rerouted = 0
+                ped_ds = getattr(self.core, "pedDS", None)
+                new_sh = self.core.shelterDS.shelterList.get(sid)
+                if ped_ds is not None and hasattr(ped_ds, "reroute_to_new_shelter_if_closer"):
+                    try:
+                        rerouted = int(ped_ds.reroute_to_new_shelter_if_closer(new_sh))
+                    except Exception:
+                        rerouted = 0
+                shelter_decision = f"installed shelter_id={sid} at cell={cell} rerouted={rerouted}"
             else:
                 shelter_decision = f"attempted install at cell={cell} (no candidate available)"
         elif not shelter_gate_open:

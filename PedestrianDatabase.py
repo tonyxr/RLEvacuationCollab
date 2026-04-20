@@ -57,6 +57,81 @@ class PedDS:
         self.guidance_osmid_map = None
         
         self.groups = defaultdict(set)
+        
+        
+    def _distance_sq_to_node(self, ped, node):
+        if ped is None or node is None:
+            return float("inf")
+        dx = float(ped.lastX) - float(node.nodeX)
+        dy = float(ped.lastY) - float(node.nodeY)
+        return dx * dx + dy * dy
+
+    def _route_anchor_node(self, ped):
+        """
+        Pick a stable node for replanning:
+        - at node: current node
+        - on edge: preferred edge destination node (nearest upcoming node)
+        - fallback: current node
+        """
+        if ped is None:
+            return None
+        if getattr(ped, "atNode", False) and getattr(ped, "currNode", None) is not None:
+            return ped.currNode
+        edge_dest = getattr(ped, "edge_dest_node", None)
+        if edge_dest is not None:
+            return edge_dest
+        return getattr(ped, "currNode", None)
+
+    def reroute_to_new_shelter_if_closer(self, newShelter):
+        """
+        After a new shelter is installed, replan active pedestrians whose current
+        intended shelter is farther from their current location than this new shelter.
+        """
+        if newShelter is None or self.mapDS is None or self.shelterDS is None:
+            return 0
+
+        rerouted = 0
+        shelter_by_osmid = getattr(self.shelterDS, "shelterByOSMID", {}) or {}
+        new_node = getattr(newShelter, "nodeMapped", None)
+        if new_node is None:
+            return 0
+
+        for ped in list(self.pedAgentList.values()):
+            if getattr(ped, "terminated", False):
+                continue
+
+            route = getattr(ped, "routeFollowing", None)
+            if route is None:
+                continue
+            old_target = getattr(route, "endNode", None)
+            if old_target is None:
+                continue
+
+            # Only compare when the current target is an active shelter.
+            old_shelter = shelter_by_osmid.get(getattr(old_target, "OSMID", None))
+            if old_shelter is None:
+                continue
+
+            d_old = self._distance_sq_to_node(ped, old_target)
+            d_new = self._distance_sq_to_node(ped, new_node)
+            if not (d_new + 1e-6 < d_old):
+                continue
+
+            anchor = self._route_anchor_node(ped)
+            if anchor is None:
+                continue
+
+            try:
+                newRoute = self.mapDS.shortestPath(anchor, new_node)
+            except Exception:
+                newRoute = None
+            if newRoute is None:
+                continue
+
+            ped.routeFollowing = newRoute
+            rerouted += 1
+
+        return rerouted
     
     """Competency check for other related processors"""
     def checkReady(self, mapDS = None, cellTracker = None, maxSpeed = None, 
