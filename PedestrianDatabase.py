@@ -81,6 +81,83 @@ class PedDS:
         if edge_dest is not None:
             return edge_dest
         return getattr(ped, "currNode", None)
+    
+    @staticmethod
+    def _cell_in_moore_ring(cell, center_cell):
+        """
+        True iff `cell` is one of the 8 neighboring cells around `center_cell`
+        (Moore neighborhood ring, excluding center itself).
+        """
+        if cell is None or center_cell is None:
+            return False
+        try:
+            ci, cj = int(cell[0]), int(cell[1])
+            ai, aj = int(center_cell[0]), int(center_cell[1])
+        except Exception:
+            return False
+
+        di = abs(ci - ai)
+        dj = abs(cj - aj)
+        return (di <= 1 and dj <= 1) and not (di == 0 and dj == 0)
+
+    @staticmethod
+    def _shelter_has_remaining_capacity(shelter):
+        if shelter is None:
+            return False
+        if int(getattr(shelter, "status", 0)) != 0:
+            return False
+        cap = float(getattr(shelter, "shelterCap", 0.0))
+        flow = float(getattr(shelter, "shelterFlow", 0.0))
+        return (cap - flow) > 0.0
+
+    def _reroute_pedestrian_to_shelter(self, ped, target_shelter):
+        if ped is None or target_shelter is None or self.mapDS is None:
+            return False
+        target_node = getattr(target_shelter, "nodeMapped", None)
+        if target_node is None:
+            return False
+
+        anchor = self._route_anchor_node(ped)
+        if anchor is None:
+            return False
+
+        try:
+            newRoute = self.mapDS.shortestPath(anchor, target_node)
+        except Exception:
+            newRoute = None
+
+        if newRoute is None:
+            return False
+
+        ped.routeFollowing = newRoute
+        return True
+
+    def _closest_open_shelter_from_ped(self, ped, exclude_osmid = None):
+        if ped is None or self.shelterDS is None:
+            return None
+
+        best = None
+        best_d2 = float("inf")
+        px, py = float(getattr(ped, "lastX", 0.0)), float(getattr(ped, "lastY", 0.0))
+
+        for shelter in self.shelterDS.shelterList.values():
+            sh_node = getattr(shelter, "nodeMapped", None)
+            if sh_node is None:
+                continue
+            sh_osmid = getattr(sh_node, "OSMID", None)
+            if exclude_osmid is not None and sh_osmid == exclude_osmid:
+                continue
+            if not self._shelter_has_remaining_capacity(shelter):
+                continue
+
+            dx = float(sh_node.nodeX) - px
+            dy = float(sh_node.nodeY) - py
+            d2 = dx * dx + dy * dy
+            if d2 < best_d2:
+                best_d2 = d2
+                best = shelter
+
+        return best
 
     def reroute_to_new_shelter_if_closer(self, newShelter):
         """
@@ -89,15 +166,23 @@ class PedDS:
         """
         if newShelter is None or self.mapDS is None or self.shelterDS is None:
             return 0
+        
+        if not self._shelter_has_remaining_capacity(newShelter):
+            return 0
 
         rerouted = 0
         shelter_by_osmid = getattr(self.shelterDS, "shelterByOSMID", {}) or {}
         new_node = getattr(newShelter, "nodeMapped", None)
         if new_node is None:
             return 0
+        new_cell = getattr(newShelter, "cellLocated", None)
 
         for ped in list(self.pedAgentList.values()):
             if getattr(ped, "terminated", False):
+                continue
+            
+            # only pedestrians in the 8 neighboring cells around new shelter cell
+            if not self._cell_in_moore_ring(getattr(ped, "currCell", None), new_cell):
                 continue
 
             route = getattr(ped, "routeFollowing", None)
@@ -111,27 +196,47 @@ class PedDS:
             old_shelter = shelter_by_osmid.get(getattr(old_target, "OSMID", None))
             if old_shelter is None:
                 continue
+            if not self._shelter_has_remaining_capacity(old_shelter):
+                continue
 
             d_old = self._distance_sq_to_node(ped, old_target)
             d_new = self._distance_sq_to_node(ped, new_node)
             if not (d_new + 1e-6 < d_old):
                 continue
 
-            anchor = self._route_anchor_node(ped)
-            if anchor is None:
-                continue
-
-            try:
-                newRoute = self.mapDS.shortestPath(anchor, new_node)
-            except Exception:
-                newRoute = None
-            if newRoute is None:
-                continue
-
-            ped.routeFollowing = newRoute
-            rerouted += 1
+            if self._reroute_pedestrian_to_shelter(ped, newShelter):
+                rerouted += 1
 
         return rerouted
+
+    def reroute_if_target_shelter_unavailable(self, ped):
+        """
+        If ped's current target shelter has no remaining capacity, reroute to the
+        closest shelter (from current location) that still has positive remaining
+        capacity.
+        """
+        if ped is None or self.shelterDS is None:
+            return False
+        
+        route = getattr(ped, "routeFollowing", None)
+        target = getattr(route, "endNode", None) if route is not None else None
+        if target is None:
+            return False
+
+        target_sh = self.shelterDS.shelterByOSMID.get(getattr(target, "OSMID", None))
+        if target_sh is None:
+            return False
+        if self._shelter_has_remaining_capacity(target_sh):
+            return False
+
+        next_sh = self._closest_open_shelter_from_ped(
+            ped,
+            exclude_osmid = getattr(target_sh.nodeMapped, "OSMID", None)
+        )
+        if next_sh is None:
+            return False
+
+        return self._reroute_pedestrian_to_shelter(ped, next_sh)
     
     """Competency check for other related processors"""
     def checkReady(self, mapDS = None, cellTracker = None, maxSpeed = None, 
@@ -218,6 +323,8 @@ class PedDS:
             status = self.shelterDS.updateShelterFlow(ped, sh)
             if status == 0:
                 self.terminatePedestrianAgent(ped, "Evacuated")
+            else:
+                self.reroute_if_target_shelter_unavailable(ped)
     
     def advanceFromNode(self, ped):
         """
@@ -443,6 +550,9 @@ class PedDS:
         for ped in list(self.pedAgentList.values()):
             if getattr(ped, "terminated", False):
                 continue
+            
+            # keep intended shelter feasible as capacities evolve over time
+            self.reroute_if_target_shelter_unavailable(ped)
             
             step_left = max(0.0, float(ped.currSpeed))
             
