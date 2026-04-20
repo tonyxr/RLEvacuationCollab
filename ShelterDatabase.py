@@ -179,10 +179,25 @@ class ShelterDS:
             return None
         
         # check if this cell has any uninitialized candidate left
-        if not self.shelterCanByCell[ci][cj]:
+        cell_candidates = self.shelterCanByCell[ci][cj]
+        if not cell_candidates:
             return None
         
-        node = self.shelterCanByCell[ci][cj].pop(0)
+        # Lower-layer heuristic scoring inside selected cell:
+        # C^SH = W1 * APD - W2 * NDS
+        # We use a local, observable proxy where:
+        #   APD proxy: nearby pedestrian demand weighted by inverse distance.
+        #   NDS: nearby danger weighted by inverse distance.
+        # The candidate with highest score is installed first.
+        best_idx = 0
+        best_score = float("-inf")
+        for idx, candidate in enumerate(cell_candidates):
+            score = self._candidate_install_score(candidate, cellTracker)
+            if score > best_score:
+                best_score = score
+                best_idx = idx
+
+        node = cell_candidates.pop(best_idx)
         
         sid = self.allocID()
         cap = int(max(0.0, float(getattr(node, "nodeCap", 100.0))))
@@ -204,6 +219,50 @@ class ShelterDS:
         # Step 3: Declare a new shelter entity and add to the active shelters list.
         
         # Step 4: Communicate with guidance on potentially changing the shelter pointer to the newly established shelter.
+        
+    def _candidate_install_score(self, node, cellTracker, w_apd = 1.0, w_nds = 1.0, radius = 2):
+        """
+        Compute lower-layer heuristic score for a candidate shelter location.
+
+        C^SH = W1 * APD - W2 * NDS
+        where APD and NDS are computed from cell-level observables around candidate.
+        """
+        cell_count = getattr(cellTracker, "countByCell", None)
+        cell_danger = getattr(cellTracker, "dangerLevelByCell", None)
+        if cell_count is None or cell_danger is None:
+            return float(getattr(node, "nodeCap", 0.0))
+
+        nx = int(getattr(cellTracker, "cellXNum", 0))
+        ny = int(getattr(cellTracker, "cellYNum", 0))
+        if nx <= 0 or ny <= 0:
+            return float(getattr(node, "nodeCap", 0.0))
+
+        ci, cj = cellTracker.locateCell(node.nodeX, node.nodeY)
+        ci = int(ci)
+        cj = int(cj)
+        xmin = max(0, ci - int(radius))
+        xmax = min(nx - 1, ci + int(radius))
+        ymin = max(0, cj - int(radius))
+        ymax = min(ny - 1, cj + int(radius))
+
+        apd = 0.0
+        nds = 0.0
+        for i in range(xmin, xmax + 1):
+            for j in range(ymin, ymax + 1):
+                k = i * ny + j
+                ped_load = float(cell_count[k])
+                danger = float(cell_danger[k])
+                center = cellTracker.getCellCenter((i, j))
+                dx = float(node.nodeX) - float(center[0])
+                dy = float(node.nodeY) - float(center[1])
+                dist = math.sqrt(dx * dx + dy * dy)
+                inv_dist = 1.0 / (1.0 + dist)
+                apd += ped_load * inv_dist
+                nds += danger * inv_dist
+
+        # Small capacity prior to break ties in favor of higher-throughput sites.
+        cap_bonus = 1e-3 * float(max(0.0, getattr(node, "nodeCap", 0.0)))
+        return float(w_apd) * apd - float(w_nds) * nds + cap_bonus
         
     def initShelter(self):
         """
