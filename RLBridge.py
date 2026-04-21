@@ -126,6 +126,8 @@ class RLBridge:
         self.shelter_evac_history = {}
         self.shelter_last_flow = {}
         self.installed_shelter_order = []
+        self.shelter_install_step = {}
+        self.shelter_rerouted_count = {}
 
     def _update_shelter_evac_history(self):
         max_window = 15
@@ -140,9 +142,10 @@ class RLBridge:
             hist.append(delta)
             self.shelter_last_flow[sid] = flow_now
 
-    def _latest_shelter_utilization_reward(self) -> float:
+    def _latest_shelter_utilization_reward(self) -> tuple[float, float]:
         windows = (5, 10, 15)
         utilization = 0.0
+        rerouted_arrival_speed_score = 0.0
         latest_ids = list(reversed(self.installed_shelter_order[-3:]))
         for idx, sid in enumerate(latest_ids):
             window = windows[idx]
@@ -150,8 +153,25 @@ class RLBridge:
             if not hist:
                 continue
             hist_list = list(hist)
-            utilization += float(sum(hist_list[-window:]))
-        return utilization
+            recent_deltas = hist_list[-window:]
+            utilization += float(sum(recent_deltas))
+
+            # Encourage arrivals that happen soon after rerouting to a newly installed shelter.
+            # Earlier arrivals produce larger gain via time decay.
+            install_step = int(self.shelter_install_step.get(sid, self.t))
+            rerouted_count = float(max(0, self.shelter_rerouted_count.get(sid, 0)))
+            if rerouted_count <= 0.0:
+                continue
+            tau = 5.0
+            for lookback, delta in enumerate(reversed(recent_deltas)):
+                if delta <= 0.0:
+                    continue
+                step_of_arrival = self.t - lookback
+                age = max(0, step_of_arrival - install_step)
+                decay = math.exp(-float(age) / tau)
+                rerouted_arrival_speed_score += float(delta) * (1.0 + 0.1 * rerouted_count) * decay
+
+        return utilization, rerouted_arrival_speed_score
 
     # ---- helpers ----
     def _get_obs_tensors(self):
@@ -242,6 +262,8 @@ class RLBridge:
                         rerouted = int(ped_ds.reroute_to_new_shelter_if_closer(new_sh))
                     except Exception:
                         rerouted = 0
+                self.shelter_install_step[sid] = int(self.t)
+                self.shelter_rerouted_count[sid] = int(max(0, rerouted))
                 shelter_decision = f"installed shelter_id={sid} at cell={cell} rerouted={rerouted}"
             else:
                 shelter_decision = f"attempted install at cell={cell} (no candidate available)"
@@ -260,7 +282,7 @@ class RLBridge:
         if (self.t % self.reward_interval) == 0:
             count_casualty = int(pedRes.get("casualty", 0))
             terms = extract_reward_terms(self.core.cellTracker)
-            delayed_new_shelter_evac = self._latest_shelter_utilization_reward()
+            delayed_new_shelter_evac, rerouted_arrival_speed_score = self._latest_shelter_utilization_reward()
             r = self.rew.rewardMode(
                 numCasualties=count_casualty,
                 t=self.t,
@@ -270,6 +292,7 @@ class RLBridge:
                 totalShelters=len(self.core.shelterDS.shelterList),
                 installedShelterCapacityThisStep=installed_capacity,
                 delayedNewShelterEvac=delayed_new_shelter_evac,
+                reroutedArrivalSpeedScore=rerouted_arrival_speed_score,
             )
         else:
             # no new reward signal this step
@@ -315,6 +338,8 @@ class RLBridge:
             self.shelter_evac_history.clear()
             self.shelter_last_flow.clear()
             self.installed_shelter_order.clear()
+            self.shelter_install_step.clear()
+            self.shelter_rerouted_count.clear()
             return
 
         # Build tensors
@@ -443,6 +468,9 @@ class RLBridge:
         self.shelter_evac_history.clear()
         self.shelter_last_flow.clear()
         self.installed_shelter_order.clear()
+        self.shelter_install_step.clear()
+        self.shelter_rerouted_count.clear()
+
 
         if loss_history:
            pol = float(np.mean([x[0] for x in loss_history]))

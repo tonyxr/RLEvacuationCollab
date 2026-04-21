@@ -40,6 +40,7 @@ class RewardProcessor:
         wellness_penalty_coef: float = 0.005,
         shelter_install_cost_weight: float = 0.001,
         delayed_new_shelter_evac_weight: float = 0.2,
+        rerouted_arrival_speed_weight: float = 0.3,
     ):
          # which reward (simple or full) mechanism to use
          self.mode = mode
@@ -56,6 +57,7 @@ class RewardProcessor:
          self.wellness_penalty_coef = wellness_penalty_coef
          self.shelter_install_cost_weight = float(shelter_install_cost_weight)
          self.delayed_new_shelter_evac_weight = float(delayed_new_shelter_evac_weight)
+         self.rerouted_arrival_speed_weight = float(rerouted_arrival_speed_weight)
          
          self.currFulfillment = 0
          self.lastFulfillment = 0
@@ -83,14 +85,17 @@ class RewardProcessor:
                    totalShelters: int,
                    installedShelterCapacityThisStep: float = 0.0,
                    delayedNewShelterEvac: float = 0.0,
+                   reroutedArrivalSpeedScore: float = 0.0,
                    ) -> float:
         
         install_cost = float(max(0.0, installedShelterCapacityThisStep))
         delayed_evac = float(max(0.0, delayedNewShelterEvac))
+        rerouted_arrival_speed = float(max(0.0, reroutedArrivalSpeedScore))
         
         totalReward = (
             -self.shelter_install_cost_weight * install_cost
             + self.delayed_new_shelter_evac_weight * delayed_evac
+            + self.rerouted_arrival_speed_weight * rerouted_arrival_speed
         )
         
         self.lastFulfillment = fulfillmentSum
@@ -114,6 +119,7 @@ class RewardProcessor:
                 kwargs.get("totalShelters", 0),
                 kwargs.get("installedShelterCapacityThisStep", 0.0),
                 kwargs.get("delayedNewShelterEvac", 0.0),
+                kwargs.get("reroutedArrivalSpeedScore", 0.0),
             )
 
 def _safe_sum(x, default = 0.0) -> float:
