@@ -181,7 +181,7 @@ class Core:
     
     """Handles all functionality at t = 0"""
     """Still need to add input parameters to function calls"""
-    def initSimulator(self, replication, machine, config_overrides = None, phase: str = "train", train_mode: bool = True):
+    def initSimulator(self, replication, machine, config_overrides = None, phase: str = "train", train_mode: bool = True, deployment_strategy: str = "rl", run_tag: str = None):
         # read all input data
         self.readInputCSV()
         
@@ -196,7 +196,10 @@ class Core:
             self.initGuidanceVol = 0
         
         # For automated model excution once uploaded to a cloud-based computing platform
-        self.run_dir = os.path.join("runs", str(phase), f"rep_{int(replication):03d}_{machine}")
+        phase_dir = os.path.join("runs", str(phase))
+        if run_tag:
+            phase_dir = os.path.join(phase_dir, str(run_tag))
+        self.run_dir = os.path.join(phase_dir, f"rep_{int(replication):03d}_{machine}")
         os.makedirs(self.run_dir, exist_ok = True)
         
         # Call OSMProcessor to get relevant map data
@@ -389,6 +392,7 @@ class Core:
             exploration_rate = float(self.explorationRate),
             optimizer_name = str(self.optimizer),
             max_episode_steps = int(self.stopTime),
+            deployment_strategy = deployment_strategy,
         )
         self.logger = trainingLog(run_dir = self.run_dir, window = 100, use_tensorboard = False)
         
