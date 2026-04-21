@@ -54,7 +54,8 @@ class RLBridge:
                  shelter_action_interval: int = 5,
                  exploration_rate: float = 0.15,
                  optimizer_name: str = "Adam",
-                 max_episode_steps: int = 120):
+                 max_episode_steps: int = 120,
+                 no_reroute_patience: int = 3):
         
         self.core = core
         self.gamma = gamma; self.lam = lam
@@ -72,6 +73,8 @@ class RLBridge:
         self.exploration_rate = min(0.9, max(0.0, float(exploration_rate)))
         self.exploration_floor = 0.05
         self.max_episode_steps = max(1, int(max_episode_steps))
+        self.no_reroute_patience = max(1, int(no_reroute_patience))
+
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.rew = RewardProcessor(mode=mode)
@@ -128,6 +131,8 @@ class RLBridge:
         self.installed_shelter_order = []
         self.shelter_install_step = {}
         self.shelter_rerouted_count = {}
+        self.consecutive_no_reroute_installs = 0
+        self.stop_new_shelter_install = False
 
     def _update_shelter_evac_history(self):
         max_window = 15
@@ -244,9 +249,20 @@ class RLBridge:
         added_sh = 0
         attempted_sh = 0
         installed_capacity = 0.0
+        immediate_rerouted_count = 0.0
         shelter_decision = "no-op"
         shelter_gate_open = ((self.t % self.shelter_action_interval) == 0)
-        if shelter_gate_open and int(a_sh.item()) < self.num_cells:
+        if self.stop_new_shelter_install:
+            a_sh = torch.as_tensor([self.num_cells], dtype=torch.long, device=self.device)
+            sh_logits, _ = self.policy(g)
+            masked_logits = sh_logits.masked_fill(~action_mask, -1e9)
+            sh_dist = torch.distributions.Categorical(logits=masked_logits)
+            lp_sh = sh_dist.log_prob(a_sh)
+            shelter_decision = (
+                f"no-op (installation halted after {self.consecutive_no_reroute_installs} "
+                f"zero-reroute installs)"
+            )
+        elif shelter_gate_open and int(a_sh.item()) < self.num_cells:
             attempted_sh = 1
             cell = self._idx_to_cell(int(a_sh.item()), self.ny)
             sid = self.core.shelterDS.newShelter({"cell": cell}, self.core.cellTracker)
@@ -262,8 +278,15 @@ class RLBridge:
                         rerouted = int(ped_ds.reroute_to_new_shelter_if_closer(new_sh))
                     except Exception:
                         rerouted = 0
+                immediate_rerouted_count = float(max(0, rerouted))
                 self.shelter_install_step[sid] = int(self.t)
                 self.shelter_rerouted_count[sid] = int(max(0, rerouted))
+                if rerouted > 0:
+                    self.consecutive_no_reroute_installs = 0
+                else:
+                    self.consecutive_no_reroute_installs += 1
+                    if self.consecutive_no_reroute_installs >= self.no_reroute_patience:
+                        self.stop_new_shelter_install = True
                 shelter_decision = f"installed shelter_id={sid} at cell={cell} rerouted={rerouted}"
             else:
                 shelter_decision = f"attempted install at cell={cell} (no candidate available)"
@@ -293,6 +316,7 @@ class RLBridge:
                 installedShelterCapacityThisStep=installed_capacity,
                 delayedNewShelterEvac=delayed_new_shelter_evac,
                 reroutedArrivalSpeedScore=rerouted_arrival_speed_score,
+                immediateReroutedCount=immediate_rerouted_count,
             )
         else:
             # no new reward signal this step
@@ -340,6 +364,8 @@ class RLBridge:
             self.installed_shelter_order.clear()
             self.shelter_install_step.clear()
             self.shelter_rerouted_count.clear()
+            self.consecutive_no_reroute_installs = 0
+            self.stop_new_shelter_install = False
             return
 
         # Build tensors
@@ -470,7 +496,8 @@ class RLBridge:
         self.installed_shelter_order.clear()
         self.shelter_install_step.clear()
         self.shelter_rerouted_count.clear()
-
+        self.consecutive_no_reroute_installs = 0
+        self.stop_new_shelter_install = False
 
         if loss_history:
            pol = float(np.mean([x[0] for x in loss_history]))

@@ -38,9 +38,10 @@ class RewardProcessor:
         timely_fill_bonus_sh: float = 0.16,
         open_shelter_penalty_sh: float = 0.01,
         wellness_penalty_coef: float = 0.005,
-        shelter_install_cost_weight: float = 0.001,
+        shelter_install_cost_weight: float = 0.005,
         delayed_new_shelter_evac_weight: float = 0.2,
         rerouted_arrival_speed_weight: float = 0.3,
+        immediate_reroute_reward_weight: float = 0.25,
     ):
          # which reward (simple or full) mechanism to use
          self.mode = mode
@@ -58,6 +59,7 @@ class RewardProcessor:
          self.shelter_install_cost_weight = float(shelter_install_cost_weight)
          self.delayed_new_shelter_evac_weight = float(delayed_new_shelter_evac_weight)
          self.rerouted_arrival_speed_weight = float(rerouted_arrival_speed_weight)
+         self.immediate_reroute_reward_weight = float(immediate_reroute_reward_weight)
          
          self.currFulfillment = 0
          self.lastFulfillment = 0
@@ -86,14 +88,19 @@ class RewardProcessor:
                    installedShelterCapacityThisStep: float = 0.0,
                    delayedNewShelterEvac: float = 0.0,
                    reroutedArrivalSpeedScore: float = 0.0,
+                   immediateReroutedCount: float = 0.0,
                    ) -> float:
         
         install_cost = float(max(0.0, installedShelterCapacityThisStep))
         delayed_evac = float(max(0.0, delayedNewShelterEvac))
         rerouted_arrival_speed = float(max(0.0, reroutedArrivalSpeedScore))
+        immediate_rerouted = float(max(0.0, immediateReroutedCount))
+        # Scale opening cost with shelter capacity volume and penalize low immediate utilization.
+        waste_multiplier = 1.0 + (1.0 / (1.0 + immediate_rerouted))
         
         totalReward = (
-            -self.shelter_install_cost_weight * install_cost
+            - self.shelter_install_cost_weight * install_cost * waste_multiplier
+            + self.immediate_reroute_reward_weight * immediate_rerouted
             + self.delayed_new_shelter_evac_weight * delayed_evac
             + self.rerouted_arrival_speed_weight * rerouted_arrival_speed
         )
@@ -120,6 +127,7 @@ class RewardProcessor:
                 kwargs.get("installedShelterCapacityThisStep", 0.0),
                 kwargs.get("delayedNewShelterEvac", 0.0),
                 kwargs.get("reroutedArrivalSpeedScore", 0.0),
+                kwargs.get("immediateReroutedCount", 0.0),
             )
 
 def _safe_sum(x, default = 0.0) -> float:
