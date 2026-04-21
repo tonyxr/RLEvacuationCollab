@@ -49,6 +49,8 @@ class PedDS:
         # temporal container of event statistics at the current timestep
         self._step = dict(arrival=0, casualty=0, evacuated=0, guided=0, affected=0)
         self.result = dict(arrival = 0, casualty = 0, evacuated = 0, guided = 0, affected = 0)
+        self.evacuationTimeSum = 0.0
+        self.evacuationCount = 0
         
         # default impact rate by cell state
         self._default_casualty_prob = {0: 0.0, 1: 0.0, 2: 0.0, 3: 0.005, 4: 0.01, 5: 0.02}
@@ -484,6 +486,8 @@ class PedDS:
         elif event == "Evacuated":
             ped.evacuated = True
             self.bump('evacuated', 1)
+            self.evacuationTimeSum += float(self.currTime)
+            self.evacuationCount += 1
         # Step 3: (else) arrival count += 1 and set $p_i$'s arrival and terminated status = True.
         else:
             ped.arrival = True
@@ -492,6 +496,11 @@ class PedDS:
         ped.terminated = True
         if ped.agentID in self.pedAgentList:
             del self.pedAgentList[ped.agentID]
+    
+    def mean_evacuation_time(self) -> float:
+        if int(self.evacuationCount) <= 0:
+            return 0.0
+        return float(self.evacuationTimeSum) / float(self.evacuationCount)
     
     def interPedestrianInteraction(self):
         """

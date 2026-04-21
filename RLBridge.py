@@ -55,7 +55,8 @@ class RLBridge:
                  exploration_rate: float = 0.15,
                  optimizer_name: str = "Adam",
                  max_episode_steps: int = 120,
-                 no_reroute_patience: int = 3):
+                 no_reroute_patience: int = 3,
+                 deployment_strategy: str = "rl"):
         
         self.core = core
         self.gamma = gamma; self.lam = lam
@@ -74,7 +75,7 @@ class RLBridge:
         self.exploration_floor = 0.05
         self.max_episode_steps = max(1, int(max_episode_steps))
         self.no_reroute_patience = max(1, int(no_reroute_patience))
-
+        self.deployment_strategy = str(deployment_strategy).strip().lower()
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.rew = RewardProcessor(mode=mode)
@@ -133,6 +134,40 @@ class RLBridge:
         self.shelter_rerouted_count = {}
         self.consecutive_no_reroute_installs = 0
         self.stop_new_shelter_install = False
+        
+    def _heuristic_pick_cell_idx(self) -> int:
+        shelter_grid = getattr(self.core.shelterDS, "shelterByCell", None)
+        candidate_grid = getattr(self.core.shelterDS, "shelterCanByCell", None)
+        counts = np.asarray(getattr(self.core.cellTracker, "countByCell", None))
+        if shelter_grid is None or candidate_grid is None or counts is None:
+            return self.num_cells
+
+        best_idx = self.num_cells
+        best_ratio = float("-inf")
+        for i in range(self.nx):
+            for j in range(self.ny):
+                if not candidate_grid[i][j]:
+                    continue
+                idx = i * self.ny + j
+                active_evacuees = float(max(0.0, counts[idx]))
+                remaining_capacity = 0.0
+                for sh in shelter_grid[i][j]:
+                    cap = float(max(0.0, getattr(sh, "shelterCap", 0.0)))
+                    flow = float(max(0.0, getattr(sh, "shelterFlow", 0.0)))
+                    if int(getattr(sh, "status", 0)) == 0:
+                        remaining_capacity += max(0.0, cap - flow)
+                ratio = active_evacuees / max(1.0, remaining_capacity)
+                if ratio > best_ratio:
+                    best_ratio = ratio
+                    best_idx = idx
+        return int(best_idx)
+
+    def _random_pick_cell_idx(self, action_mask: torch.Tensor) -> int:
+        valid_idx = torch.where(action_mask[0, :self.num_cells])[0]
+        if int(valid_idx.numel()) <= 0:
+            return self.num_cells
+        pick = int(torch.randint(low=0, high=int(valid_idx.shape[0]), size=(1,), device=self.device).item())
+        return int(valid_idx[pick].item())
 
     def _update_shelter_evac_history(self):
         max_window = 15
@@ -252,7 +287,7 @@ class RLBridge:
         immediate_rerouted_count = 0.0
         shelter_decision = "no-op"
         shelter_gate_open = ((self.t % self.shelter_action_interval) == 0)
-        if self.stop_new_shelter_install:
+        if self.stop_new_shelter_install or self.deployment_strategy in {"none", "initial_only"}:
             a_sh = torch.as_tensor([self.num_cells], dtype=torch.long, device=self.device)
             sh_logits, _ = self.policy(g)
             masked_logits = sh_logits.masked_fill(~action_mask, -1e9)
@@ -262,6 +297,20 @@ class RLBridge:
                 f"no-op (installation halted after {self.consecutive_no_reroute_installs} "
                 f"zero-reroute installs)"
             )
+        elif shelter_gate_open and self.deployment_strategy in {"random", "heuristic"}:
+            if self.deployment_strategy == "random":
+                picked_idx = self._random_pick_cell_idx(action_mask)
+                shelter_decision = "random-upper-layer"
+            else:
+                picked_idx = self._heuristic_pick_cell_idx()
+                shelter_decision = "heuristic-upper-layer"
+            a_sh = torch.as_tensor([picked_idx], dtype=torch.long, device=self.device)
+            sh_logits, _ = self.policy(g)
+            masked_logits = sh_logits.masked_fill(~action_mask, -1e9)
+            sh_dist = torch.distributions.Categorical(logits=masked_logits)
+            lp_sh = sh_dist.log_prob(a_sh)
+            if picked_idx >= self.num_cells:
+                shelter_decision += " no-op (no valid candidate cell)"
         elif shelter_gate_open and int(a_sh.item()) < self.num_cells:
             attempted_sh = 1
             cell = self._idx_to_cell(int(a_sh.item()), self.ny)

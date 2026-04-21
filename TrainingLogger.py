@@ -39,6 +39,7 @@ class trainingLog:
                 "guided",
                 "affected",
                 "added_shelters",
+                "mean_evacuation_time",
                 "reward_ma_window"
             ])
             self.csv_file.flush()
@@ -73,6 +74,7 @@ class trainingLog:
         guided           = int(metrics.get("guided", 0))          
         affected         = int(metrics.get("affected", 0))
         added_shelters   = int(metrics.get("added_shelters", 0))
+        mean_evacuation_time = float(metrics.get("mean_evacuation_time", 0.0))
         
         self.recent_rewards.append(float(reward))
         reward_ma = self.moving_avg() 
@@ -86,6 +88,7 @@ class trainingLog:
             guided,
             affected,
             added_shelters,
+            mean_evacuation_time,
             float(reward_ma),      # moving average window
         ]
         
@@ -103,6 +106,7 @@ class trainingLog:
             self.tb.add_scalar("ped/affected", affected, global_step=t)
 
             self.tb.add_scalar("actions/added_shelters", added_shelters, global_step=t)
+            self.tb.add_scalar("ped/mean_evacuation_time", mean_evacuation_time, global_step=t)
     
     def close(self):
         try:
