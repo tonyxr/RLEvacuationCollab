@@ -330,6 +330,7 @@ class RLBridge:
         
         print(
             f"[RL decision] t={self.t} reward={float(r):.3f} "
+            f"arrival={int(pedRes.get('arrival', 0))} "
             f"casualty={int(pedRes.get('casualty', 0))} "
             f"evacuated={int(pedRes.get('evacuated', 0))} "
             f"shelter={shelter_decision}",

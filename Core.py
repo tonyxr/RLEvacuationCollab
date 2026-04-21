@@ -538,11 +538,20 @@ class Core:
             if hasattr(self.shelterDS, "remainingCandidateCount"):
                 print(f"[SHELTER POOL] remaining_candidates={self.shelterDS.remainingCandidateCount()} active_shelters={len(self.shelterDS.shelterList)}")
                 
-        total_classified = int(self.pedDS.result.get("arrival", 0)) + int(self.pedDS.result.get("evacuated", 0)) + int(self.pedDS.result.get("casualty", 0))
+        total_arrival = int(self.pedDS.result.get("arrival", 0))
+        total_casualty = int(self.pedDS.result.get("casualty", 0))
+        total_evacuated = int(self.pedDS.result.get("evacuated", 0))
+        total_classified = total_arrival + total_evacuated + total_casualty
         if total_classified != int(self.pedVol):
-            print(f"[RESULT CHECK] classified={total_classified} pedVol={int(self.pedVol)} (difference={int(self.pedVol)-total_classified})")
+            print(
+                f"[RESULT CHECK] arrival({total_arrival}) + casualty({total_casualty}) + evacuated({total_evacuated}) = "
+                f"{total_classified}; pedVol={int(self.pedVol)} (difference={int(self.pedVol)-total_classified})"
+            )
         else:
-            print(f"[RESULT CHECK] classified={total_classified} pedVol={int(self.pedVol)} (balanced)")
+            print(
+                f"[RESULT CHECK] arrival({total_arrival}) + casualty({total_casualty}) + evacuated({total_evacuated}) = "
+                f"{total_classified}; pedVol={int(self.pedVol)} (balanced)"
+            )
             
         if self.logger is not None:
             self.logger.plot_png("reward_curve.png")
