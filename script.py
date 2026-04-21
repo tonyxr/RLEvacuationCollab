@@ -62,8 +62,6 @@ def Script():
     
     # user-requested fixed scenario
     overrides = {
-        "address": "Reading, PA, USA",
-        "pedVol": 2000,
     }
     
     for r in range(1, train_replications + 1):
