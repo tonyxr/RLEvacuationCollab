@@ -7,6 +7,7 @@ Created on Mon Sep 29 08:50:12 2025
 """
 
 from typing import Dict
+from collections import deque
 import numpy as np
 import torch
 import torch.optim as optim
@@ -122,7 +123,35 @@ class RLBridge:
         self.reward_ema = 0.0
         self.reward_var_ema = 1.0
         self.reward_norm_beta = 0.98
-        self.pending_shelter_eval = []
+        self.shelter_evac_history = {}
+        self.shelter_last_flow = {}
+        self.installed_shelter_order = []
+
+    def _update_shelter_evac_history(self):
+        max_window = 15
+        shelter_list = getattr(self.core.shelterDS, "shelterList", {})
+        for sid, shelter in shelter_list.items():
+            flow_now = float(max(0.0, getattr(shelter, "shelterFlow", 0.0)))
+            if sid not in self.shelter_last_flow:
+                delta = 0.0
+            else:
+                delta = max(0.0, flow_now - self.shelter_last_flow[sid])
+            hist = self.shelter_evac_history.setdefault(sid, deque(maxlen=max_window))
+            hist.append(delta)
+            self.shelter_last_flow[sid] = flow_now
+
+    def _latest_shelter_utilization_reward(self) -> float:
+        windows = (5, 10, 15)
+        utilization = 0.0
+        latest_ids = list(reversed(self.installed_shelter_order[-3:]))
+        for idx, sid in enumerate(latest_ids):
+            window = windows[idx]
+            hist = self.shelter_evac_history.get(sid)
+            if not hist:
+                continue
+            hist_list = list(hist)
+            utilization += float(sum(hist_list[-window:]))
+        return utilization
 
     # ---- helpers ----
     def _get_obs_tensors(self):
@@ -207,10 +236,7 @@ class RLBridge:
                 ped_ds = getattr(self.core, "pedDS", None)
                 new_sh = self.core.shelterDS.shelterList.get(sid)
                 installed_capacity = float(max(0.0, getattr(new_sh, "shelterCap", 0.0))) if new_sh is not None else 0.0
-                self.pending_shelter_eval.append({
-                    "eval_t": int(self.t + 5),
-                    "shelter_id": sid,
-                })
+                self.installed_shelter_order.append(sid)
                 if ped_ds is not None and hasattr(ped_ds, "reroute_to_new_shelter_if_closer"):
                     try:
                         rerouted = int(ped_ds.reroute_to_new_shelter_if_closer(new_sh))
@@ -230,21 +256,11 @@ class RLBridge:
             
         # Compute reward
         pedRes = self.core.pedDS.result
+        self._update_shelter_evac_history()
         if (self.t % self.reward_interval) == 0:
             count_casualty = int(pedRes.get("casualty", 0))
             terms = extract_reward_terms(self.core.cellTracker)
-            delayed_new_shelter_evac = 0.0
-            if self.pending_shelter_eval:
-                unresolved = []
-                for pending in self.pending_shelter_eval:
-                    if int(pending.get("eval_t", -1)) <= self.t:
-                        sid = pending.get("shelter_id")
-                        sh = self.core.shelterDS.shelterList.get(sid)
-                        if sh is not None:
-                            delayed_new_shelter_evac += float(max(0.0, getattr(sh, "shelterFlow", 0.0)))
-                    else:
-                        unresolved.append(pending)
-                self.pending_shelter_eval = unresolved
+            delayed_new_shelter_evac = self._latest_shelter_utilization_reward()
             r = self.rew.rewardMode(
                 numCasualties=count_casualty,
                 t=self.t,
@@ -296,6 +312,9 @@ class RLBridge:
         if not self.train_mode:
             self.traj.clear()
             self.t = 0
+            self.shelter_evac_history.clear()
+            self.shelter_last_flow.clear()
+            self.installed_shelter_order.clear()
             return
 
         # Build tensors
@@ -421,6 +440,9 @@ class RLBridge:
         # reset episode storage
         self.traj.clear()
         self.t = 0
+        self.shelter_evac_history.clear()
+        self.shelter_last_flow.clear()
+        self.installed_shelter_order.clear()
 
         if loss_history:
            pol = float(np.mean([x[0] for x in loss_history]))
