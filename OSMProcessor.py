@@ -15,12 +15,20 @@ import geopandas as gpd
 from shapely.geometry import Point
 import pandas as pd
 import copy
+import hashlib
+import json
+import networkx as nx
 
 
 class OSMProcessor:
     _location_cache = {}
     _network_feature_cache = {}
     _building_feature_cache = {}
+    _default_overpass_endpoints = (
+        "https://overpass-api.de/api",
+        "https://overpass.kumi.systems/api",
+        "https://overpass.openstreetmap.ru/api",
+    )
 
     def __init__(self, address, verbose: bool = False):
         
@@ -49,6 +57,108 @@ class OSMProcessor:
         self.intersectionCount = 0
         
         self.G_proj = None
+        
+           
+    def _graph_cache_path(self):
+        key = hashlib.sha1(self.address.encode("utf-8")).hexdigest()[:12]
+        safe_addr = "".join(ch if ch.isalnum() else "_" for ch in self.address).strip("_")
+        safe_addr = safe_addr[:80] if safe_addr else "address"
+        os.makedirs(OSM.settings.cache_folder, exist_ok = True)
+        return os.path.join(OSM.settings.cache_folder, f"graph_walk_{safe_addr}_{key}.graphml")
+    
+    def _try_graph_from_place(self, overpass_url):
+        old_overpass_url = OSM.settings.overpass_url
+        old_requests_timeout = OSM.settings.requests_timeout
+        try:
+            OSM.settings.overpass_url = overpass_url
+            # Keep responsiveness; each endpoint may still retry internally.
+            OSM.settings.requests_timeout = min(int(old_requests_timeout), 90)
+            G = OSM.graph.graph_from_place(
+                self.address,
+                network_type = "walk",
+                truncate_by_edge = False,
+            )
+            return G
+        finally:
+            OSM.settings.overpass_url = old_overpass_url
+            OSM.settings.requests_timeout = old_requests_timeout
+    
+    def _load_location_graph(self):
+        graph_cache_path = self._graph_cache_path()
+        if os.path.exists(graph_cache_path):
+            if self.verbose:
+                print(f"[OSM] Loading cached graphml: {graph_cache_path}")
+            return OSM.io.load_graphml(graph_cache_path)
+        
+        errors = []
+        for overpass_url in self._default_overpass_endpoints:
+            try:
+                if self.verbose:
+                    print(f"[OSM] Attempting Overpass endpoint: {overpass_url}")
+                G = self._try_graph_from_place(overpass_url)
+                OSM.io.save_graphml(G, graph_cache_path)
+                if self.verbose:
+                    print(f"[OSM] Saved graphml cache: {graph_cache_path}")
+                return G
+            except Exception as exc:
+                errors.append(f"{overpass_url} -> {type(exc).__name__}: {exc}")
+                if self.verbose:
+                    print(f"[OSM] Failed endpoint {overpass_url}: {exc}")
+        
+        if os.path.exists(graph_cache_path):
+            # Defensive fallback in case write completed despite transient exception.
+            return OSM.io.load_graphml(graph_cache_path)
+        
+        # Last-resort offline fallback: reconstruct a graph from raw cached Overpass
+        # response JSON files created by prior successful runs in this repository.
+        raw_cache_graph = self._load_graph_from_raw_overpass_cache()
+        if raw_cache_graph is not None:
+            OSM.io.save_graphml(raw_cache_graph, graph_cache_path)
+            if self.verbose:
+                print(f"[OSM] Reconstructed graph from raw cache and saved: {graph_cache_path}")
+            return raw_cache_graph
+        
+        detail = "; ".join(errors) if errors else "unknown error"
+        raise RuntimeError(
+            f"Unable to fetch OSM road graph for '{self.address}'. "
+            f"Tried endpoints: {', '.join(self._default_overpass_endpoints)}. "
+            f"Errors: {detail}. "
+            "If running in a restricted network, pre-warm cache by running once with internet access."
+        )
+    
+    def _load_graph_from_raw_overpass_cache(self):
+        cache_dir = OSM.settings.cache_folder
+        if not os.path.isdir(cache_dir):
+            return None
+        
+        response_jsons = []
+        for name in sorted(os.listdir(cache_dir)):
+            if not name.endswith(".json"):
+                continue
+            p = os.path.join(cache_dir, name)
+            try:
+                with open(p, "r", encoding = "utf-8") as fh:
+                    data = json.load(fh)
+                if isinstance(data, dict) and "elements" in data:
+                    response_jsons.append(data)
+                elif isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, dict) and "elements" in item:
+                            response_jsons.append(item)
+            except Exception:
+                continue
+        
+        if not response_jsons:
+            return None
+        
+        try:
+            G = OSM.graph._create_graph(response_jsons, bidirectional = True)
+            if len(G.nodes) == 0:
+                return None
+            return G
+        except Exception:
+            return None
+
 
     """Getter Functions"""
     
@@ -74,7 +184,12 @@ class OSMProcessor:
             self.mapStat = OSM.stats.basic_stats(self.locationDrive)
             return
         
-        self.locationDrive = OSM.graph.graph_from_place(self.address, network_type = "walk", truncate_by_edge = False)
+        self.locationDrive = self._load_location_graph()
+        # Graphs reconstructed from raw cached responses may not carry the
+        # street_count node attribute expected by OSMnx stats helpers.
+        if not all("street_count" in data for _, data in self.locationDrive.nodes(data = True)):
+            street_count = OSM.stats.count_streets_per_node(self.locationDrive)
+            nx.set_node_attributes(self.locationDrive, street_count, name = "street_count")
         self.locationDrive = OSM.routing.add_edge_speeds(self.locationDrive, fallback = 6.5)
         
         OSM.distance.add_edge_lengths(self.locationDrive)
@@ -131,7 +246,11 @@ class OSMProcessor:
                 buildings = OSM.features.features_from_place(self.address, tags)
             except Exception:
                 # Fallback for environments/providers where place lookup is unavailable.
-                buildings = OSM.features.features_from_address(self.address, tags, dist = 1000)
+                try:
+                    buildings = OSM.features.features_from_address(self.address, tags, dist = 1000)
+                except Exception:
+                    # Offline or endpoint issues: continue without building/amenity stamps.
+                    buildings = gpd.GeoDataFrame(geometry = [], crs = "EPSG:4326")
             self._building_feature_cache[cache_key] = buildings.copy()
         
         if buildings.empty:
