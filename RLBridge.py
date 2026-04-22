@@ -135,6 +135,19 @@ class RLBridge:
         self.consecutive_no_reroute_installs = 0
         self.stop_new_shelter_install = False
         
+    
+    @staticmethod
+    def _safe_tensor(x: torch.Tensor, clamp: float | None = None) -> torch.Tensor:
+        x = torch.nan_to_num(x, nan=0.0, posinf=1e6, neginf=-1e6)
+        if clamp is not None:
+            x = torch.clamp(x, min=-float(clamp), max=float(clamp))
+        return x
+
+    def _safe_masked_logits(self, logits: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        safe_logits = self._safe_tensor(logits, clamp=50.0)
+        safe_logits = safe_logits.masked_fill(~mask, -1e9)
+        return self._safe_tensor(safe_logits, clamp=1e9)
+        
     def _heuristic_pick_cell_idx(self) -> int:
         shelter_grid = getattr(self.core.shelterDS, "shelterByCell", None)
         candidate_grid = getattr(self.core.shelterDS, "shelterCanByCell", None)
@@ -234,6 +247,10 @@ class RLBridge:
             _flat(ct.guidanceInterByCell),
             _flat(ct.wellnessPenaltyByCell),
         ], dim=-1)                                     # (N,3)
+        
+        ped = self._safe_tensor(ped, clamp=1e6)
+        haz = self._safe_tensor(haz, clamp=1e6)
+        inf = self._safe_tensor(inf, clamp=1e6)
 
         return ped.to(self.device), haz.to(self.device), inf.to(self.device)
     
@@ -251,7 +268,8 @@ class RLBridge:
     def _select_actions(self, gnn_input):
         sh_logits, value = self.policy(gnn_input)  # (1, A), (1,)
         mask = self._build_action_mask()
-        masked_logits = sh_logits.masked_fill(~mask, -1e9)
+        masked_logits = self._safe_masked_logits(sh_logits, mask)
+        value = self._safe_tensor(value, clamp=1e6)
 
         sh_dist = torch.distributions.Categorical(logits=masked_logits)
         if self.train_mode:
@@ -290,7 +308,7 @@ class RLBridge:
         if self.stop_new_shelter_install or self.deployment_strategy in {"none", "initial_only"}:
             a_sh = torch.as_tensor([self.num_cells], dtype=torch.long, device=self.device)
             sh_logits, _ = self.policy(g)
-            masked_logits = sh_logits.masked_fill(~action_mask, -1e9)
+            masked_logits = self._safe_masked_logits(sh_logits, action_mask)
             sh_dist = torch.distributions.Categorical(logits=masked_logits)
             lp_sh = sh_dist.log_prob(a_sh)
             shelter_decision = (
@@ -306,7 +324,7 @@ class RLBridge:
                 shelter_decision = "heuristic-upper-layer"
             a_sh = torch.as_tensor([picked_idx], dtype=torch.long, device=self.device)
             sh_logits, _ = self.policy(g)
-            masked_logits = sh_logits.masked_fill(~action_mask, -1e9)
+            masked_logits = self._safe_masked_logits(sh_logits, action_mask)
             sh_dist = torch.distributions.Categorical(logits=masked_logits)
             lp_sh = sh_dist.log_prob(a_sh)
             if picked_idx >= self.num_cells:
@@ -343,7 +361,7 @@ class RLBridge:
             # Force no-op action on non-deployment timesteps.
             a_sh = torch.as_tensor([self.num_cells], dtype=torch.long, device=self.device)
             sh_logits, _ = self.policy(g)
-            masked_logits = sh_logits.masked_fill(~action_mask, -1e9)
+            masked_logits = self._safe_masked_logits(sh_logits, action_mask)
             sh_dist = torch.distributions.Categorical(logits=masked_logits)
             lp_sh = sh_dist.log_prob(a_sh)
             shelter_decision = f"no-op (placement gated; interval={self.shelter_action_interval})"
@@ -438,7 +456,14 @@ class RLBridge:
             returns = adv + values
 
         # Normalize advantages
-        adv = (adv - adv.mean()) / (adv.std() + 1e-8)
+        adv_mean = adv.mean()
+        adv_std = adv.std()
+        if not torch.isfinite(adv_mean) or not torch.isfinite(adv_std) or float(adv_std.item()) < 1e-8:
+            adv = adv - torch.nan_to_num(adv_mean, nan=0.0)
+        else:
+            adv = (adv - adv_mean) / (adv_std + 1e-8)
+        adv = self._safe_tensor(adv, clamp=1e4)
+        returns = self._safe_tensor(returns, clamp=1e6)
 
         # Recompute logprobs for current policy (we need obs compact form)
         obs_ped = torch.stack([tr.obs_ped for tr in self.traj])   # (T, N,2)
@@ -448,8 +473,8 @@ class RLBridge:
         acts_sh = torch.stack([tr.action_sh for tr in self.traj]).squeeze(-1)  # (T,)
         masks_sh = torch.stack([tr.action_mask for tr in self.traj]).squeeze(1)  # (T, A)
 
-        old_lp_sh = torch.stack([tr.logp_sh for tr in self.traj]).detach()
-        old_values = torch.stack([tr.value for tr in self.traj]).detach().squeeze(-1)
+        old_lp_sh = self._safe_tensor(torch.stack([tr.logp_sh for tr in self.traj]).detach(), clamp=1e4)
+        old_values = self._safe_tensor(torch.stack([tr.value for tr in self.traj]).detach().squeeze(-1), clamp=1e6)
 
         T = obs_ped.shape[0]
         idx = torch.randperm(T, device=self.device)
@@ -490,7 +515,12 @@ class RLBridge:
                 )
         
                 sh_logits, values_now = self.policy(g)   # shapes: (bs, A), (bs,)
-                sh_logits = sh_logits.masked_fill(~masks_sh[sel], -1e9)
+                sh_logits = self._safe_masked_logits(sh_logits, masks_sh[sel])
+                values_now = self._safe_tensor(values_now, clamp=1e6)
+                if not torch.isfinite(sh_logits).all() or not torch.isfinite(values_now).all():
+                    if self.debug:
+                        print("[RLBridge] Non-finite minibatch outputs detected; skipping minibatch update.")
+                    continue
                 sh_dist = torch.distributions.Categorical(logits=sh_logits)
         
                 lp_sh = sh_dist.log_prob(acts_sh[sel])              # (bs,)
@@ -518,6 +548,11 @@ class RLBridge:
                 value_loss = 0.5 * torch.mean(torch.max(value_loss_unclipped, value_loss_clipped))
         
                 loss = policy_loss + self.value_coef * value_loss - self.entropy_coef * entropy
+                if not torch.isfinite(loss):
+                    if self.debug:
+                        print("[RLBridge] Non-finite PPO loss detected; skipping minibatch update.")
+                    self.optimizer.zero_grad(set_to_none=True)
+                    continue
         
                 self.optimizer.zero_grad()
                 loss.backward()
