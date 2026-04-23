@@ -14,6 +14,35 @@ import numpy as np
 
 from Core import Core
 
+def _is_colab_runtime() -> bool:
+    if "COLAB_RELEASE_TAG" in os.environ:
+        return True
+    try:
+        import google.colab  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+def _download_files_if_colab(paths):
+    if not _is_colab_runtime():
+        return
+    try:
+        from google.colab import files
+    except Exception as exc:
+        print(f"[COLAB] Could not import google.colab.files: {exc}")
+        return
+
+    seen = set()
+    for path in paths:
+        if not path:
+            continue
+        abspath = os.path.abspath(path)
+        if abspath in seen or not os.path.exists(abspath):
+            continue
+        seen.add(abspath)
+        print(f"[COLAB] Download prompt for: {abspath}")
+        files.download(abspath)
+
 def _aggregate_phase_curves(phase: str, metrics = None, out_name: str = "summary_metrics.png"):
     if metrics is None:
         metrics = ["casualty", "evacuated", "arrival"]
@@ -111,16 +140,16 @@ def Script():
     # (b) RL temporal shelters vs initial shelters only
     _run_replications(machine, eval_replications, "eval_b", "rl", False, overrides)
     _run_replications(machine, eval_replications, "eval_b", "none", False, overrides)
-    _aggregate_strategy_curves("eval_b", "rl", metrics = ["casualty", "evacuated", "mean_evacuation_time"])
-    _aggregate_strategy_curves("eval_b", "none", metrics = ["casualty", "evacuated", "mean_evacuation_time"])
+    eval_b_rl_png = _aggregate_strategy_curves("eval_b", "rl", metrics = ["casualty", "evacuated", "mean_evacuation_time"])
+    eval_b_none_png = _aggregate_strategy_curves("eval_b", "none", metrics = ["casualty", "evacuated", "mean_evacuation_time"])
 
     # (c) Strategy comparison RL vs random vs heuristic
     _run_replications(machine, eval_replications, "eval_c", "rl", False, overrides)
     _run_replications(machine, eval_replications, "eval_c", "random", False, overrides)
     _run_replications(machine, eval_replications, "eval_c", "heuristic", False, overrides)
-    _aggregate_strategy_curves("eval_c", "rl", metrics = ["casualty", "evacuated", "mean_evacuation_time"])
-    _aggregate_strategy_curves("eval_c", "random", metrics = ["casualty", "evacuated", "mean_evacuation_time"])
-    _aggregate_strategy_curves("eval_c", "heuristic", metrics = ["casualty", "evacuated", "mean_evacuation_time"])
+    eval_c_rl_png = _aggregate_strategy_curves("eval_c", "rl", metrics = ["casualty", "evacuated", "mean_evacuation_time"])
+    eval_c_random_png = _aggregate_strategy_curves("eval_c", "random", metrics = ["casualty", "evacuated", "mean_evacuation_time"])
+    eval_c_heuristic_png = _aggregate_strategy_curves("eval_c", "heuristic", metrics = ["casualty", "evacuated", "mean_evacuation_time"])
 
     # Summaries for tables
     compare_tables = []
@@ -150,10 +179,27 @@ def Script():
         late = convergence_df["final_reward_ma"].tail(max(1, len(convergence_df)//3)).mean()
         print(f"[CONVERGENCE] early_mean_reward_ma={early:.4f} late_mean_reward_ma={late:.4f}")
     
+    
     print("\n=== Completed ===")
     print("Training summary graph:", train_png)
     for p in compare_tables:
         print("Comparison summary table:", p)
+        
+    
+    _download_files_if_colab([
+        train_png,
+        eval_b_rl_png,
+        eval_b_none_png,
+        eval_c_rl_png,
+        eval_c_random_png,
+        eval_c_heuristic_png,
+        os.path.join("runs", "train", "rl", "summary_metrics.csv"),
+        os.path.join("runs", "eval_b", "rl", "summary_metrics.csv"),
+        os.path.join("runs", "eval_b", "none", "summary_metrics.csv"),
+        os.path.join("runs", "eval_c", "rl", "summary_metrics.csv"),
+        os.path.join("runs", "eval_c", "random", "summary_metrics.csv"),
+        os.path.join("runs", "eval_c", "heuristic", "summary_metrics.csv"),
+    ] + compare_tables)
         
 if __name__ == "__main__":
     Script()
