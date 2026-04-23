@@ -127,6 +127,8 @@ class RLBridge:
         self.reward_ema = 0.0
         self.reward_var_ema = 1.0
         self.reward_norm_beta = 0.98
+        self.reward_norm_clip = 3.0
+        self.reward_norm_temperature = 2.0
         self.shelter_evac_history = {}
         self.shelter_last_flow = {}
         self.installed_shelter_order = []
@@ -393,7 +395,9 @@ class RLBridge:
         self.reward_ema += (1.0 - self.reward_norm_beta) * delta
         self.reward_var_ema = self.reward_norm_beta * self.reward_var_ema + (1.0 - self.reward_norm_beta) * (delta * delta)
         reward_scale = math.sqrt(max(self.reward_var_ema, 1e-6))
-        r_norm = float((float(r) - self.reward_ema) / reward_scale)
+        r_z = float((float(r) - self.reward_ema) / reward_scale)
+        r_z = float(np.clip(r_z, -self.reward_norm_clip, self.reward_norm_clip))
+        r_norm = float(np.tanh(r_z / self.reward_norm_temperature))
         
         print(
             f"[RL decision] t={self.t} reward={float(r):.3f} "
@@ -418,7 +422,11 @@ class RLBridge:
         ))
         self.t += 1
 
-        return {"reward": float(r), "added_shelters": added_sh}
+        return {
+            "reward": float(r),
+            "reward_norm": float(r_norm),
+            "added_shelters": added_sh,
+        }
 
     # ---- called by Core at episode end ----
     def end_episode(self):

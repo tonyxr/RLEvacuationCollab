@@ -33,6 +33,7 @@ class trainingLog:
             self.csv_writer.writerow([
                 "timestep",
                 "reward",
+                "reward_raw",
                 "arrival",
                 "casualty",
                 "evacuated",
@@ -75,13 +76,15 @@ class trainingLog:
         affected         = int(metrics.get("affected", 0))
         added_shelters   = int(metrics.get("added_shelters", 0))
         mean_evacuation_time = float(metrics.get("mean_evacuation_time", 0.0))
+        reward_raw = float(metrics.get("reward_raw", reward))
         
         self.recent_rewards.append(float(reward))
         reward_ma = self.moving_avg() 
         
         row = [
             int(t),                # timestep
-            float(reward),         # reward
+            float(reward),         # normalized reward for RL convergence curve
+            reward_raw,            # raw reward before normalization
             arrival,
             casualty,
             evacuated,
@@ -98,6 +101,7 @@ class trainingLog:
         if self.tb is not None:
             self.tb.add_scalar("reward/instant", float(reward), global_step=t)
             self.tb.add_scalar("reward/moving_avg", float(reward_ma), global_step=t)
+            self.tb.add_scalar("reward/raw", reward_raw, global_step=t)
 
             self.tb.add_scalar("ped/arrival", arrival, global_step=t)
             self.tb.add_scalar("ped/casualty", casualty, global_step=t)
@@ -137,8 +141,10 @@ class trainingLog:
             df_ma = df["reward"].rolling(window = N, min_periods = 1).mean()
         
         plt.figure()
-        plt.plot(df["timestep"], df["reward"], label="reward")
-        plt.plot(df["timestep"], df_ma, label=f"reward_ma (w={self.window})")
+        plt.plot(df["timestep"], df["reward"], label="reward_norm")
+        plt.plot(df["timestep"], df_ma, label=f"reward_norm_ma (w={self.window})")
+        if "reward_raw" in df.columns:
+            plt.plot(df["timestep"], df["reward_raw"], label="reward_raw", alpha=0.35)
         plt.xlabel("timestep")
         plt.ylabel("reward")
         plt.legend()

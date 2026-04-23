@@ -513,10 +513,11 @@ class Core:
                 "guided": cumuResult.get("guided", 0),
                 "affected": cumuResult.get("affected", 0),
                 "added_shelters": rl_out.get("added_shelters", 0),
+                "reward_raw": float(rl_out.get("reward", 0.0)),
                 "active_remaining": len(self.pedDS.pedAgentList),
             }
             
-            self.logger.log_step(t=time, reward=float(rl_out["reward"]), metrics=metrics)
+            self.logger.log_step(t=time, reward=float(rl_out.get("reward_norm", rl_out.get("reward", 0.0))), metrics=metrics)
             
             if getattr(self.rl, "debug", False) and (time % int(getattr(self.rl, "print_every", 1)) == 0):
                 print(f"[CORE] t={time} | reward={rl_out['reward']:.3f} | "
