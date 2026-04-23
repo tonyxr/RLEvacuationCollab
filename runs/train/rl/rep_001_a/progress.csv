@@ -1,1 +1,2 @@
 timestep,reward,arrival,casualty,evacuated,guided,affected,added_shelters,mean_evacuation_time,reward_ma_window
+1,0.9051482536448664,321.99961270333074,0,0,1,0,0,1,0.0,0.9051482536448664

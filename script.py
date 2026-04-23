@@ -14,6 +14,12 @@ import numpy as np
 
 from Core import Core
 
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+RUNS_ROOT = os.path.join(PROJECT_ROOT, "runs")
+
+def _runs_path(*parts):
+    return os.path.join(RUNS_ROOT, *parts)
+
 def _is_colab_runtime() -> bool:
     if "COLAB_RELEASE_TAG" in os.environ:
         return True
@@ -28,8 +34,14 @@ def _download_files_if_colab(paths):
         return
     try:
         from google.colab import files
+        from IPython import get_ipython
     except Exception as exc:
         print(f"[COLAB] Could not import google.colab.files: {exc}")
+        return
+    
+    ip = get_ipython()
+    if ip is None or getattr(ip, "kernel", None) is None:
+        print("[COLAB] Skipping file downloads: no active IPython kernel detected.")
         return
 
     seen = set()
@@ -41,13 +53,16 @@ def _download_files_if_colab(paths):
             continue
         seen.add(abspath)
         print(f"[COLAB] Download prompt for: {abspath}")
-        files.download(abspath)
+        try:
+            files.download(abspath)
+        except Exception as exc:
+            print(f"[COLAB] Failed to trigger download for {abspath}: {exc}")
 
 def _aggregate_phase_curves(phase: str, metrics = None, out_name: str = "summary_metrics.png"):
     if metrics is None:
         metrics = ["casualty", "evacuated", "arrival"]
     
-    files = sorted(glob.glob(os.path.join("runs", phase, "rep_*", "progress.csv")))
+    files = sorted(glob.glob(_runs_path(phase, "rep_*", "progress.csv")))
     if not files:
         return None
     
@@ -65,7 +80,7 @@ def _aggregate_phase_curves(phase: str, metrics = None, out_name: str = "summary
     cat = pd.concat(merged, ignore_index=True)
     mean_df = cat.groupby("timestep", as_index=False).mean(numeric_only=True)
     
-    out_dir = os.path.join("runs", phase)
+    out_dir = _runs_path(phase)
     os.makedirs(out_dir, exist_ok=True)
     out_csv = os.path.join(out_dir, "summary_metrics.csv")
     mean_df.to_csv(out_csv, index=False)
@@ -89,7 +104,7 @@ def _aggregate_strategy_curves(base_phase: str, strategy: str, metrics = None):
     return _aggregate_phase_curves(phase, metrics = metrics, out_name = f"{strategy}_summary_metrics.png")
 
 def _episode_summary(base_phase: str, strategy: str):
-    files = sorted(glob.glob(os.path.join("runs", base_phase, strategy, "rep_*", "progress.csv")))
+    files = sorted(glob.glob(_runs_path(base_phase, strategy, "rep_*", "progress.csv")))
     rows = []
     for f in files:
         df = pd.read_csv(f)
@@ -163,12 +178,12 @@ def Script():
                 frame_list.append(df)
         if frame_list:
             big = pd.concat(frame_list, ignore_index = True)
-            phase_out = os.path.join("runs", phase, "strategy_summary_by_replication.csv")
+            phase_out = _runs_path(phase, "strategy_summary_by_replication.csv")
             os.makedirs(os.path.dirname(phase_out), exist_ok = True)
             big.to_csv(phase_out, index = False)
 
             mean_df = big.groupby(["phase", "strategy"], as_index = False).mean(numeric_only = True)
-            mean_out = os.path.join("runs", phase, "strategy_summary_mean.csv")
+            mean_out = _runs_path(phase, "strategy_summary_mean.csv")
             mean_df.to_csv(mean_out, index = False)
             compare_tables.append(mean_out)
 
@@ -193,12 +208,12 @@ def Script():
         eval_c_rl_png,
         eval_c_random_png,
         eval_c_heuristic_png,
-        os.path.join("runs", "train", "rl", "summary_metrics.csv"),
-        os.path.join("runs", "eval_b", "rl", "summary_metrics.csv"),
-        os.path.join("runs", "eval_b", "none", "summary_metrics.csv"),
-        os.path.join("runs", "eval_c", "rl", "summary_metrics.csv"),
-        os.path.join("runs", "eval_c", "random", "summary_metrics.csv"),
-        os.path.join("runs", "eval_c", "heuristic", "summary_metrics.csv"),
+        _runs_path("train", "rl", "summary_metrics.csv"),
+        _runs_path("eval_b", "rl", "summary_metrics.csv"),
+        _runs_path("eval_b", "none", "summary_metrics.csv"),
+        _runs_path("eval_c", "rl", "summary_metrics.csv"),
+        _runs_path("eval_c", "random", "summary_metrics.csv"),
+        _runs_path("eval_c", "heuristic", "summary_metrics.csv"),
     ] + compare_tables)
         
 if __name__ == "__main__":
