@@ -1,5 +1,5 @@
 TimeLimit,Address,MaxSpeed,PedNum,HazardNum,CellXNum,CellYNum␊
-240,"Reading, PA, USA",64,2000,1,8,8
+240,"Reading, PA, USA",64,1000,1,8,8
 GuCanNum,ShCanNum,InitShNum,InitGuNum,,,␊
 50,150,5,5,,,
 HazardCasualtyRateMean,HazardCasualtyRateVar,HazardSpreadRateMean,HazardSpreadRateVar,HazardSpeedReductMean,HazardSpeedReductVar,
