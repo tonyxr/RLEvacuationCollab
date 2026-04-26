@@ -54,13 +54,15 @@ class Timer:
         print(f"[TIMER] {label}: {dt:.3f}s")
 
 class Core:
+    
+    # Cache static map infrastructure per address so repeated replications
+    # reuse the same prepared road/building/intersection datasets.
+    _prepared_infra_cache = {}
+    # Cache derived cell boundaries for fixed city + grid dimensions.
+    _cell_partition_cache = {}
+    
     def __init__(self, machine):
         
-        # Cache static map infrastructure per address so repeated replications
-        # reuse the same prepared road/building/intersection datasets.
-        _prepared_infra_cache = {}
-        # Cache derived cell boundaries for fixed city + grid dimensions.
-        _cell_partition_cache = {}
         
         """Input Parameters"""
         # Indicate the total duration of timestep
