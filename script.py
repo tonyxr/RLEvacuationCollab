@@ -29,9 +29,57 @@ def _is_colab_runtime() -> bool:
         return True
     except Exception:
         return False
+    
+def _collect_existing_paths(paths):
+    seen = set()
+    existing = []
+    missing = []
+    for path in paths:
+        if not path:
+            continue
+        abspath = os.path.abspath(path)
+        if abspath in seen:
+            continue
+        seen.add(abspath)
+        if os.path.exists(abspath):
+            existing.append(abspath)
+        else:
+            missing.append(abspath)
+    return existing, missing
+
+def _build_outputs_bundle(paths, bundle_name: str = "colab_outputs_bundle.zip"):
+    downloadables, missing = _collect_existing_paths(paths)
+    bundle_path = _runs_path(bundle_name)
+    os.makedirs(os.path.dirname(bundle_path), exist_ok = True)
+
+    with zipfile.ZipFile(bundle_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for abspath in downloadables:
+            arcname = os.path.relpath(abspath, PROJECT_ROOT)
+            zf.write(abspath, arcname = arcname)
+        manifest = [
+            "# RLEvacuationCollab bundle manifest",
+            f"project_root={PROJECT_ROOT}",
+            f"included_files={len(downloadables)}",
+            f"missing_files={len(missing)}",
+            "",
+            "[included]",
+            *downloadables,
+            "",
+            "[missing]",
+            *missing,
+            "",
+        ]
+        zf.writestr("bundle_manifest.txt", "\n".join(manifest))
+
+    return bundle_path, downloadables, missing
 
 def _download_files_if_colab(paths):
+    bundle_path, downloadables, missing = _build_outputs_bundle(paths)
+    print("[OUTPUT] Bundle path:", bundle_path)
+    if missing:
+        print(f"[OUTPUT] Skipped {len(missing)} missing files while creating bundle.")
     if not _is_colab_runtime():
+        print("[OUTPUT] Non-Colab runtime detected; bundle created for manual use.")
         return
     try:
         from google.colab import files
@@ -40,30 +88,13 @@ def _download_files_if_colab(paths):
         print(f"[COLAB] Could not import google.colab.files: {exc}")
         return
 
-    seen = set()
-    downloadables = []
-    for path in paths:
-        if not path:
-            continue
-        abspath = os.path.abspath(path)
-        if abspath in seen or not os.path.exists(abspath):
-            continue
-        seen.add(abspath)
-        downloadables.append(abspath)
+    print("[COLAB] To download manually in a Colab code cell, run:")
+    print("from google.colab import files")
+    print(f"files.download(r'{bundle_path}')")
 
     ip = get_ipython()
     if ip is None or getattr(ip, "kernel", None) is None:
-        bundle_path = _runs_path("colab_outputs_bundle.zip")
-        os.makedirs(os.path.dirname(bundle_path), exist_ok = True)
-        with zipfile.ZipFile(bundle_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            for abspath in downloadables:
-                arcname = os.path.relpath(abspath, PROJECT_ROOT)
-                zf.write(abspath, arcname = arcname)
-        print("[COLAB] No active IPython kernel; created a bundle instead of browser downloads:")
-        print("[COLAB] Bundle path:", bundle_path)
-        print("[COLAB] To download manually in a Colab code cell, run:")
-        print("from google.colab import files")
-        print(f"files.download(r'{bundle_path}')")
+        print("[COLAB] No active IPython kernel; created a bundle instead of browser downloads.")
         return
 
     for abspath in downloadables:
