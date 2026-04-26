@@ -10,10 +10,8 @@ import os
 import csv
 from collections import deque
 from typing import Dict, Optional
-from torch.utils.tensorboard import SummaryWriter
 
 import pandas as pd
-import matplotlib.pyplot as plt
 
 class trainingLog:
     def __init__(self, run_dir: str = "runs/default", window: int = 100, use_tensorboard: bool = False):
@@ -47,10 +45,8 @@ class trainingLog:
         
         self.tb = None
         if use_tensorboard:
-            try: 
-                self.tb = SummaryWriter(self.run_dir)
-            except Exception:
-                self.tb = None
+            from torch.utils.tensorboard import SummaryWriter
+            self.tb = SummaryWriter(self.run_dir)
                 
     def moving_avg(self) -> float:
         if not self.recent_rewards:
@@ -126,6 +122,7 @@ class trainingLog:
                 pass
             
     def plot_png(self, out_name: str = "reward_curve.png"):
+        import matplotlib.pyplot as plt
         
         if not os.path.exists(self.csv_path):
             return
@@ -153,6 +150,7 @@ class trainingLog:
         plt.close()
         
     def plot_metrics_png(self, out_name: str = "core_metrics_curve.png", metric_cols = None):
+        import matplotlib.pyplot as plt
         if metric_cols is None:
             metric_cols = ["casualty", "evacuated", "arrival"]
         

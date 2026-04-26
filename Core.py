@@ -623,7 +623,5 @@ class Core:
             )
             
         if self.logger is not None:
-            self.logger.plot_png("reward_curve.png")
-            self.logger.plot_metrics_png(out_name = "core_metrics_curve.png", metric_cols = ["casualty", "evacuated", "arrival"])
             self.logger.close()
     

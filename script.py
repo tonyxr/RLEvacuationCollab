@@ -10,7 +10,6 @@ import os
 import glob
 import zipfile
 import pandas as pd
-import matplotlib.pyplot as plt
 import numpy as np
 
 from Core import Core
@@ -131,19 +130,7 @@ def _aggregate_phase_curves(phase: str, metrics = None, out_name: str = "summary
     out_csv = os.path.join(out_dir, "summary_metrics.csv")
     mean_df.to_csv(out_csv, index=False)
     
-    plt.figure()
-    for m in metrics:
-        if m in mean_df.columns:
-            plt.plot(mean_df["timestep"], mean_df[m], label=m)
-    plt.xlabel("timestep")
-    plt.ylabel("mean count across replications")
-    plt.title(f"{phase.upper()} mean curves")
-    plt.legend()
-    plt.tight_layout()
-    out_png = os.path.join(out_dir, out_name)
-    plt.savefig(out_png)
-    plt.close()
-    return out_png
+    return out_csv
 
 def _aggregate_strategy_curves(base_phase: str, strategy: str, metrics = None):
     phase = os.path.join(base_phase, strategy)
@@ -188,7 +175,7 @@ def _run_replications(machine: str, replications: int, phase: str, strategy: str
 def Script():
     machine = "a"
     train_replications = 30
-    eval_replications = 12
+    eval_replications = 10
     
     # user-requested fixed scenario
     overrides = {
@@ -198,40 +185,42 @@ def Script():
     _run_replications(machine, train_replications, "train", "rl", True, overrides)
     train_png = _aggregate_strategy_curves("train", "rl", metrics = ["reward", "reward_ma_window", "casualty", "evacuated"])
 
-    # (b) RL temporal shelters vs initial shelters only
-    _run_replications(machine, eval_replications, "eval_b", "rl", False, overrides)
-    _run_replications(machine, eval_replications, "eval_b", "none", False, overrides)
-    eval_b_rl_png = _aggregate_strategy_curves("eval_b", "rl", metrics = ["casualty", "evacuated", "mean_evacuation_time"])
-    eval_b_none_png = _aggregate_strategy_curves("eval_b", "none", metrics = ["casualty", "evacuated", "mean_evacuation_time"])
-
-    # (c) Strategy comparison RL vs random vs heuristic
-    _run_replications(machine, eval_replications, "eval_c", "rl", False, overrides)
-    _run_replications(machine, eval_replications, "eval_c", "random", False, overrides)
-    _run_replications(machine, eval_replications, "eval_c", "heuristic", False, overrides)
-    eval_c_rl_png = _aggregate_strategy_curves("eval_c", "rl", metrics = ["casualty", "evacuated", "mean_evacuation_time"])
-    eval_c_random_png = _aggregate_strategy_curves("eval_c", "random", metrics = ["casualty", "evacuated", "mean_evacuation_time"])
-    eval_c_heuristic_png = _aggregate_strategy_curves("eval_c", "heuristic", metrics = ["casualty", "evacuated", "mean_evacuation_time"])
+    # (b) Policy comparison: RL vs random vs heuristic vs all shelters installed at t=0
+    compare_phase = "eval_compare"
+    compare_strategies = ["rl", "random", "heuristic", "initial_only"]
+    compare_pngs = {}
+    for strategy in compare_strategies:
+        _run_replications(machine, eval_replications, compare_phase, strategy, False, overrides)
+        compare_pngs[strategy] = _aggregate_strategy_curves(
+            compare_phase,
+            strategy,
+            metrics = ["casualty", "evacuated", "mean_evacuation_time"],
+        )
 
     # Summaries for tables
     compare_tables = []
-    for phase in ["eval_b", "eval_c"]:
-        strategies = ["rl", "none"] if phase == "eval_b" else ["rl", "random", "heuristic"]
-        frame_list = []
-        for s in strategies:
-            df = _episode_summary(phase, s)
-            if df is not None:
-                df["phase"] = phase
-                frame_list.append(df)
-        if frame_list:
-            big = pd.concat(frame_list, ignore_index = True)
-            phase_out = _runs_path(phase, "strategy_summary_by_replication.csv")
-            os.makedirs(os.path.dirname(phase_out), exist_ok = True)
-            big.to_csv(phase_out, index = False)
+    frame_list = []
+    for strategy in compare_strategies:
+        df = _episode_summary(compare_phase, strategy)
+        if df is not None:
+            df["phase"] = compare_phase
+            frame_list.append(df)
+    if frame_list:
+        big = pd.concat(frame_list, ignore_index = True)
+        phase_out = _runs_path(compare_phase, "strategy_summary_by_replication.csv")
+        os.makedirs(os.path.dirname(phase_out), exist_ok = True)
+        big.to_csv(phase_out, index = False)
 
-            mean_df = big.groupby(["phase", "strategy"], as_index = False).mean(numeric_only = True)
-            mean_out = _runs_path(phase, "strategy_summary_mean.csv")
-            mean_df.to_csv(mean_out, index = False)
-            compare_tables.append(mean_out)
+        mean_df = big.groupby(["phase", "strategy"], as_index = False).mean(numeric_only = True)
+        mean_out = _runs_path(compare_phase, "strategy_summary_mean.csv")
+        mean_df.to_csv(mean_out, index = False)
+        compare_tables.append(mean_out)
+
+        perf_cols = ["strategy", "final_casualty", "final_evacuated", "mean_evacuation_time"]
+        printable = mean_df[perf_cols].sort_values(by = "strategy").reset_index(drop = True)
+        print("\n[POLICY COMPARISON] Mean performance over replications")
+        print(printable.to_string(index = False))
+
 
     # Simple convergence check output
     convergence_df = _episode_summary("train", "rl")
@@ -249,17 +238,15 @@ def Script():
     
     _download_files_if_colab([
         train_png,
-        eval_b_rl_png,
-        eval_b_none_png,
-        eval_c_rl_png,
-        eval_c_random_png,
-        eval_c_heuristic_png,
+        compare_pngs.get("rl"),
+        compare_pngs.get("random"),
+        compare_pngs.get("heuristic"),
+        compare_pngs.get("initial_only"),
         _runs_path("train", "rl", "summary_metrics.csv"),
-        _runs_path("eval_b", "rl", "summary_metrics.csv"),
-        _runs_path("eval_b", "none", "summary_metrics.csv"),
-        _runs_path("eval_c", "rl", "summary_metrics.csv"),
-        _runs_path("eval_c", "random", "summary_metrics.csv"),
-        _runs_path("eval_c", "heuristic", "summary_metrics.csv"),
+        _runs_path(compare_phase, "rl", "summary_metrics.csv"),
+        _runs_path(compare_phase, "random", "summary_metrics.csv"),
+        _runs_path(compare_phase, "heuristic", "summary_metrics.csv"),
+        _runs_path(compare_phase, "initial_only", "summary_metrics.csv"),
     ] + compare_tables)
         
 if __name__ == "__main__":
