@@ -8,6 +8,7 @@ Created on Tue Nov 18 16:16:55 2025
 
 import os
 import glob
+import zipfile
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
@@ -38,13 +39,9 @@ def _download_files_if_colab(paths):
     except Exception as exc:
         print(f"[COLAB] Could not import google.colab.files: {exc}")
         return
-    
-    ip = get_ipython()
-    if ip is None or getattr(ip, "kernel", None) is None:
-        print("[COLAB] Skipping file downloads: no active IPython kernel detected.")
-        return
 
     seen = set()
+    downloadables = []
     for path in paths:
         if not path:
             continue
@@ -52,6 +49,24 @@ def _download_files_if_colab(paths):
         if abspath in seen or not os.path.exists(abspath):
             continue
         seen.add(abspath)
+        downloadables.append(abspath)
+
+    ip = get_ipython()
+    if ip is None or getattr(ip, "kernel", None) is None:
+        bundle_path = _runs_path("colab_outputs_bundle.zip")
+        os.makedirs(os.path.dirname(bundle_path), exist_ok = True)
+        with zipfile.ZipFile(bundle_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for abspath in downloadables:
+                arcname = os.path.relpath(abspath, PROJECT_ROOT)
+                zf.write(abspath, arcname = arcname)
+        print("[COLAB] No active IPython kernel; created a bundle instead of browser downloads:")
+        print("[COLAB] Bundle path:", bundle_path)
+        print("[COLAB] To download manually in a Colab code cell, run:")
+        print("from google.colab import files")
+        print(f"files.download(r'{bundle_path}')")
+        return
+
+    for abspath in downloadables:
         print(f"[COLAB] Download prompt for: {abspath}")
         try:
             files.download(abspath)
