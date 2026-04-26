@@ -56,6 +56,12 @@ class Timer:
 class Core:
     def __init__(self, machine):
         
+        # Cache static map infrastructure per address so repeated replications
+        # reuse the same prepared road/building/intersection datasets.
+        _prepared_infra_cache = {}
+        # Cache derived cell boundaries for fixed city + grid dimensions.
+        _cell_partition_cache = {}
+        
         """Input Parameters"""
         # Indicate the total duration of timestep
         self.stopTime = 0
@@ -203,23 +209,38 @@ class Core:
         self.run_dir = os.path.join(phase_dir, f"rep_{int(replication):03d}_{machine}")
         os.makedirs(self.run_dir, exist_ok = True)
         
-        # Call OSMProcessor to get relevant map data
-        self.OSMProcessor = OSMProcessor(self.address, verbose = self.verbose)
-        
-        # Call relevant OSMProcessor functions in order
-        # Extract all relevant map data and setup the node, edges, intersection, buildings dataset
-        # locationDrive is the overall container of all map data
-        self.OSMProcessor.setLocationDrive()
-        print("Network geometry extracted")
-        # NOTE: OSMProcessor.setNetworkFeature() is intentionally skipped here:
-        # it is not consumed downstream in the simulation path and is very expensive.
-        # formally establish the node and edge set
-        self.OSMProcessor.setNodeEdgeSets()
-        print("Nodes and edge sets extracted")
-        # get intersection and building sets ready
-        self.OSMProcessor.setIntersectionStreetCount()
-        self.OSMProcessor.setBuildingOnly()
-        self.OSMProcessor.setIntersectionOnly()
+        # Reuse static map infrastructure across replications that share
+        # the same city/address. Only dynamic agents (pedestrians/hazards)
+        # are regenerated each replication.
+        infra_cache_key = str(self.address).strip()
+        cached_infra = Core._prepared_infra_cache.get(infra_cache_key)
+        if cached_infra is None:
+            self.OSMProcessor = OSMProcessor(self.address, verbose = self.verbose)
+
+            # Call relevant OSMProcessor functions in order
+            # Extract all relevant map data and setup the node, edges, intersection, buildings dataset
+            # locationDrive is the overall container of all map data
+            self.OSMProcessor.setLocationDrive()
+            print("Network geometry extracted")
+            # NOTE: OSMProcessor.setNetworkFeature() is intentionally skipped here:
+            # it is not consumed downstream in the simulation path and is very expensive.
+            # formally establish the node and edge set
+            self.OSMProcessor.setNodeEdgeSets()
+            print("Nodes and edge sets extracted")
+            # get intersection and building sets ready
+            self.OSMProcessor.setIntersectionStreetCount()
+            self.OSMProcessor.setBuildingOnly()
+            self.OSMProcessor.setIntersectionOnly()
+
+            # Keep one prepared static infrastructure object and reuse it.
+            # This avoids repeated download/sorting and also avoids expensive
+            # deep-copy of large NetworkX/GeoPandas objects per replication.
+            Core._prepared_infra_cache[infra_cache_key] = self.OSMProcessor
+            print(f"[INFRA CACHE] Prepared static map infrastructure for '{infra_cache_key}'")
+        else:
+            self.OSMProcessor = cached_infra
+            self.OSMProcessor.verbose = bool(self.verbose)
+            print(f"[INFRA CACHE] Reusing static map infrastructure for '{infra_cache_key}'")
         
         # check if have enough shelter and guidance candidates in the network
         """
@@ -253,14 +274,8 @@ class Core:
         self.hazardDS.setCellTracker(self.cellTracker)
 
         
-        x_vals = []
-        y_vals = []
-        for _, data in self.OSMProcessor.nodeList:
-            lon = float(data["x"])
-            lat = float(data["y"])
-            x_m, y_m = self.mapDS.coordToMeters(lon, lat)
-            x_vals.append(float(x_m))
-            y_vals.append(float(y_m))
+        partition_cache_key = (infra_cache_key, int(self.cellX), int(self.cellY))
+        cached_partition = Core._cell_partition_cache.get(partition_cache_key)
         
         def _axis_stats(vals):
             if not vals:
@@ -275,11 +290,6 @@ class Core:
             if vmax <= vmin:
                 vmax = vmin + 1.0
             return vmin, vmax
-
-        xMin, xMax = _axis_stats(x_vals)
-        yMin, yMax = _axis_stats(y_vals)
-        xLength = float(xMax - xMin)
-        yLength = float(yMax - yMin)
 
         # Build adaptive cell boundaries from actual node distribution in meter space.
         # Use observed axis min/max instead of global bbox anchors so partitions
@@ -304,8 +314,45 @@ class Core:
             return list(edges)
         
         
-        x_edges = _adaptive_edges(x_vals, int(self.cellX), xMin, xMax)
-        y_edges = _adaptive_edges(y_vals, int(self.cellY), yMin, yMax)
+        if cached_partition is None:
+            x_vals = []
+            y_vals = []
+            for _, data in self.OSMProcessor.nodeList:
+                lon = float(data["x"])
+                lat = float(data["y"])
+                x_m, y_m = self.mapDS.coordToMeters(lon, lat)
+                x_vals.append(float(x_m))
+                y_vals.append(float(y_m))
+
+            xMin, xMax = _axis_stats(x_vals)
+            yMin, yMax = _axis_stats(y_vals)
+            xLength = float(xMax - xMin)
+            yLength = float(yMax - yMin)
+
+            x_edges = _adaptive_edges(x_vals, int(self.cellX), xMin, xMax)
+            y_edges = _adaptive_edges(y_vals, int(self.cellY), yMin, yMax)
+            cached_partition = {
+                "xLength": xLength,
+                "yLength": yLength,
+                "xMin": xMin,
+                "xMax": xMax,
+                "yMin": yMin,
+                "yMax": yMax,
+                "x_edges": x_edges,
+                "y_edges": y_edges,
+            }
+            Core._cell_partition_cache[partition_cache_key] = cached_partition
+            print(f"[INFRA CACHE] Prepared cell partitions for {partition_cache_key}")
+        else:
+            xLength = float(cached_partition["xLength"])
+            yLength = float(cached_partition["yLength"])
+            xMin = float(cached_partition["xMin"])
+            xMax = float(cached_partition["xMax"])
+            yMin = float(cached_partition["yMin"])
+            yMax = float(cached_partition["yMax"])
+            x_edges = list(cached_partition["x_edges"])
+            y_edges = list(cached_partition["y_edges"])
+            print(f"[INFRA CACHE] Reusing cell partitions for {partition_cache_key}")
 
         print("network X span (occupied): ", xLength)
         print("network Y span (occupied): ", yLength)
