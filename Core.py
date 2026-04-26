@@ -146,6 +146,7 @@ class Core:
         self.verbose = False
         self.profile_timing = False
         self.optimize_guidance = False
+        self.targetActiveShelters = 0
 
     """Getter Functions"""
     
@@ -351,6 +352,19 @@ class Core:
             print("Guidance optimization disabled: skipping initial guidance installation.")
                 
         self.shelterDS.shelterPerCell(self.cellTracker, self.cellX, self.cellY)
+        available_shelters = int(self.shelterDS.remainingCandidateCount())
+        shelter_action_interval = 5
+        deploy_windows = 0
+        if int(self.stopTime) > 1:
+            deploy_windows = ((int(self.stopTime) - 2) // shelter_action_interval) + 1
+        dynamic_budget = int(self.initShelterVol) + int(deploy_windows)
+        self.targetActiveShelters = int(min(max(0, available_shelters), max(int(self.initShelterVol), dynamic_budget)))
+        if str(deployment_strategy).strip().lower() in {"none", "initial_only"}:
+            self.shelterDS.initVol = int(self.targetActiveShelters)
+            print(
+                f"[SHELTER FAIRNESS] strategy={deployment_strategy} pre-deploying "
+                f"{self.shelterDS.initVol} initial shelters to match end-of-episode shelter budget."
+            )
         self.shelterDS.initShelter()
         if self.verbose:
             print("Shelters list: ", self.shelterDS.shelterList)
@@ -393,6 +407,7 @@ class Core:
             optimizer_name = str(self.optimizer),
             max_episode_steps = int(self.stopTime),
             deployment_strategy = deployment_strategy,
+            target_active_shelters = int(self.targetActiveShelters),
         )
         self.logger = trainingLog(run_dir = self.run_dir, window = 100, use_tensorboard = False)
         

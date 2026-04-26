@@ -56,7 +56,8 @@ class RLBridge:
                  optimizer_name: str = "Adam",
                  max_episode_steps: int = 120,
                  no_reroute_patience: int = 3,
-                 deployment_strategy: str = "rl"):
+                 deployment_strategy: str = "rl",
+                 target_active_shelters: int = 0):
         
         self.core = core
         self.gamma = gamma; self.lam = lam
@@ -76,6 +77,7 @@ class RLBridge:
         self.max_episode_steps = max(1, int(max_episode_steps))
         self.no_reroute_patience = max(1, int(no_reroute_patience))
         self.deployment_strategy = str(deployment_strategy).strip().lower()
+        self.target_active_shelters = max(0, int(target_active_shelters))
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.rew = RewardProcessor(mode=mode)
@@ -307,16 +309,27 @@ class RLBridge:
         immediate_rerouted_count = 0.0
         shelter_decision = "no-op"
         shelter_gate_open = ((self.t % self.shelter_action_interval) == 0)
-        if self.stop_new_shelter_install or self.deployment_strategy in {"none", "initial_only"}:
+        current_active_shelters = int(len(self.core.shelterDS.shelterList))
+        shelter_budget_reached = (
+            self.target_active_shelters > 0 and current_active_shelters >= self.target_active_shelters
+        )
+        if shelter_budget_reached:
             a_sh = torch.as_tensor([self.num_cells], dtype=torch.long, device=self.device)
             sh_logits, _ = self.policy(g)
             masked_logits = self._safe_masked_logits(sh_logits, action_mask)
             sh_dist = torch.distributions.Categorical(logits=masked_logits)
             lp_sh = sh_dist.log_prob(a_sh)
             shelter_decision = (
-                f"no-op (installation halted after {self.consecutive_no_reroute_installs} "
-                f"zero-reroute installs)"
+                f"no-op (shelter budget reached: active={current_active_shelters}/"
+                f"{self.target_active_shelters})"
             )
+        elif self.deployment_strategy in {"none", "initial_only"}:
+            a_sh = torch.as_tensor([self.num_cells], dtype=torch.long, device=self.device)
+            sh_logits, _ = self.policy(g)
+            masked_logits = self._safe_masked_logits(sh_logits, action_mask)
+            sh_dist = torch.distributions.Categorical(logits=masked_logits)
+            lp_sh = sh_dist.log_prob(a_sh)
+            shelter_decision = "no-op (initial shelters only strategy)"
         elif shelter_gate_open and self.deployment_strategy in {"random", "heuristic"}:
             if self.deployment_strategy == "random":
                 picked_idx = self._random_pick_cell_idx(action_mask)
@@ -331,34 +344,43 @@ class RLBridge:
             lp_sh = sh_dist.log_prob(a_sh)
             if picked_idx >= self.num_cells:
                 shelter_decision += " no-op (no valid candidate cell)"
-        elif shelter_gate_open and int(a_sh.item()) < self.num_cells:
-            attempted_sh = 1
-            cell = self._idx_to_cell(int(a_sh.item()), self.ny)
-            sid = self.core.shelterDS.newShelter({"cell": cell}, self.core.cellTracker)
-            if sid is not None:
-                added_sh = 1
-                rerouted = 0
-                ped_ds = getattr(self.core, "pedDS", None)
-                new_sh = self.core.shelterDS.shelterList.get(sid)
-                installed_capacity = float(max(0.0, getattr(new_sh, "shelterCap", 0.0))) if new_sh is not None else 0.0
-                self.installed_shelter_order.append(sid)
-                if ped_ds is not None and hasattr(ped_ds, "reroute_to_new_shelter_if_closer"):
-                    try:
-                        rerouted = int(ped_ds.reroute_to_new_shelter_if_closer(new_sh))
-                    except Exception:
-                        rerouted = 0
-                immediate_rerouted_count = float(max(0, rerouted))
-                self.shelter_install_step[sid] = int(self.t)
-                self.shelter_rerouted_count[sid] = int(max(0, rerouted))
-                if rerouted > 0:
-                    self.consecutive_no_reroute_installs = 0
-                else:
-                    self.consecutive_no_reroute_installs += 1
-                    if self.consecutive_no_reroute_installs >= self.no_reroute_patience:
-                        self.stop_new_shelter_install = True
-                shelter_decision = f"installed shelter_id={sid} at cell={cell} rerouted={rerouted}"
+        elif shelter_gate_open:
+            if int(a_sh.item()) >= self.num_cells:
+                fallback_idx = self._heuristic_pick_cell_idx()
+                a_sh = torch.as_tensor([fallback_idx], dtype=torch.long, device=self.device)
+                sh_logits, _ = self.policy(g)
+                masked_logits = self._safe_masked_logits(sh_logits, action_mask)
+                sh_dist = torch.distributions.Categorical(logits=masked_logits)
+                lp_sh = sh_dist.log_prob(a_sh)
+                shelter_decision = "policy-noop overridden to keep shelter budget on track"
+            if int(a_sh.item()) >= self.num_cells:
+                shelter_decision = "no-op (no valid candidate cell)"
             else:
-                shelter_decision = f"attempted install at cell={cell} (no candidate available)"
+                attempted_sh = 1
+                cell = self._idx_to_cell(int(a_sh.item()), self.ny)
+                sid = self.core.shelterDS.newShelter({"cell": cell}, self.core.cellTracker)
+                if sid is not None:
+                    added_sh = 1
+                    rerouted = 0
+                    ped_ds = getattr(self.core, "pedDS", None)
+                    new_sh = self.core.shelterDS.shelterList.get(sid)
+                    installed_capacity = float(max(0.0, getattr(new_sh, "shelterCap", 0.0))) if new_sh is not None else 0.0
+                    self.installed_shelter_order.append(sid)
+                    if ped_ds is not None and hasattr(ped_ds, "reroute_to_new_shelter_if_closer"):
+                        try:
+                            rerouted = int(ped_ds.reroute_to_new_shelter_if_closer(new_sh))
+                        except Exception:
+                            rerouted = 0
+                    immediate_rerouted_count = float(max(0, rerouted))
+                    self.shelter_install_step[sid] = int(self.t)
+                    self.shelter_rerouted_count[sid] = int(max(0, rerouted))
+                    if rerouted > 0:
+                        self.consecutive_no_reroute_installs = 0
+                    else:
+                        self.consecutive_no_reroute_installs += 1
+                    shelter_decision = f"installed shelter_id={sid} at cell={cell} rerouted={rerouted}"
+                else:
+                    shelter_decision = f"attempted install at cell={cell} (no candidate available)"
         elif not shelter_gate_open:
             # Force no-op action on non-deployment timesteps.
             a_sh = torch.as_tensor([self.num_cells], dtype=torch.long, device=self.device)
@@ -386,6 +408,7 @@ class RLBridge:
                 delayedNewShelterEvac=delayed_new_shelter_evac,
                 reroutedArrivalSpeedScore=rerouted_arrival_speed_score,
                 immediateReroutedCount=immediate_rerouted_count,
+                strandedCount=int(len(getattr(self.core.pedDS, "pedAgentList", []))),
             )
         else:
             # no new reward signal this step
