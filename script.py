@@ -48,6 +48,21 @@ def _collect_existing_paths(paths):
 
 def _build_outputs_bundle(paths, bundle_name: str = "colab_outputs_bundle.zip"):
     downloadables, missing = _collect_existing_paths(paths)
+    patterns = [
+        _runs_path("**", "*.csv"),
+        _runs_path("**", "*.png"),
+        _runs_path("**", "*.json"),
+        _runs_path("**", "*.txt"),
+        _runs_path("**", "*.log"),
+        _runs_path("**", "*.pt"),
+        _runs_path("**", "*.pth"),
+        _runs_path("**", "*.pkl"),
+        _runs_path("**", "*.npy"),
+        _runs_path("**", "*.npz"),
+    ]
+    for p in patterns:
+        downloadables.extend(glob.glob(p, recursive = True))
+    downloadables, missing = _collect_existing_paths(downloadables + paths)
     bundle_path = _runs_path(bundle_name)
     os.makedirs(os.path.dirname(bundle_path), exist_ok = True)
 
@@ -130,7 +145,26 @@ def _aggregate_phase_curves(phase: str, metrics = None, out_name: str = "summary
     out_csv = os.path.join(out_dir, "summary_metrics.csv")
     mean_df.to_csv(out_csv, index=False)
     
-    return out_csv
+    plot_cols = [m for m in metrics if m in mean_df.columns]
+    out_png = None
+    if plot_cols:
+        import matplotlib.pyplot as plt
+        fig, axes = plt.subplots(len(plot_cols), 1, figsize = (10, 4 * len(plot_cols)), sharex = True)
+        if len(plot_cols) == 1:
+            axes = [axes]
+        for ax, metric in zip(axes, plot_cols):
+            ax.plot(mean_df["timestep"], mean_df[metric], label = metric)
+            ax.set_title(f"{metric} (mean over replications)")
+            ax.set_ylabel(metric)
+            ax.grid(True, alpha = 0.3)
+            ax.legend()
+        axes[-1].set_xlabel("timestep")
+        fig.tight_layout()
+        out_png = os.path.join(out_dir, out_name)
+        fig.savefig(out_png, dpi = 150, bbox_inches = "tight")
+        plt.close(fig)
+    
+    return out_png if out_png is not None else out_csv
 
 def _aggregate_strategy_curves(base_phase: str, strategy: str, metrics = None):
     phase = os.path.join(base_phase, strategy)
@@ -231,6 +265,33 @@ def _plot_pairwise_metric_groups(base_phase: str, groups, metrics, out_dir_name:
         fig.savefig(out_path, dpi = 150, bbox_inches = "tight")
         plt.close(fig)
         saved_paths.append(out_path)
+        
+        # Individual metric files: 4 graphs per group
+        metric_dir = os.path.join(out_dir, group_name)
+        os.makedirs(metric_dir, exist_ok = True)
+        for metric in metrics:
+            fig_m, ax_m = plt.subplots(1, 1, figsize = (10, 4))
+            has_curve = False
+            for strategy, df in curve_by_strategy.items():
+                if metric not in df.columns:
+                    continue
+                ax_m.plot(df["timestep"], df[metric], label = strategy)
+                has_curve = True
+            if not has_curve:
+                plt.close(fig_m)
+                continue
+            ax_m.set_title(f"{group_name}: {metric} (mean over 12 replications)")
+            ax_m.set_xlabel("timestep")
+            ax_m.set_ylabel(metric)
+            ax_m.grid(True, alpha = 0.3)
+            ax_m.legend()
+            ax_m.set_xlim(x_min, x_max)
+            metric_path = os.path.join(metric_dir, f"{metric}.png")
+            fig_m.tight_layout()
+            fig_m.savefig(metric_path, dpi = 150, bbox_inches = "tight")
+            plt.close(fig_m)
+            saved_paths.append(metric_path)
+
 
     return saved_paths
 
