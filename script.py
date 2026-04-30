@@ -186,7 +186,53 @@ def _plot_strategy_comparison_curves(base_phase: str, strategies, metrics = None
     plt.close(fig)
     return out_path
 
+def _plot_pairwise_metric_groups(base_phase: str, groups, metrics, out_dir_name: str = "policy_pairwise_groups",
+                                 x_min: int = 0, x_max: int = 240):
+    import matplotlib.pyplot as plt
 
+    out_dir = _runs_path(base_phase, out_dir_name)
+    os.makedirs(out_dir, exist_ok = True)
+    saved_paths = []
+
+    for group_name, strategies in groups.items():
+        curve_by_strategy = {}
+        for strategy in strategies:
+            csv_path = _runs_path(base_phase, strategy, "summary_metrics.csv")
+            if not os.path.exists(csv_path):
+                continue
+            df = pd.read_csv(csv_path)
+            keep = ["timestep"] + [m for m in metrics if m in df.columns]
+            if len(keep) <= 1:
+                continue
+            curve_by_strategy[strategy] = df[keep].copy()
+
+        if not curve_by_strategy:
+            continue
+
+        fig, axes = plt.subplots(len(metrics), 1, figsize = (10, 4 * len(metrics)), sharex = True)
+        if len(metrics) == 1:
+            axes = [axes]
+
+        for ax, metric in zip(axes, metrics):
+            for strategy, df in curve_by_strategy.items():
+                if metric not in df.columns:
+                    continue
+                ax.plot(df["timestep"], df[metric], label = strategy)
+            ax.set_title(f"{group_name}: {metric} (mean over 12 replications)")
+            ax.set_ylabel(metric)
+            ax.grid(True, alpha = 0.3)
+            ax.legend()
+            ax.set_xlim(x_min, x_max)
+
+        axes[-1].set_xlabel("timestep")
+        fig.tight_layout()
+
+        out_path = os.path.join(out_dir, f"{group_name}.png")
+        fig.savefig(out_path, dpi = 150, bbox_inches = "tight")
+        plt.close(fig)
+        saved_paths.append(out_path)
+
+    return saved_paths
 
 def _episode_summary(base_phase: str, strategy: str):
     files = sorted(glob.glob(_runs_path(base_phase, strategy, "rep_*", "progress.csv")))
@@ -246,14 +292,29 @@ def Script():
         compare_pngs[strategy] = _aggregate_strategy_curves(
             compare_phase,
             strategy,
-            metrics = ["casualty", "mean_evacuation_time", "total_shelter_capacity", "shelter_utilization"],
+            metrics = ["casualty", "evacuated", "mean_evacuation_time", "shelter_utilization"],
         )
         
     compare_overlay_png = _plot_strategy_comparison_curves(
         compare_phase,
         compare_strategies,
-        metrics = ["casualty", "mean_evacuation_time", "total_shelter_capacity", "shelter_utilization"],
+        metrics = ["casualty", "evacuated", "mean_evacuation_time", "shelter_utilization"],
         out_name = "strategy_comparison_overlay.png",
+    )
+    
+    pairwise_groups = {
+        "group_1_rl_vs_one_time_installation": ["rl", "initial_only"],
+        "group_2_rl_vs_random": ["rl", "random"],
+        "group_3_rl_vs_heuristic": ["rl", "heuristic"],
+        "group_4_all_policies": ["rl", "initial_only", "random", "heuristic"],
+    }
+    pairwise_group_pngs = _plot_pairwise_metric_groups(
+        compare_phase,
+        pairwise_groups,
+        metrics = ["casualty", "evacuated", "mean_evacuation_time", "shelter_utilization"],
+        out_dir_name = "policy_pairwise_groups",
+        x_min = 0,
+        x_max = 240,
     )
 
     # Summaries for tables
@@ -308,6 +369,7 @@ def Script():
         _runs_path(compare_phase, "heuristic", "summary_metrics.csv"),
         _runs_path(compare_phase, "initial_only", "summary_metrics.csv"),
         compare_overlay_png,
+        *pairwise_group_pngs,
     ] + compare_tables)
         
 if __name__ == "__main__":
