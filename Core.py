@@ -579,7 +579,13 @@ class Core:
                 "added_shelters": rl_out.get("added_shelters", 0),
                 "reward_raw": float(rl_out.get("reward", 0.0)),
                 "active_remaining": len(self.pedDS.pedAgentList),
+                "mean_evacuation_time": float(getattr(self.pedDS, "mean_evacuation_time", lambda: 0.0)()),
+                "total_shelter_capacity": float(sum(getattr(sh, "shelterCap", 0.0) for sh in self.shelterDS.shelterList.values())),
+                "shelter_utilization": 0.0,
             }
+            total_capacity = float(metrics["total_shelter_capacity"])
+            total_flow = float(sum(getattr(sh, "shelterFlow", 0.0) for sh in self.shelterDS.shelterList.values()))
+            metrics["shelter_utilization"] = (total_flow / total_capacity) if total_capacity > 0.0 else 0.0
             
             self.logger.log_step(t=time, reward=float(rl_out.get("reward_norm", rl_out.get("reward", 0.0))), metrics=metrics)
             

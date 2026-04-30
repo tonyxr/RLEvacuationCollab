@@ -39,6 +39,8 @@ class trainingLog:
                 "affected",
                 "added_shelters",
                 "mean_evacuation_time",
+                "total_shelter_capacity",
+                "shelter_utilization",
                 "reward_ma_window"
             ])
             self.csv_file.flush()
@@ -72,6 +74,8 @@ class trainingLog:
         affected         = int(metrics.get("affected", 0))
         added_shelters   = int(metrics.get("added_shelters", 0))
         mean_evacuation_time = float(metrics.get("mean_evacuation_time", 0.0))
+        total_shelter_capacity = float(metrics.get("total_shelter_capacity", 0.0))
+        shelter_utilization = float(metrics.get("shelter_utilization", 0.0))
         reward_raw = float(metrics.get("reward_raw", reward))
         
         self.recent_rewards.append(float(reward))
@@ -88,6 +92,8 @@ class trainingLog:
             affected,
             added_shelters,
             mean_evacuation_time,
+            total_shelter_capacity,
+            shelter_utilization,
             float(reward_ma),      # moving average window
         ]
         
@@ -107,6 +113,8 @@ class trainingLog:
 
             self.tb.add_scalar("actions/added_shelters", added_shelters, global_step=t)
             self.tb.add_scalar("ped/mean_evacuation_time", mean_evacuation_time, global_step=t)
+            self.tb.add_scalar("shelter/total_capacity", total_shelter_capacity, global_step=t)
+            self.tb.add_scalar("shelter/utilization", shelter_utilization, global_step=t)
     
     def close(self):
         try:

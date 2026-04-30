@@ -136,6 +136,58 @@ def _aggregate_strategy_curves(base_phase: str, strategy: str, metrics = None):
     phase = os.path.join(base_phase, strategy)
     return _aggregate_phase_curves(phase, metrics = metrics, out_name = f"{strategy}_summary_metrics.png")
 
+
+
+def _plot_strategy_comparison_curves(base_phase: str, strategies, metrics = None, out_name: str = "strategy_comparison.png"):
+    import matplotlib.pyplot as plt
+
+    if metrics is None:
+        metrics = ["casualty", "mean_evacuation_time", "total_shelter_capacity", "shelter_utilization"]
+
+    curve_by_strategy = {}
+    for strategy in strategies:
+        csv_path = _runs_path(base_phase, strategy, "summary_metrics.csv")
+        if not os.path.exists(csv_path):
+            continue
+        df = pd.read_csv(csv_path)
+        keep = ["timestep"] + [m for m in metrics if m in df.columns]
+        if len(keep) <= 1:
+            continue
+        curve_by_strategy[strategy] = df[keep].copy()
+
+    if not curve_by_strategy:
+        return None
+
+    plot_metrics = [m for m in metrics if any(m in df.columns for df in curve_by_strategy.values())]
+    if not plot_metrics:
+        return None
+
+    fig, axes = plt.subplots(len(plot_metrics), 1, figsize = (10, 4 * len(plot_metrics)), sharex = True)
+    if len(plot_metrics) == 1:
+        axes = [axes]
+
+    for ax, metric in zip(axes, plot_metrics):
+        for strategy, df in curve_by_strategy.items():
+            if metric not in df.columns:
+                continue
+            ax.plot(df["timestep"], df[metric], label = strategy)
+        ax.set_title(f"{metric} (mean over replications)")
+        ax.set_ylabel(metric)
+        ax.grid(True, alpha = 0.3)
+        ax.legend()
+
+    axes[-1].set_xlabel("timestep")
+    fig.suptitle(f"Strategy comparison ({base_phase})", y = 1.02)
+    fig.tight_layout()
+
+    out_path = _runs_path(base_phase, out_name)
+    os.makedirs(os.path.dirname(out_path), exist_ok = True)
+    fig.savefig(out_path, dpi = 150, bbox_inches = "tight")
+    plt.close(fig)
+    return out_path
+
+
+
 def _episode_summary(base_phase: str, strategy: str):
     files = sorted(glob.glob(_runs_path(base_phase, strategy, "rep_*", "progress.csv")))
     rows = []
@@ -175,7 +227,7 @@ def _run_replications(machine: str, replications: int, phase: str, strategy: str
 def Script():
     machine = "a"
     train_replications = 30
-    eval_replications = 10
+    eval_replications = 12
     
     # user-requested fixed scenario
     overrides = {
@@ -194,8 +246,15 @@ def Script():
         compare_pngs[strategy] = _aggregate_strategy_curves(
             compare_phase,
             strategy,
-            metrics = ["casualty", "evacuated", "mean_evacuation_time"],
+            metrics = ["casualty", "mean_evacuation_time", "total_shelter_capacity", "shelter_utilization"],
         )
+        
+    compare_overlay_png = _plot_strategy_comparison_curves(
+        compare_phase,
+        compare_strategies,
+        metrics = ["casualty", "mean_evacuation_time", "total_shelter_capacity", "shelter_utilization"],
+        out_name = "strategy_comparison_overlay.png",
+    )
 
     # Summaries for tables
     compare_tables = []
@@ -234,6 +293,7 @@ def Script():
     print("Training summary graph:", train_png)
     for p in compare_tables:
         print("Comparison summary table:", p)
+    print("Comparison overlay graph:", compare_overlay_png)
         
     
     _download_files_if_colab([
@@ -247,6 +307,7 @@ def Script():
         _runs_path(compare_phase, "random", "summary_metrics.csv"),
         _runs_path(compare_phase, "heuristic", "summary_metrics.csv"),
         _runs_path(compare_phase, "initial_only", "summary_metrics.csv"),
+        compare_overlay_png,
     ] + compare_tables)
         
 if __name__ == "__main__":
