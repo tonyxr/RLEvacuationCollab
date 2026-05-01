@@ -8,7 +8,6 @@ Created on Tue Nov 18 16:16:55 2025
 
 import os
 import glob
-import zipfile
 import pandas as pd
 import numpy as np
 
@@ -29,94 +28,29 @@ def _is_colab_runtime() -> bool:
     except Exception:
         return False
     
-def _collect_existing_paths(paths):
-    seen = set()
-    existing = []
-    missing = []
-    for path in paths:
-        if not path:
-            continue
-        abspath = os.path.abspath(path)
-        if abspath in seen:
-            continue
-        seen.add(abspath)
-        if os.path.exists(abspath):
-            existing.append(abspath)
-        else:
-            missing.append(abspath)
-    return existing, missing
 
-def _build_outputs_bundle(paths, bundle_name: str = "colab_outputs_bundle.zip"):
-    downloadables, missing = _collect_existing_paths(paths)
-    patterns = [
-        _runs_path("**", "*.csv"),
-        _runs_path("**", "*.png"),
-        _runs_path("**", "*.json"),
-        _runs_path("**", "*.txt"),
-        _runs_path("**", "*.log"),
-        _runs_path("**", "*.pt"),
-        _runs_path("**", "*.pth"),
-        _runs_path("**", "*.pkl"),
-        _runs_path("**", "*.npy"),
-        _runs_path("**", "*.npz"),
-    ]
-    for p in patterns:
-        downloadables.extend(glob.glob(p, recursive = True))
-    downloadables, missing = _collect_existing_paths(downloadables + paths)
-    bundle_path = _runs_path(bundle_name)
-    os.makedirs(os.path.dirname(bundle_path), exist_ok = True)
-
-    with zipfile.ZipFile(bundle_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for abspath in downloadables:
-            arcname = os.path.relpath(abspath, PROJECT_ROOT)
-            zf.write(abspath, arcname = arcname)
-        manifest = [
-            "# RLEvacuationCollab bundle manifest",
-            f"project_root={PROJECT_ROOT}",
-            f"included_files={len(downloadables)}",
-            f"missing_files={len(missing)}",
-            "",
-            "[included]",
-            *downloadables,
-            "",
-            "[missing]",
-            *missing,
-            "",
-        ]
-        zf.writestr("bundle_manifest.txt", "\n".join(manifest))
-
-    return bundle_path, downloadables, missing
-
-def _download_files_if_colab(paths):
-    bundle_path, downloadables, missing = _build_outputs_bundle(paths)
-    print("[OUTPUT] Bundle path:", bundle_path)
-    if missing:
-        print(f"[OUTPUT] Skipped {len(missing)} missing files while creating bundle.")
+def _print_graph_outputs(group_metric_pngs: dict):
+    print("\n[GRAPH OUTPUTS] 4 groups x 4 graphs each (printed below)")
+    ordered_group_names = sorted(group_metric_pngs.keys())
+    for idx, group_name in enumerate(ordered_group_names, start = 1):
+        metric_map = group_metric_pngs[group_name]
+        print(f"\nGroup {idx}: {group_name}")
+        for metric_name, path in metric_map.items():
+            print(f"  - {metric_name}: {path}")
+        print(f"  -> graph_count={len(metric_map)}")
     if not _is_colab_runtime():
-        print("[OUTPUT] Non-Colab runtime detected; bundle created for manual use.")
         return
     try:
-        from google.colab import files
-        from IPython import get_ipython
+        from IPython.display import Image, display
     except Exception as exc:
-        print(f"[COLAB] Could not import google.colab.files: {exc}")
+        print(f"[GRAPH OUTPUTS] Could not import IPython display: {exc}")
         return
-
-    print("[COLAB] To download manually in a Colab code cell, run:")
-    print("from google.colab import files")
-    print(f"files.download(r'{bundle_path}')")
-
-    ip = get_ipython()
-    if ip is None or getattr(ip, "kernel", None) is None:
-        print("[COLAB] No active IPython kernel; created a bundle instead of browser downloads.")
-        return
-
-    for abspath in downloadables:
-        print(f"[COLAB] Download prompt for: {abspath}")
-        try:
-            files.download(abspath)
-        except Exception as exc:
-            print(f"[COLAB] Failed to trigger download for {abspath}: {exc}")
+    
+    for idx, group_name in enumerate(ordered_group_names, start = 1):
+        print(f"\n=== Group {idx} inline display: {group_name} ===")
+        for metric_name, path in group_metric_pngs[group_name].items():
+            print(f"[{metric_name}] {path}")
+            display(Image(filename = path))
 
 def _aggregate_phase_curves(phase: str, metrics = None, out_name: str = "summary_metrics.png"):
     if metrics is None:
@@ -227,6 +161,7 @@ def _plot_pairwise_metric_groups(base_phase: str, groups, metrics, out_dir_name:
     out_dir = _runs_path(base_phase, out_dir_name)
     os.makedirs(out_dir, exist_ok = True)
     saved_paths = []
+    grouped_metric_pngs = {}
 
     for group_name, strategies in groups.items():
         curve_by_strategy = {}
@@ -269,6 +204,7 @@ def _plot_pairwise_metric_groups(base_phase: str, groups, metrics, out_dir_name:
         # Individual metric files: 4 graphs per group
         metric_dir = os.path.join(out_dir, group_name)
         os.makedirs(metric_dir, exist_ok = True)
+        grouped_metric_pngs[group_name] = {}
         for metric in metrics:
             fig_m, ax_m = plt.subplots(1, 1, figsize = (10, 4))
             has_curve = False
@@ -291,9 +227,10 @@ def _plot_pairwise_metric_groups(base_phase: str, groups, metrics, out_dir_name:
             fig_m.savefig(metric_path, dpi = 150, bbox_inches = "tight")
             plt.close(fig_m)
             saved_paths.append(metric_path)
+            grouped_metric_pngs[group_name][metric] = metric_path
 
 
-    return saved_paths
+    return saved_paths, grouped_metric_pngs
 
 def _episode_summary(base_phase: str, strategy: str):
     files = sorted(glob.glob(_runs_path(base_phase, strategy, "rep_*", "progress.csv")))
@@ -369,7 +306,7 @@ def Script():
         "group_3_rl_vs_heuristic": ["rl", "heuristic"],
         "group_4_all_policies": ["rl", "initial_only", "random", "heuristic"],
     }
-    pairwise_group_pngs = _plot_pairwise_metric_groups(
+    pairwise_group_pngs, pairwise_group_metric_pngs = _plot_pairwise_metric_groups(
         compare_phase,
         pairwise_groups,
         metrics = ["casualty", "evacuated", "mean_evacuation_time", "shelter_utilization"],
@@ -416,22 +353,18 @@ def Script():
     for p in compare_tables:
         print("Comparison summary table:", p)
     print("Comparison overlay graph:", compare_overlay_png)
-        
     
-    _download_files_if_colab([
-        train_png,
-        compare_pngs.get("rl"),
-        compare_pngs.get("random"),
-        compare_pngs.get("heuristic"),
-        compare_pngs.get("initial_only"),
-        _runs_path("train", "rl", "summary_metrics.csv"),
-        _runs_path(compare_phase, "rl", "summary_metrics.csv"),
-        _runs_path(compare_phase, "random", "summary_metrics.csv"),
-        _runs_path(compare_phase, "heuristic", "summary_metrics.csv"),
-        _runs_path(compare_phase, "initial_only", "summary_metrics.csv"),
-        compare_overlay_png,
-        *pairwise_group_pngs,
-    ] + compare_tables)
+    expected_groups = 4
+    expected_graphs_per_group = 4
+    actual_groups = len(pairwise_group_metric_pngs)
+    if actual_groups != expected_groups:
+        raise RuntimeError(f"Expected {expected_groups} groups, got {actual_groups}.")
+    for group_name, metric_map in pairwise_group_metric_pngs.items():
+        if len(metric_map) != expected_graphs_per_group:
+            raise RuntimeError(
+                f"Expected {expected_graphs_per_group} metric plots for {group_name}, got {len(metric_map)}."
+            )
+    _print_graph_outputs(pairwise_group_metric_pngs)
         
 if __name__ == "__main__":
     Script()
