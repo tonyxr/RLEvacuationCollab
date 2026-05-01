@@ -13,6 +13,22 @@ from typing import Dict, Optional
 
 import pandas as pd
 
+CSV_COLUMNS = [
+    "timestep",
+    "reward",
+    "reward_raw",
+    "arrival",
+    "casualty",
+    "evacuated",
+    "guided",
+    "affected",
+    "added_shelters",
+    "mean_evacuation_time",
+    "total_shelter_capacity",
+    "shelter_utilization",
+    "reward_ma_window",
+]
+
 class trainingLog:
     def __init__(self, run_dir: str = "runs/default", window: int = 100, use_tensorboard: bool = False):
         self.run_dir = run_dir
@@ -22,33 +38,45 @@ class trainingLog:
         self.recent_rewards = deque(maxlen=self.window)
         
         self.csv_path = os.path.join(self.run_dir, "progress.csv")
+        self._ensure_csv_schema()
         
         self._csv_new_file = not os.path.exists(self.csv_path)
         self.csv_file = open(self.csv_path, "a", newline = "")
         self.csv_writer = csv.writer(self.csv_file)
         
         if self._csv_new_file:
-            self.csv_writer.writerow([
-                "timestep",
-                "reward",
-                "reward_raw",
-                "arrival",
-                "casualty",
-                "evacuated",
-                "guided",
-                "affected",
-                "added_shelters",
-                "mean_evacuation_time",
-                "total_shelter_capacity",
-                "shelter_utilization",
-                "reward_ma_window"
-            ])
+            self.csv_writer.writerow(CSV_COLUMNS)
             self.csv_file.flush()
         
         self.tb = None
         if use_tensorboard:
             from torch.utils.tensorboard import SummaryWriter
             self.tb = SummaryWriter(self.run_dir)
+            
+    def _ensure_csv_schema(self):
+        if not os.path.exists(self.csv_path):
+            return
+        try:
+            with open(self.csv_path, "r", newline = "") as fh:
+                reader = csv.reader(fh)
+                header = next(reader, None)
+        except Exception:
+            return
+
+        if header == CSV_COLUMNS:
+            return
+
+        legacy_path = f"{self.csv_path}.legacy"
+        idx = 1
+        while os.path.exists(legacy_path):
+            idx += 1
+            legacy_path = f"{self.csv_path}.legacy{idx}"
+        os.replace(self.csv_path, legacy_path)
+        print(
+            f"[trainingLog] Detected CSV schema mismatch. Archived legacy file to {legacy_path} "
+            f"and starting a fresh progress.csv with schema v2.",
+            flush=True,
+        )
                 
     def moving_avg(self) -> float:
         if not self.recent_rewards:

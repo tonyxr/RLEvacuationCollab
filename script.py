@@ -51,6 +51,44 @@ def _print_graph_outputs(group_metric_pngs: dict):
         for metric_name, path in group_metric_pngs[group_name].items():
             print(f"[{metric_name}] {path}")
             display(Image(filename = path))
+            
+def _read_progress_csv(path: str):
+    """Read progress logs robustly across schema revisions and malformed rows."""
+    import csv
+
+    with open(path, "r", newline="") as fh:
+        reader = csv.reader(fh)
+        header = next(reader, None)
+        if not header:
+            return pd.DataFrame()
+
+        rows = []
+        has_reward_raw = "reward_raw" in header
+        if ("reward" in header) and (not has_reward_raw):
+            reward_idx = header.index("reward")
+        else:
+            reward_idx = -1
+        width = len(header)
+
+        for row in reader:
+            if not row:
+                continue
+            if len(row) == width + 1 and reward_idx >= 0:
+                # Legacy header missing reward_raw, but row contains it.
+                row = row[: reward_idx + 1] + row[reward_idx + 2 :]
+            elif len(row) < width:
+                row = row + [""] * (width - len(row))
+            elif len(row) > width:
+                row = row[:width]
+            rows.append(row)
+
+    df = pd.DataFrame(rows, columns=header)
+    for col in df.columns:
+        try:
+            df[col] = pd.to_numeric(df[col])
+        except Exception:
+            pass
+    return df
 
 def _aggregate_phase_curves(phase: str, metrics = None, out_name: str = "summary_metrics.png"):
     if metrics is None:
@@ -62,7 +100,7 @@ def _aggregate_phase_curves(phase: str, metrics = None, out_name: str = "summary
     
     merged = []
     for f in files:
-        df = pd.read_csv(f)
+        df = _read_progress_csv(f)
         keep = ["timestep"] + [m for m in metrics if m in df.columns]
         if len(keep) <= 1:
             continue
@@ -104,8 +142,6 @@ def _aggregate_strategy_curves(base_phase: str, strategy: str, metrics = None):
     phase = os.path.join(base_phase, strategy)
     return _aggregate_phase_curves(phase, metrics = metrics, out_name = f"{strategy}_summary_metrics.png")
 
-
-
 def _plot_strategy_comparison_curves(base_phase: str, strategies, metrics = None, out_name: str = "strategy_comparison.png"):
     import matplotlib.pyplot as plt
 
@@ -117,7 +153,7 @@ def _plot_strategy_comparison_curves(base_phase: str, strategies, metrics = None
         csv_path = _runs_path(base_phase, strategy, "summary_metrics.csv")
         if not os.path.exists(csv_path):
             continue
-        df = pd.read_csv(csv_path)
+        df = _read_progress_csv(csv_path)
         keep = ["timestep"] + [m for m in metrics if m in df.columns]
         if len(keep) <= 1:
             continue
@@ -169,7 +205,7 @@ def _plot_pairwise_metric_groups(base_phase: str, groups, metrics, out_dir_name:
             csv_path = _runs_path(base_phase, strategy, "summary_metrics.csv")
             if not os.path.exists(csv_path):
                 continue
-            df = pd.read_csv(csv_path)
+            df = _read_progress_csv(csv_path)
             keep = ["timestep"] + [m for m in metrics if m in df.columns]
             if len(keep) <= 1:
                 continue
@@ -236,7 +272,7 @@ def _episode_summary(base_phase: str, strategy: str):
     files = sorted(glob.glob(_runs_path(base_phase, strategy, "rep_*", "progress.csv")))
     rows = []
     for f in files:
-        df = pd.read_csv(f)
+        df = _read_progress_csv(f)
         if df.empty:
             continue
         last = df.iloc[-1]
