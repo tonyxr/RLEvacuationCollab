@@ -90,7 +90,10 @@ def _read_progress_csv(path: str):
             pass
     return df
 
-def _aggregate_phase_curves(phase: str, metrics = None, out_name: str = "summary_metrics.png"):
+def _aggregate_phase_curves(phase: str, metrics = None, out_name: str = "summary_metrics.png",
+                            expected_replications: int | None = None,
+                            full_timestep_range = None,
+                            plot_timestep_range = None):
     if metrics is None:
         metrics = ["casualty", "evacuated", "arrival"]
     
@@ -98,13 +101,24 @@ def _aggregate_phase_curves(phase: str, metrics = None, out_name: str = "summary
     if not files:
         return None
     
+    if expected_replications is not None and len(files) != expected_replications:
+        raise RuntimeError(
+            f"Expected {expected_replications} replications for {phase}, found {len(files)}."
+        )
+    
     merged = []
     for f in files:
         df = _read_progress_csv(f)
         keep = ["timestep"] + [m for m in metrics if m in df.columns]
         if len(keep) <= 1:
             continue
-        merged.append(df[keep].copy())
+        one = df[keep].copy()
+        one = one.sort_values("timestep").drop_duplicates(subset=["timestep"], keep="last")
+        if full_timestep_range is not None:
+            tmin, tmax = full_timestep_range
+            target = pd.RangeIndex(tmin, tmax + 1, name = "timestep")
+            one = one.set_index("timestep").reindex(target).sort_index().ffill().fillna(0.0).reset_index()
+        merged.append(one)
     
     if not merged:
         return None
@@ -130,6 +144,8 @@ def _aggregate_phase_curves(phase: str, metrics = None, out_name: str = "summary
             ax.set_ylabel(metric)
             ax.grid(True, alpha = 0.3)
             ax.legend()
+            if plot_timestep_range is not None:
+                ax.set_xlim(plot_timestep_range[0], plot_timestep_range[1])
         axes[-1].set_xlabel("timestep")
         fig.tight_layout()
         out_png = os.path.join(out_dir, out_name)
@@ -138,11 +154,22 @@ def _aggregate_phase_curves(phase: str, metrics = None, out_name: str = "summary
     
     return out_png if out_png is not None else out_csv
 
-def _aggregate_strategy_curves(base_phase: str, strategy: str, metrics = None):
+def _aggregate_strategy_curves(base_phase: str, strategy: str, metrics = None,
+                               expected_replications: int | None = None,
+                               full_timestep_range = None,
+                               plot_timestep_range = None):
     phase = os.path.join(base_phase, strategy)
-    return _aggregate_phase_curves(phase, metrics = metrics, out_name = f"{strategy}_summary_metrics.png")
+    return _aggregate_phase_curves(
+        phase,
+        metrics = metrics,
+        out_name = f"{strategy}_summary_metrics.png",
+        expected_replications = expected_replications,
+        full_timestep_range = full_timestep_range,
+        plot_timestep_range = plot_timestep_range,
+    )
 
-def _plot_strategy_comparison_curves(base_phase: str, strategies, metrics = None, out_name: str = "strategy_comparison.png"):
+def _plot_strategy_comparison_curves(base_phase: str, strategies, metrics = None, out_name: str = "strategy_comparison.png",
+                                     x_min: int | None = None, x_max: int | None = None):
     import matplotlib.pyplot as plt
 
     if metrics is None:
@@ -179,6 +206,8 @@ def _plot_strategy_comparison_curves(base_phase: str, strategies, metrics = None
         ax.set_ylabel(metric)
         ax.grid(True, alpha = 0.3)
         ax.legend()
+        if x_min is not None and x_max is not None:
+            ax.set_xlim(x_min, x_max)
 
     axes[-1].set_xlabel("timestep")
     fig.suptitle(f"Strategy comparison ({base_phase})", y = 1.02)
@@ -327,6 +356,9 @@ def Script():
             compare_phase,
             strategy,
             metrics = ["casualty", "evacuated", "mean_evacuation_time", "shelter_utilization"],
+            expected_replications = eval_replications,
+            full_timestep_range = (0, 240),
+            plot_timestep_range = (0, 240),
         )
         
     compare_overlay_png = _plot_strategy_comparison_curves(
@@ -334,6 +366,8 @@ def Script():
         compare_strategies,
         metrics = ["casualty", "evacuated", "mean_evacuation_time", "shelter_utilization"],
         out_name = "strategy_comparison_overlay.png",
+        x_min = 0,
+        x_max = 240,
     )
     
     pairwise_groups = {
