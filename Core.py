@@ -22,7 +22,6 @@ import torch
 from OSMProcessor import OSMProcessor
 from MapDatabase import MapDS
 from HazardDatabase import HazardDS
-from GuidanceDatabase import GuidanceDS
 from ShelterDatabase import ShelterDS
 from PedestrianDatabase import PedDS
 from CAProcessor import CellTracker
@@ -127,9 +126,6 @@ class Core:
         
         # Pointer for the CellularAutomataTracker
         self.cellTracker = None
-        
-        # Pointer for the GuidanceDatabase
-        self.guidanceDS = None
         
         # Pointer for the ShelterDatabase
         self.shelterDS = None
@@ -244,22 +240,6 @@ class Core:
             self.OSMProcessor.verbose = bool(self.verbose)
             print(f"[INFRA CACHE] Reusing static map infrastructure for '{infra_cache_key}'")
         
-        # check if have enough shelter and guidance candidates in the network
-        """
-        networkGuidanceCanVol = self.OSMProcessor.getGuidanceCan()
-        print("Detected guidance can volume: ", networkGuidanceCanVol)
-        networkShelterCanVol = self.OSMProcessor.getShelterCanVol()
-        print("Detected shelter can volume: ", networkShelterCanVol)
-
-        if self.guidanceCanVol >= networkGuidanceCanVol:
-            self.guidanceCanVol = networkGuidanceCanVol
-            print("Not enough guidance candidates in the network, volume of guidance candidate adjusted to network!")
-
-        if self.shelterCanVol >= networkShelterCanVol:
-            self.shelterCanVol = networkShelterCanVol
-            print("Not enough shelter candidates in the network, volume of shelter candidate adjusted to network!")
-        """
-        
         # Initialize instances of processing modules
         self.mapDS = MapDS(self.OSMProcessor.nodeList, self.OSMProcessor.edgeList, self.address, self.OSMProcessor.locationDrive)
         self.pedDS = PedDS(self.pedVol)
@@ -267,7 +247,6 @@ class Core:
         self.cellTracker = CellTracker(self.cellX, self.cellY)
         self.forceTracker = ForceProcessor()
         self.shelterDS = ShelterDS(self.shelterCanVol, self.initShelterVol)
-        self.guidanceDS = GuidanceDS(self.guidanceCanVol, self.initGuidanceVol)
         
         # Call initializing functions here, functions needed at t = 0 (follow old model, with additions)
         self.mapDS.computeConvertUnit()
@@ -386,18 +365,8 @@ class Core:
         
         self.forceTracker.setupCellTracker(self.cellTracker)
         
-        self.guidanceDS.guidanceCanList = self.mapDS.guidanceCanList
-        print(f"Guidance candidates detected: {len(self.guidanceDS.guidanceCanList)}")
         self.shelterDS.shelterCanList = self.mapDS.shelterCanList
         print(f"Shelter candidates detected: {len(self.shelterDS.shelterCanList)}")
-
-        self.guidanceDS.pointPerCell(self.cellTracker, self.cellX, self.cellY)
-        if self.optimize_guidance:
-            self.guidanceDS.initGuidance()
-            if self.verbose:
-                print("Guidance Points list: ", self.guidanceDS.guidanceList)
-        else:
-            print("Guidance optimization disabled: skipping initial guidance installation.")
                 
         self.shelterDS.shelterPerCell(self.cellTracker, self.cellX, self.cellY)
         available_shelters = int(self.shelterDS.remainingCandidateCount())
@@ -421,7 +390,6 @@ class Core:
         
         self.pedDS.initPedestrianAgent(self.mapDS, self.cellTracker, self.maxSpeed)
         
-        self.guidanceDS.guidanceByOSMID = {gu.nodeMapped.OSMID: gu for gu in self.guidanceDS.guidanceList.values()}  
         self.shelterDS.shelterByOSMID   = {sh.nodeMapped.OSMID: sh for sh in self.shelterDS.shelterList.values()}    
         
         self.pedDS.checkReady(mapDS = self.mapDS,
@@ -429,7 +397,6 @@ class Core:
                               maxSpeed = self.maxSpeed,
                               hazardDS = self.hazardDS,
                               shelterDS = self.shelterDS,
-                              guidanceDS = self.guidanceDS,
                               forceTracker = self.forceTracker)
 
         rl_lr = float(self.learningRate) if self.learningRate > 0 else 3e-4
@@ -543,8 +510,8 @@ class Core:
             if tmr is not None: tmr.lap("hazard.smokeUpdate")
 
             # === PED/GU/SH LOOKUPS ===
-            self.pedDS.loadGuShLookup(None, self.shelterDS.shelterByOSMID)
-            if tmr is not None: tmr.lap("ped.loadGuShLookup")
+            self.pedDS.loadShelterLookup(self.shelterDS.shelterByOSMID)
+            if tmr is not None: tmr.lap("ped.loadShelterLookup")
 
             # === PEDESTRIAN INTERACTIONS ===
             self.pedDS.pedestrianHazardInteraction()

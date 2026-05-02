@@ -33,7 +33,6 @@ class PedDS:
         self.cellTracker = None
         self.hazardDS = None
         self.shelterDS = None
-        self.guidanceDS = None
         self.forceTracker = None
         
         """Other key parameters"""
@@ -284,7 +283,7 @@ class PedDS:
     
     """Competency check for other related processors"""
     def checkReady(self, mapDS = None, cellTracker = None, maxSpeed = None, 
-                   hazardDS = None, shelterDS = None, guidanceDS = None, forceTracker = None):
+                   hazardDS = None, shelterDS = None, forceTracker = None):
         
         if mapDS is not None: self.mapDS = mapDS
         if cellTracker is not None: self.cellTracker = cellTracker
@@ -294,8 +293,6 @@ class PedDS:
         if shelterDS is not None:
             self.shelterDS = shelterDS
             self._shelter_osmid_map = {sh.nodeMapped.OSMID: sh for sh in self.shelterDS.shelterList.values()}
-        if guidanceDS is not None:
-            self.guidanceDS = guidanceDS
         if forceTracker is not None: self.forceTracker = forceTracker
     
     """This function is called at the start of the interaction process at each timestep to document all interaction events at this timestep"""
@@ -332,7 +329,7 @@ class PedDS:
         return ((0.0, 0.0), 0.0) if d == 0.0 else ((dx/d, dy/d), d)
     
     """Load in the guidance and shelter lookup table from their respective databases"""
-    def loadGuShLookup(self, guByOSMID, shByOSMID):
+    def loadShelterLookup(self, shByOSMID):
         self.shelter_osmid_map = shByOSMID
     
     """This function handles pedestrian agent's interaction with guidance points and shelters"""
@@ -404,13 +401,11 @@ class PedDS:
         self.maxSpeed = float(maxSpeed)
         
         pedID = 0
+        group_id = 0
         group_sizes = self._sample_group_sizes(self.pedNum, min_size = 1, max_size = 50)
         
         for gsize in group_sizes:
-            
-            # Step 1: assign the new pedestrian agent ID, ID pointer + 1 for each iteration so agents have different IDs.
-            agentID = pedID
-            pedID += 1
+            group_id += 1
             #print("Current agent id, ", str(pedID))
             
             # Step 2: Call MapDatabase's AssignGenerationNode and AssignTermination node to get $p_i$'s start and end node. 
@@ -441,26 +436,22 @@ class PedDS:
             arrival = False
             terminated = False
             
-            newAgent = Pedestrian(agentID, assignedRoute, currNode, currEdge, currCell, lastX, 
-                                  lastY, currSpeed, affected, atNode, casualty, evacuated, arrival, terminated)
-            
-            newAgent.group_id = int(birthNode.OSMID)
-            newAgent.group_size = int(max(1, gsize))
-            self.groups[newAgent.group_id].add(agentID)
-            
-            newAgent.edge_remain = 0.0 # at node, edge_remain = 0
-            newAgent.edge_vec = None
-            newAgent.edge_dest_node = None    
-            newAgent.desired_speed = float(self.maxSpeed)
-            
-            self.pedAgentList[agentID] = newAgent
-            
-            """
-            if self.shelterDS is not None:
-                self._shelter_osmid_map = {sh.nodeMapped.OSMID: sh for sh in self.shelterDS.shelterList.values()}
-            if self.guidanceDS is not None:
-                self._guidance_osmid_map = {gu.nodeMapped.OSMID: gu for gu in self.guidanceDS.guidanceList.values()}
-            """
+            for _ in range(int(max(1, gsize))):
+                agentID = pedID
+                pedID += 1
+                newAgent = Pedestrian(agentID, assignedRoute, currNode, currEdge, currCell, lastX, 
+                                      lastY, currSpeed, affected, atNode, casualty, evacuated, arrival, terminated)
+
+                newAgent.group_id = int(group_id)
+                newAgent.group_size = int(max(1, gsize))
+                self.groups[newAgent.group_id].add(agentID)
+
+                newAgent.edge_remain = 0.0 # at node, edge_remain = 0
+                newAgent.edge_vec = None
+                newAgent.edge_dest_node = None    
+                newAgent.desired_speed = float(self.maxSpeed)
+
+                self.pedAgentList[agentID] = newAgent
             
     def terminatePedestrianAgent(self, ped, event: str):
         """
