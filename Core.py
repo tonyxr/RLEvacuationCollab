@@ -375,7 +375,6 @@ class Core:
             "smokeByCell",
             "dangerLevelByCell",
             "shelterFulfillByCell",
-            "guidanceInterByCell",   # or guidanceByCell — whichever you chose in (B)
             "wellnessPenaltyByCell",
         ]:
             _init_vec(wire)
@@ -458,7 +457,7 @@ class Core:
             deployment_strategy = deployment_strategy,
             target_active_shelters = int(self.targetActiveShelters),
         )
-        self.logger = trainingLog(run_dir = self.run_dir, window = 100, use_tensorboard = False)
+        self.logger = trainingLog(run_dir = self.run_dir, window = 100, use_tensorboard = False, write_csv = False)
         
         self.simulationEnumerator()
         
@@ -544,7 +543,7 @@ class Core:
             if tmr is not None: tmr.lap("hazard.smokeUpdate")
 
             # === PED/GU/SH LOOKUPS ===
-            self.pedDS.loadGuShLookup(self.guidanceDS.guidanceByOSMID, self.shelterDS.shelterByOSMID)
+            self.pedDS.loadGuShLookup(None, self.shelterDS.shelterByOSMID)
             if tmr is not None: tmr.lap("ped.loadGuShLookup")
 
             # === PEDESTRIAN INTERACTIONS ===
@@ -574,7 +573,6 @@ class Core:
                 "arrival": cumuResult.get("arrival", 0),
                 "casualty": cumuResult.get("casualty", 0),
                 "evacuated": cumuResult.get("evacuated", 0),
-                "guided": cumuResult.get("guided", 0),
                 "affected": cumuResult.get("affected", 0),
                 "added_shelters": rl_out.get("added_shelters", 0),
                 "reward_raw": float(rl_out.get("reward", 0.0)),
@@ -592,12 +590,12 @@ class Core:
             if getattr(self.rl, "debug", False) and (time % int(getattr(self.rl, "print_every", 1)) == 0):
                 print(f"[CORE] t={time} | reward={rl_out['reward']:.3f} | "
                       f"arr={metrics['arrival']} cas={metrics['casualty']} evac={metrics['evacuated']} "
-                      f"guided={metrics['guided']} affected={metrics['affected']} | "
+                      f"affected={metrics['affected']} | "
                       f"added_sh={metrics['added_shelters']}")
             if tmr is not None: tmr.lap("logger.log_step")
        
             for name in ["countByCell","avgVelocityByCell","heatByCell","smokeByCell",
-                "dangerLevelByCell","shelterFulfillByCell","guidanceInterByCell","wellnessPenaltyByCell"]:
+                "dangerLevelByCell","shelterFulfillByCell","wellnessPenaltyByCell"]:
                 arr = getattr(self.cellTracker, name, None)
                 if arr is None or len(np.asarray(arr).reshape(-1)) != (self.cellX * self.cellY):
                     print(f"[WIRE CHECK] {name} missing or wrong length")

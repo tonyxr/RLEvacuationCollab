@@ -89,7 +89,7 @@ class RLBridge:
         # feature dims chosen from CAProcessor wires
         self.d_ped = 2       # count, avg_vel
         self.d_haz = 3       # heat, smoke, danger
-        self.d_inf = 3       # fulfill, guided, wellness
+        self.d_inf = 2       # fulfill, wellness
 
         self.policy = EvacPolicy(
             d_ped=self.d_ped, d_hazard=self.d_haz, d_infra=self.d_inf,
@@ -248,9 +248,8 @@ class RLBridge:
 
         inf = torch.stack([
             _flat(ct.shelterFulfillByCell),
-            _flat(ct.guidanceInterByCell),
             _flat(ct.wellnessPenaltyByCell),
-        ], dim=-1)                                     # (N,3)
+        ], dim=-1)                                     # (N,2)
         
         ped = self._safe_tensor(ped, clamp=1e6)
         haz = self._safe_tensor(haz, clamp=1e6)

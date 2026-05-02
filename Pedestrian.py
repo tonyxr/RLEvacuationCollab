@@ -8,7 +8,7 @@
 """
 
 class Pedestrian:
-    def __init__(self, agentID, routeFollowing, currNode, currEdge, currCell, lastX, lastY, currSpeed, affected, atNode, casualty, evacuated, arrival, terminated, guided):
+    def __init__(self, agentID, routeFollowing, currNode, currEdge, currCell, lastX, lastY, currSpeed, affected, atNode, casualty, evacuated, arrival, terminated):
         # The unique identifier of the pedestrian agent
         self.agentID = agentID
         # Pointer to the route entity the pedestrian agent is currently following
@@ -35,6 +35,7 @@ class Pedestrian:
         self.desired_speed = 0.0
         
         self.group_id = 0
+        self.group_size = 1
         
         """Binary statuses"""
         # Whether the agent is affected by any hazard
@@ -49,8 +50,6 @@ class Pedestrian:
         self.arrival = arrival 
         # Whether the agent has terminated from the network due to arrival, successful evacuation, or casualty
         self.terminated = terminated
-        # Whether the agent has interacted with any guidance point
-        self.guided = guided
         
         self.edge_dest_node = None
     
@@ -96,9 +95,6 @@ class Pedestrian:
     
     def getTerminatedStatus(self):
         return self.terminated
-    
-    def getGuidedStatus(self):
-        return self.guided
     
     """Calculation functions"""
     def updateSpeed(self, forceTotal):

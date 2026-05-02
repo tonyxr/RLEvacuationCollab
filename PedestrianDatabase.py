@@ -25,8 +25,6 @@ class PedDS:
         self.numCasualty = {}
         # the total number of successful evacuations at each timestep
         self.numEvacuated = {}
-        # the total number of successul guidances at each timestep
-        self.numGuided = {}
         # the total number of pedestrian agents impacted by any hazards at each timestep
         self.numAffected = {}
         
@@ -47,8 +45,8 @@ class PedDS:
         # (after the system is more stablized)
         self.docuStart = False
         # temporal container of event statistics at the current timestep
-        self._step = dict(arrival=0, casualty=0, evacuated=0, guided=0, affected=0)
-        self.result = dict(arrival = 0, casualty = 0, evacuated = 0, guided = 0, affected = 0)
+        self._step = dict(arrival=0, casualty=0, evacuated=0, affected=0)
+        self.result = dict(arrival = 0, casualty = 0, evacuated = 0, affected = 0)
         self.evacuationTimeSum = 0.0
         self.evacuationCount = 0
         
@@ -57,9 +55,21 @@ class PedDS:
         self._default_speed_reduct  = {0: 0.0, 1: 0.025,  2: 0.05, 3: 0.10, 4: 0.12, 5: 0.25}
         
         self.shelter_osmid_map = None
-        self.guidance_osmid_map = None
         
         self.groups = defaultdict(set)
+        
+        
+    def _sample_group_sizes(self, total_population: int, min_size: int = 1, max_size: int = 50):
+        remaining = int(max(0, total_population))
+        if remaining <= 0:
+            return []
+        sizes = []
+        while remaining > 0:
+            sampled = int(np.random.randint(min_size, max_size + 1))
+            gsize = int(min(remaining, sampled))
+            sizes.append(gsize)
+            remaining -= gsize
+        return sizes
         
     
     def _speed_floor_value(self):
@@ -286,13 +296,12 @@ class PedDS:
             self._shelter_osmid_map = {sh.nodeMapped.OSMID: sh for sh in self.shelterDS.shelterList.values()}
         if guidanceDS is not None:
             self.guidanceDS = guidanceDS
-            self._guidance_osmid_map = {gu.nodeMapped.OSMID: gu for gu in self.guidanceDS.guidanceList.values()}
         if forceTracker is not None: self.forceTracker = forceTracker
     
     """This function is called at the start of the interaction process at each timestep to document all interaction events at this timestep"""
     def startDocument(self):
         if not self.docuStart:
-            self._step = dict(arrival=0, casualty=0, evacuated=0, guided=0, affected=0)
+            self._step = dict(arrival=0, casualty=0, evacuated=0, affected=0)
             self.docuStart = True
             
     """Update the interaction events happened in the current timestep to the overall status set"""
@@ -311,7 +320,6 @@ class PedDS:
         self.numArrival[t] = self.result['arrival']
         self.numCasualty[t] = self.result['casualty']
         self.numEvacuated[t] = self.result["evacuated"]
-        self.numGuided[t] = self.result["guided"]
         self.numAffected[t] = self.result["affected"]
         
         self.currTime += 1
@@ -326,7 +334,6 @@ class PedDS:
     """Load in the guidance and shelter lookup table from their respective databases"""
     def loadGuShLookup(self, guByOSMID, shByOSMID):
         self.shelter_osmid_map = shByOSMID
-        self.guidance_osmid_map = guByOSMID
     
     """This function handles pedestrian agent's interaction with guidance points and shelters"""
     def arrive_node(self, ped, node):
@@ -339,18 +346,6 @@ class PedDS:
         ped.currCell = self.cellTracker.locateCell(ped.lastX, ped.lastY)
         
         osmid = node.OSMID
-        
-        # guidance encounter
-        if self.guidance_osmid_map and osmid in self.guidance_osmid_map.keys():
-            gu = self.guidance_osmid_map[osmid]
-            if not ped.guided:
-                ped.guided = True
-                self.bump("guided", 1)
-            if self.guidanceDS and self.mapDS and self.shelterDS:
-                try: 
-                    self.guidanceDS.updateGuidePointFlow(ped, gu, self.mapDS, self.shelterDS)
-                except Exception:
-                    pass
         
         # shelter arrival
         if self.shelter_osmid_map and osmid in self.shelter_osmid_map and self.shelterDS:
@@ -409,8 +404,9 @@ class PedDS:
         self.maxSpeed = float(maxSpeed)
         
         pedID = 0
+        group_sizes = self._sample_group_sizes(self.pedNum, min_size = 1, max_size = 50)
         
-        for _ in range(self.pedNum):
+        for gsize in group_sizes:
             
             # Step 1: assign the new pedestrian agent ID, ID pointer + 1 for each iteration so agents have different IDs.
             agentID = pedID
@@ -444,12 +440,12 @@ class PedDS:
             evacuated = False
             arrival = False
             terminated = False
-            guided = False
             
             newAgent = Pedestrian(agentID, assignedRoute, currNode, currEdge, currCell, lastX, 
-                                  lastY, currSpeed, affected, atNode, casualty, evacuated, arrival, terminated, guided)
+                                  lastY, currSpeed, affected, atNode, casualty, evacuated, arrival, terminated)
             
             newAgent.group_id = int(birthNode.OSMID)
+            newAgent.group_size = int(max(1, gsize))
             self.groups[newAgent.group_id].add(agentID)
             
             newAgent.edge_remain = 0.0 # at node, edge_remain = 0
@@ -481,17 +477,18 @@ class PedDS:
         # Step 1: (if statement) Check if casualty, if so, casualty count += 1. Set p_i's casualty and terminated status = True.
         if event == "Casualty":
             ped.casualty = True
-            self.bump('casualty', 1)
+            self.bump('casualty', int(getattr(ped, "group_size", 1)))
         # Step 2: (if statement) Check if evacuated, if so, evacuated count += 1. Set p_i's evacuated and terminated status = True. Call UpdateShelterFlow to update the flow. 
         elif event == "Evacuated":
             ped.evacuated = True
-            self.bump('evacuated', 1)
+            gsize = int(getattr(ped, "group_size", 1))
+            self.bump('evacuated', gsize)
             self.evacuationTimeSum += float(self.currTime)
-            self.evacuationCount += 1
+            self.evacuationCount += gsize
         # Step 3: (else) arrival count += 1 and set $p_i$'s arrival and terminated status = True.
         else:
             ped.arrival = True
-            self.bump("arrival", 1)
+            self.bump("arrival", int(getattr(ped, "group_size", 1)))
         # Step 4: Remove $p_i$ from the active pedestrian agent list. 
         ped.terminated = True
         if ped.agentID in self.pedAgentList:
@@ -570,7 +567,7 @@ class PedDS:
                 
             if cellState > 2 and not getattr(ped, "affected", False):
                 ped.affected = True
-                self.bump('affected', 1)
+                self.bump('affected', int(getattr(ped, "group_size", 1)))
         # Step 1: Based on each pedestrian's location, deem which emergency instance is impacting them (not needed if we do a unified casualty rate).
         
         # Step 2: Based on the casualty rate, sample by random number on if the pedestrian is to become a casualty. If so, call TerminatePedestrianAgent for pedestrian status change. 

@@ -30,23 +30,26 @@ CSV_COLUMNS = [
 ]
 
 class trainingLog:
-    def __init__(self, run_dir: str = "runs/default", window: int = 100, use_tensorboard: bool = False):
+    def __init__(self, run_dir: str = "runs/default", window: int = 100, use_tensorboard: bool = False, write_csv: bool = True):
         self.run_dir = run_dir
         os.makedirs(self.run_dir, exist_ok = True)
         
         self.window = int(window)
         self.recent_rewards = deque(maxlen=self.window)
         
+        self.write_csv = bool(write_csv)
         self.csv_path = os.path.join(self.run_dir, "progress.csv")
-        self._ensure_csv_schema()
-        
-        self._csv_new_file = not os.path.exists(self.csv_path)
-        self.csv_file = open(self.csv_path, "a", newline = "")
-        self.csv_writer = csv.writer(self.csv_file)
-        
-        if self._csv_new_file:
-            self.csv_writer.writerow(CSV_COLUMNS)
-            self.csv_file.flush()
+        self.csv_file = None
+        self.csv_writer = None
+        if self.write_csv:
+            self._ensure_csv_schema()
+            self._csv_new_file = not os.path.exists(self.csv_path)
+            self.csv_file = open(self.csv_path, "a", newline = "")
+            self.csv_writer = csv.writer(self.csv_file)
+            
+            if self._csv_new_file:
+                self.csv_writer.writerow(CSV_COLUMNS)
+                self.csv_file.flush()
         
         self.tb = None
         if use_tensorboard:
@@ -98,7 +101,6 @@ class trainingLog:
         arrival          = int(metrics.get("arrival", 0))         
         casualty         = int(metrics.get("casualty", 0))
         evacuated        = int(metrics.get("evacuated", 0))
-        guided           = int(metrics.get("guided", 0))          
         affected         = int(metrics.get("affected", 0))
         added_shelters   = int(metrics.get("added_shelters", 0))
         mean_evacuation_time = float(metrics.get("mean_evacuation_time", 0.0))
@@ -116,7 +118,6 @@ class trainingLog:
             arrival,
             casualty,
             evacuated,
-            guided,
             affected,
             added_shelters,
             mean_evacuation_time,
@@ -125,8 +126,9 @@ class trainingLog:
             float(reward_ma),      # moving average window
         ]
         
-        self.csv_writer.writerow(row)
-        self.csv_file.flush()
+        if self.write_csv and self.csv_writer is not None:
+            self.csv_writer.writerow(row)
+            self.csv_file.flush()
         
         if self.tb is not None:
             self.tb.add_scalar("reward/instant", float(reward), global_step=t)
@@ -136,7 +138,6 @@ class trainingLog:
             self.tb.add_scalar("ped/arrival", arrival, global_step=t)
             self.tb.add_scalar("ped/casualty", casualty, global_step=t)
             self.tb.add_scalar("ped/evacuated", evacuated, global_step=t)
-            self.tb.add_scalar("ped/guided", guided, global_step=t)
             self.tb.add_scalar("ped/affected", affected, global_step=t)
 
             self.tb.add_scalar("actions/added_shelters", added_shelters, global_step=t)
@@ -146,7 +147,8 @@ class trainingLog:
     
     def close(self):
         try:
-            self.csv_file.close()
+            if self.csv_file is not None:
+                self.csv_file.close()
         except Exception:
             pass
         
