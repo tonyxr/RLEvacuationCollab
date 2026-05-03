@@ -97,7 +97,7 @@ def _print_graph_outputs(group_metric_pngs: dict):
     if not _is_colab_runtime():
         return
     try:
-        from IPython.display import Image, display
+        from IPython.display import Image, SVG, display
     except Exception as exc:
         print(f"[GRAPH OUTPUTS] Could not import IPython display: {exc}")
         return
@@ -106,7 +106,11 @@ def _print_graph_outputs(group_metric_pngs: dict):
         print(f"\n=== Group {idx} inline display: {group_name} ===")
         for metric_name, path in group_metric_pngs[group_name].items():
             print(f"[{metric_name}] {path}")
-            display(Image(filename = path))
+            ext = os.path.splitext(path)[1].lower()
+            if ext == ".svg":
+                display(SVG(filename = path))
+            else:
+                display(Image(filename = path))
             
 def _read_progress_csv(path: str):
     """Read progress logs robustly across schema revisions and malformed rows."""
