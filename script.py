@@ -9,6 +9,7 @@ Created on Tue Nov 18 16:16:55 2025
 import os
 import glob
 import random
+import shutil
 import pandas as pd
 import numpy as np
 try:
@@ -344,7 +345,9 @@ def Script():
     random.seed(launch_seed)
     np.random.seed(launch_seed)
     set_torch_global_seed(launch_seed)
+    launch_id = f"launch_{launch_seed}"
     print(f"[SEED] experiment_launch_seed={launch_seed}")
+    print(f"[RUN ROOT] {os.path.join(RUNS_ROOT, launch_id)}")
     
     machine = "a"
     train_replications = 30
@@ -355,11 +358,12 @@ def Script():
     }
     
     # (a) RL convergence diagnostics (reward logs + trajectory graph)
-    _run_replications(machine, train_replications, "train", "rl", True, overrides)
-    train_png = _aggregate_strategy_curves("train", "rl", metrics = ["reward", "reward_ma_window", "casualty", "evacuated"])
+    train_phase = os.path.join(launch_id, "train")
+    _run_replications(machine, train_replications, train_phase, "rl", True, overrides)
+    train_png = _aggregate_strategy_curves(train_phase, "rl", metrics = ["reward", "reward_ma_window", "casualty", "evacuated"])
 
     # (b) Policy comparison: RL vs random vs heuristic vs all shelters installed at t=0
-    compare_phase = "eval_compare"
+    compare_phase = os.path.join(launch_id, "eval_compare")
     compare_strategies = ["rl", "random", "heuristic", "initial_only"]
     compare_pngs = {}
     for strategy in compare_strategies:
@@ -418,7 +422,7 @@ def Script():
 
 
     # Simple convergence check output
-    convergence_df = _episode_summary("train", "rl")
+    convergence_df = _episode_summary(train_phase, "rl")
     if convergence_df is not None and not convergence_df.empty:
         early = convergence_df["final_reward_ma"].head(max(1, len(convergence_df)//3)).mean()
         late = convergence_df["final_reward_ma"].tail(max(1, len(convergence_df)//3)).mean()
@@ -442,6 +446,25 @@ def Script():
                 f"Expected {expected_graphs_per_group} metric plots for {group_name}, got {len(metric_map)}."
             )
     _print_graph_outputs(pairwise_group_metric_pngs)
+    
+    
+    # Keep a stable pointer for Colab/export snippets that package `runs/`.
+    # This makes the newest launch discoverable at `runs/latest` while still
+    # preserving unique launch folders for historical comparisons.
+    latest_ptr = _runs_path("latest")
+    try:
+        if os.path.islink(latest_ptr) or os.path.isfile(latest_ptr):
+            os.unlink(latest_ptr)
+        elif os.path.isdir(latest_ptr):
+            shutil.rmtree(latest_ptr)
+        os.symlink(_runs_path(launch_id), latest_ptr)
+        print(f"[RUN ROOT] latest -> {_runs_path(launch_id)}")
+    except OSError:
+        # Symlink may be unsupported on some environments; fallback to copy.
+        if os.path.isdir(latest_ptr):
+            shutil.rmtree(latest_ptr)
+        shutil.copytree(_runs_path(launch_id), latest_ptr)
+        print(f"[RUN ROOT] latest copied from {_runs_path(launch_id)}")
         
 if __name__ == "__main__":
     Script()

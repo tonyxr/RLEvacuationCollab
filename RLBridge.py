@@ -23,9 +23,11 @@ from Cell import Cell
 
 import time
 
-torch.manual_seed(0)
-if torch.cuda.is_available():
-    torch.cuda.manual_seed_all(0)
+def set_torch_global_seed(seed: int):
+    seed = int(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
     
 @dataclass
