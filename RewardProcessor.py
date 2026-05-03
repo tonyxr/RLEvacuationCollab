@@ -42,6 +42,7 @@ class RewardProcessor:
         delayed_new_shelter_evac_weight: float = 0.2,
         rerouted_arrival_speed_weight: float = 0.3,
         immediate_reroute_reward_weight: float = 0.25,
+        timely_rerouted_evac_weight: float = 0.35,
         casualty_penalty_weight: float = 2.5,
         stranded_penalty_weight: float = 0.02,
     ):
@@ -62,6 +63,7 @@ class RewardProcessor:
          self.delayed_new_shelter_evac_weight = float(delayed_new_shelter_evac_weight)
          self.rerouted_arrival_speed_weight = float(rerouted_arrival_speed_weight)
          self.immediate_reroute_reward_weight = float(immediate_reroute_reward_weight)
+         self.timely_rerouted_evac_weight = float(timely_rerouted_evac_weight)
          self.casualty_penalty_weight = float(casualty_penalty_weight)
          self.stranded_penalty_weight = float(stranded_penalty_weight)
          
@@ -92,6 +94,7 @@ class RewardProcessor:
                    installedShelterCapacityThisStep: float = 0.0,
                    delayedNewShelterEvac: float = 0.0,
                    reroutedArrivalSpeedScore: float = 0.0,
+                   timelyReroutedEvacScore: float = 0.0,
                    immediateReroutedCount: float = 0.0,
                    strandedCount: int = 0,
                    ) -> float:
@@ -99,6 +102,7 @@ class RewardProcessor:
         install_cost = float(max(0.0, installedShelterCapacityThisStep))
         delayed_evac = float(max(0.0, delayedNewShelterEvac))
         rerouted_arrival_speed = float(max(0.0, reroutedArrivalSpeedScore))
+        timely_rerouted_evac = float(max(0.0, timelyReroutedEvacScore))
         immediate_rerouted = float(max(0.0, immediateReroutedCount))
         stranded_count = float(max(0, int(strandedCount)))
         casualty_delta = float(max(0, int(numCasualties) - int(self.lastCasualty)))
@@ -110,6 +114,7 @@ class RewardProcessor:
             + self.immediate_reroute_reward_weight * immediate_rerouted
             + self.delayed_new_shelter_evac_weight * delayed_evac
             + self.rerouted_arrival_speed_weight * rerouted_arrival_speed
+            + self.timely_rerouted_evac_weight * timely_rerouted_evac
             - self.casualty_penalty_weight * casualty_delta
             - self.stranded_penalty_weight * stranded_count
         )
@@ -136,6 +141,7 @@ class RewardProcessor:
                 kwargs.get("installedShelterCapacityThisStep", 0.0),
                 kwargs.get("delayedNewShelterEvac", 0.0),
                 kwargs.get("reroutedArrivalSpeedScore", 0.0),
+                kwargs.get("timelyReroutedEvacScore", 0.0),
                 kwargs.get("immediateReroutedCount", 0.0),
                 kwargs.get("strandedCount", 0),
             )

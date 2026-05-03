@@ -199,10 +199,11 @@ class RLBridge:
             hist.append(delta)
             self.shelter_last_flow[sid] = flow_now
 
-    def _latest_shelter_utilization_reward(self) -> tuple[float, float]:
+    def _latest_shelter_utilization_reward(self) -> tuple[float, float, float]:
         windows = (5, 10, 15)
         utilization = 0.0
         rerouted_arrival_speed_score = 0.0
+        timely_rerouted_evac_score = 0.0
         latest_ids = list(reversed(self.installed_shelter_order[-3:]))
         for idx, sid in enumerate(latest_ids):
             window = windows[idx]
@@ -227,8 +228,11 @@ class RLBridge:
                 age = max(0, step_of_arrival - install_step)
                 decay = math.exp(-float(age) / tau)
                 rerouted_arrival_speed_score += float(delta) * (1.0 + 0.1 * rerouted_count) * decay
+                # Encourage successful evacuation completion soon after rerouting.
+                completion_weight = 1.0 / max(1.0, rerouted_count)
+                timely_rerouted_evac_score += float(delta) * completion_weight * decay
 
-        return utilization, rerouted_arrival_speed_score
+        return utilization, rerouted_arrival_speed_score, timely_rerouted_evac_score
 
     # ---- helpers ----
     def _get_obs_tensors(self):
@@ -395,7 +399,7 @@ class RLBridge:
         if (self.t % self.reward_interval) == 0:
             count_casualty = int(pedRes.get("casualty", 0))
             terms = extract_reward_terms(self.core.cellTracker)
-            delayed_new_shelter_evac, rerouted_arrival_speed_score = self._latest_shelter_utilization_reward()
+            delayed_new_shelter_evac, rerouted_arrival_speed_score, timely_rerouted_evac_score = self._latest_shelter_utilization_reward()
             r = self.rew.rewardMode(
                 numCasualties=count_casualty,
                 t=self.t,
@@ -406,6 +410,7 @@ class RLBridge:
                 installedShelterCapacityThisStep=installed_capacity,
                 delayedNewShelterEvac=delayed_new_shelter_evac,
                 reroutedArrivalSpeedScore=rerouted_arrival_speed_score,
+                timelyReroutedEvacScore=timely_rerouted_evac_score,
                 immediateReroutedCount=immediate_rerouted_count,
                 strandedCount=int(len(getattr(self.core.pedDS, "pedAgentList", []))),
             )
