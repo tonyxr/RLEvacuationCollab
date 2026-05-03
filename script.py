@@ -10,6 +10,7 @@ import os
 import glob
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 
 from Core import Core
 
@@ -18,6 +19,58 @@ RUNS_ROOT = os.path.join(PROJECT_ROOT, "runs")
 
 def _runs_path(*parts):
     return os.path.join(RUNS_ROOT, *parts)
+
+def _save_svg_line_plot(series_map: dict, title: str, x_label: str, y_label: str, out_path: str, x_min: int, x_max: int):
+    width, height = 1000, 420
+    ml, mr, mt, mb = 70, 20, 40, 55
+    pw, ph = width - ml - mr, height - mt - mb
+    colors = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd", "#ff7f0e", "#17becf"]
+    all_y = []
+    for _, ys, _ in series_map.values():
+        all_y.extend([float(v) for v in ys if pd.notna(v)])
+    y_min = min(all_y) if all_y else 0.0
+    y_max = max(all_y) if all_y else 1.0
+    if y_max <= y_min:
+        y_max = y_min + 1.0
+    pad = 0.05 * (y_max - y_min)
+    y_min -= pad
+    y_max += pad
+    def sx(x): return ml + (float(x - x_min) / max(1e-9, (x_max - x_min))) * pw
+    def sy(y): return mt + (1.0 - float(y - y_min) / max(1e-9, (y_max - y_min))) * ph
+    lines = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">']
+    lines.append(f'<rect x="0" y="0" width="{width}" height="{height}" fill="white"/>')
+    lines.append(f'<text x="{width/2}" y="24" text-anchor="middle" font-size="16">{title}</text>')
+    lines.append(f'<line x1="{ml}" y1="{mt+ph}" x2="{ml+pw}" y2="{mt+ph}" stroke="#333"/>')
+    lines.append(f'<line x1="{ml}" y1="{mt}" x2="{ml}" y2="{mt+ph}" stroke="#333"/>')
+    for i in range(6):
+        xv = x_min + (x_max - x_min) * i / 5
+        xpix = sx(xv)
+        lines.append(f'<line x1="{xpix}" y1="{mt+ph}" x2="{xpix}" y2="{mt+ph+5}" stroke="#333"/>')
+        lines.append(f'<text x="{xpix}" y="{mt+ph+20}" text-anchor="middle" font-size="11">{int(round(xv))}</text>')
+    for i in range(6):
+        yv = y_min + (y_max - y_min) * i / 5
+        ypix = sy(yv)
+        lines.append(f'<line x1="{ml-5}" y1="{ypix}" x2="{ml}" y2="{ypix}" stroke="#333"/>')
+        lines.append(f'<text x="{ml-8}" y="{ypix+4}" text-anchor="end" font-size="11">{yv:.2f}</text>')
+    lines.append(f'<text x="{width/2}" y="{height-12}" text-anchor="middle" font-size="12">{x_label}</text>')
+    lines.append(f'<text x="18" y="{height/2}" transform="rotate(-90 18,{height/2})" text-anchor="middle" font-size="12">{y_label}</text>')
+    for idx, (name, (xs, ys, _)) in enumerate(series_map.items()):
+        pts = []
+        for x, y in zip(xs, ys):
+            if pd.isna(y):
+                continue
+            pts.append(f"{sx(x):.2f},{sy(y):.2f}")
+        if pts:
+            lines.append(f'<polyline fill="none" stroke="{colors[idx % len(colors)]}" stroke-width="2" points="{" ".join(pts)}"/>')
+    lx, ly = ml + 10, mt + 10
+    for idx, name in enumerate(series_map.keys()):
+        c = colors[idx % len(colors)]
+        y = ly + idx * 18
+        lines.append(f'<line x1="{lx}" y1="{y}" x2="{lx+18}" y2="{y}" stroke="{c}" stroke-width="2"/>')
+        lines.append(f'<text x="{lx+24}" y="{y+4}" font-size="12">{name}</text>')
+    lines.append("</svg>")
+    with open(out_path, "w", encoding = "utf-8") as fh:
+        fh.write("\n".join(lines))
 
 def _is_colab_runtime() -> bool:
     if "COLAB_RELEASE_TAG" in os.environ:
@@ -120,7 +173,12 @@ def _aggregate_phase_curves(phase: str, metrics = None, out_name: str = "summary
     plot_cols = [m for m in metrics if m in mean_df.columns]
     out_png = None
     if plot_cols:
-        import matplotlib.pyplot as plt
+        try:
+            import matplotlib.pyplot as plt
+        except ModuleNotFoundError:
+            plt = None
+        if plt is None:
+            return out_csv
         fig, axes = plt.subplots(len(plot_cols), 1, figsize = (10, 4 * len(plot_cols)), sharex = True)
         if len(plot_cols) == 1:
             axes = [axes]
@@ -143,7 +201,10 @@ def _aggregate_strategy_curves(base_phase: str, strategy: str, metrics = None):
     return _aggregate_phase_curves(phase, metrics = metrics, out_name = f"{strategy}_summary_metrics.png")
 
 def _plot_strategy_comparison_curves(base_phase: str, strategies, metrics = None, out_name: str = "strategy_comparison.png"):
-    import matplotlib.pyplot as plt
+    try:
+        import matplotlib.pyplot as plt
+    except ModuleNotFoundError:
+        plt = None
 
     if metrics is None:
         metrics = ["casualty", "mean_evacuation_time", "total_shelter_capacity", "shelter_utilization"]
