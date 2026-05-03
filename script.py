@@ -8,6 +8,7 @@ Created on Tue Nov 18 16:16:55 2025
 
 import os
 import glob
+import random
 import pandas as pd
 import numpy as np
 try:
@@ -16,6 +17,7 @@ except ModuleNotFoundError:
     plt = None
 
 from Core import Core
+from RLBridge import set_torch_global_seed
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 RUNS_ROOT = os.path.join(PROJECT_ROOT, "runs")
@@ -338,6 +340,12 @@ def _run_replications(machine: str, replications: int, phase: str, strategy: str
         )
 
 def Script():
+    launch_seed = int.from_bytes(os.urandom(8), byteorder = "big") & 0x7FFFFFFF
+    random.seed(launch_seed)
+    np.random.seed(launch_seed)
+    set_torch_global_seed(launch_seed)
+    print(f"[SEED] experiment_launch_seed={launch_seed}")
+    
     machine = "a"
     train_replications = 30
     eval_replications = 12
