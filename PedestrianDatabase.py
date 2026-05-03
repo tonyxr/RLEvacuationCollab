@@ -401,11 +401,9 @@ class PedDS:
         self.maxSpeed = float(maxSpeed)
         
         pedID = 0
-        group_id = 0
-        group_sizes = self._sample_group_sizes(self.pedNum, min_size = 1, max_size = 50)
-        
-        for gsize in group_sizes:
-            group_id += 1
+        # Revert to individual pedestrians (no grouped population accounting).
+        for _ in range(int(max(0, self.pedNum))):
+            group_id = pedID + 1
             #print("Current agent id, ", str(pedID))
             
             # Step 2: Call MapDatabase's AssignGenerationNode and AssignTermination node to get $p_i$'s start and end node. 
@@ -436,22 +434,22 @@ class PedDS:
             arrival = False
             terminated = False
             
-            for _ in range(int(max(1, gsize))):
-                agentID = pedID
-                pedID += 1
-                newAgent = Pedestrian(agentID, assignedRoute, currNode, currEdge, currCell, lastX, 
-                                      lastY, currSpeed, affected, atNode, casualty, evacuated, arrival, terminated)
-
-                newAgent.group_id = int(group_id)
-                newAgent.group_size = int(max(1, gsize))
-                self.groups[newAgent.group_id].add(agentID)
-
-                newAgent.edge_remain = 0.0 # at node, edge_remain = 0
-                newAgent.edge_vec = None
-                newAgent.edge_dest_node = None    
-                newAgent.desired_speed = float(self.maxSpeed)
-
-                self.pedAgentList[agentID] = newAgent
+            agentID = pedID
+            pedID += 1
+            newAgent = Pedestrian(agentID, assignedRoute, currNode, currEdge, currCell, lastX, 
+                                  lastY, currSpeed, affected, atNode, casualty, evacuated, arrival, terminated)
+            
+            # Individual mode: each pedestrian counts as exactly one.
+            newAgent.group_id = int(group_id)
+            newAgent.group_size = 1
+            self.groups[newAgent.group_id].add(agentID)
+            
+            newAgent.edge_remain = 0.0 # at node, edge_remain = 0
+            newAgent.edge_vec = None
+            newAgent.edge_dest_node = None    
+            newAgent.desired_speed = float(self.maxSpeed)
+            
+            self.pedAgentList[agentID] = newAgent
             
     def terminatePedestrianAgent(self, ped, event: str):
         """
