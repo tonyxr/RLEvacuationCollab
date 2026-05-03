@@ -36,6 +36,7 @@ class trainingLog:
         
         self.window = int(window)
         self.recent_rewards = deque(maxlen=self.window)
+        self.csv_path = os.path.join(self.run_dir, "progress.csv")
         
         self._ensure_csv_schema()
         

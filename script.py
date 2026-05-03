@@ -10,7 +10,10 @@ import os
 import glob
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
+try:
+    import matplotlib.pyplot as plt
+except ModuleNotFoundError:
+    plt = None
 
 from Core import Core
 
@@ -173,10 +176,6 @@ def _aggregate_phase_curves(phase: str, metrics = None, out_name: str = "summary
     plot_cols = [m for m in metrics if m in mean_df.columns]
     out_png = None
     if plot_cols:
-        try:
-            import matplotlib.pyplot as plt
-        except ModuleNotFoundError:
-            plt = None
         if plt is None:
             return out_csv
         fig, axes = plt.subplots(len(plot_cols), 1, figsize = (10, 4 * len(plot_cols)), sharex = True)
@@ -201,14 +200,12 @@ def _aggregate_strategy_curves(base_phase: str, strategy: str, metrics = None):
     return _aggregate_phase_curves(phase, metrics = metrics, out_name = f"{strategy}_summary_metrics.png")
 
 def _plot_strategy_comparison_curves(base_phase: str, strategies, metrics = None, out_name: str = "strategy_comparison.png"):
-    try:
-        import matplotlib.pyplot as plt
-    except ModuleNotFoundError:
-        plt = None
-
     if metrics is None:
         metrics = ["casualty", "mean_evacuation_time", "total_shelter_capacity", "shelter_utilization"]
-
+    
+    if plt is None:
+        return None
+    
     curve_by_strategy = {}
     for strategy in strategies:
         csv_path = _runs_path(base_phase, strategy, "summary_metrics.csv")
@@ -253,8 +250,6 @@ def _plot_strategy_comparison_curves(base_phase: str, strategies, metrics = None
 
 def _plot_pairwise_metric_groups(base_phase: str, groups, metrics, out_dir_name: str = "policy_pairwise_groups",
                                  x_min: int = 0, x_max: int = 240):
-    import matplotlib.pyplot as plt
-
     out_dir = _runs_path(base_phase, out_dir_name)
     os.makedirs(out_dir, exist_ok = True)
     saved_paths = []
@@ -275,54 +270,28 @@ def _plot_pairwise_metric_groups(base_phase: str, groups, metrics, out_dir_name:
         if not curve_by_strategy:
             continue
 
-        fig, axes = plt.subplots(len(metrics), 1, figsize = (10, 4 * len(metrics)), sharex = True)
-        if len(metrics) == 1:
-            axes = [axes]
-
-        for ax, metric in zip(axes, metrics):
-            for strategy, df in curve_by_strategy.items():
-                if metric not in df.columns:
-                    continue
-                ax.plot(df["timestep"], df[metric], label = strategy)
-            ax.set_title(f"{group_name}: {metric} (mean over 12 replications)")
-            ax.set_ylabel(metric)
-            ax.grid(True, alpha = 0.3)
-            ax.legend()
-            ax.set_xlim(x_min, x_max)
-
-        axes[-1].set_xlabel("timestep")
-        fig.tight_layout()
-
-        out_path = os.path.join(out_dir, f"{group_name}.png")
-        fig.savefig(out_path, dpi = 150, bbox_inches = "tight")
-        plt.close(fig)
-        saved_paths.append(out_path)
-        
-        # Individual metric files: 4 graphs per group
+        # Individual metric files: 4 graphs per group (SVG fallback avoids matplotlib dependency)
         metric_dir = os.path.join(out_dir, group_name)
         os.makedirs(metric_dir, exist_ok = True)
         grouped_metric_pngs[group_name] = {}
         for metric in metrics:
-            fig_m, ax_m = plt.subplots(1, 1, figsize = (10, 4))
-            has_curve = False
+            series_map = {}
             for strategy, df in curve_by_strategy.items():
                 if metric not in df.columns:
                     continue
-                ax_m.plot(df["timestep"], df[metric], label = strategy)
-                has_curve = True
-            if not has_curve:
-                plt.close(fig_m)
+                series_map[strategy] = (df["timestep"].to_numpy(), df[metric].to_numpy(), strategy)
+            if not series_map:
                 continue
-            ax_m.set_title(f"{group_name}: {metric} (mean over 12 replications)")
-            ax_m.set_xlabel("timestep")
-            ax_m.set_ylabel(metric)
-            ax_m.grid(True, alpha = 0.3)
-            ax_m.legend()
-            ax_m.set_xlim(x_min, x_max)
-            metric_path = os.path.join(metric_dir, f"{metric}.png")
-            fig_m.tight_layout()
-            fig_m.savefig(metric_path, dpi = 150, bbox_inches = "tight")
-            plt.close(fig_m)
+            metric_path = os.path.join(metric_dir, f"{metric}.svg")
+            _save_svg_line_plot(
+                series_map,
+                title = f"{group_name}: {metric} (mean over 12 replications)",
+                x_label = "timestep",
+                y_label = metric,
+                out_path = metric_path,
+                x_min = x_min,
+                x_max = x_max,
+            )
             saved_paths.append(metric_path)
             grouped_metric_pngs[group_name][metric] = metric_path
 
