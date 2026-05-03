@@ -424,7 +424,7 @@ class Core:
             deployment_strategy = deployment_strategy,
             target_active_shelters = int(self.targetActiveShelters),
         )
-        self.logger = trainingLog(run_dir = self.run_dir, window = 100, use_tensorboard = False, write_csv = False)
+        self.logger = trainingLog(run_dir = self.run_dir, window = 100, use_tensorboard = False)
         
         self.simulationEnumerator()
         

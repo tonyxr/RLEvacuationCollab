@@ -30,26 +30,22 @@ CSV_COLUMNS = [
 ]
 
 class trainingLog:
-    def __init__(self, run_dir: str = "runs/default", window: int = 100, use_tensorboard: bool = False, write_csv: bool = True):
+    def __init__(self, run_dir: str = "runs/default", window: int = 100, use_tensorboard: bool = False):
         self.run_dir = run_dir
         os.makedirs(self.run_dir, exist_ok = True)
         
         self.window = int(window)
         self.recent_rewards = deque(maxlen=self.window)
         
-        self.write_csv = bool(write_csv)
-        self.csv_path = os.path.join(self.run_dir, "progress.csv")
-        self.csv_file = None
-        self.csv_writer = None
-        if self.write_csv:
-            self._ensure_csv_schema()
-            self._csv_new_file = not os.path.exists(self.csv_path)
-            self.csv_file = open(self.csv_path, "a", newline = "")
-            self.csv_writer = csv.writer(self.csv_file)
-            
-            if self._csv_new_file:
-                self.csv_writer.writerow(CSV_COLUMNS)
-                self.csv_file.flush()
+        self._ensure_csv_schema()
+        
+        self._csv_new_file = not os.path.exists(self.csv_path)
+        self.csv_file = open(self.csv_path, "a", newline = "")
+        self.csv_writer = csv.writer(self.csv_file)
+        
+        if self._csv_new_file:
+            self.csv_writer.writerow(CSV_COLUMNS)
+            self.csv_file.flush()
         
         self.tb = None
         if use_tensorboard:
@@ -126,9 +122,8 @@ class trainingLog:
             float(reward_ma),      # moving average window
         ]
         
-        if self.write_csv and self.csv_writer is not None:
-            self.csv_writer.writerow(row)
-            self.csv_file.flush()
+        self.csv_writer.writerow(row)
+        self.csv_file.flush()
         
         if self.tb is not None:
             self.tb.add_scalar("reward/instant", float(reward), global_step=t)
@@ -147,8 +142,7 @@ class trainingLog:
     
     def close(self):
         try:
-            if self.csv_file is not None:
-                self.csv_file.close()
+            self.csv_file.close()
         except Exception:
             pass
         

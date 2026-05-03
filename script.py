@@ -142,39 +142,7 @@ def _aggregate_strategy_curves(base_phase: str, strategy: str, metrics = None):
     phase = os.path.join(base_phase, strategy)
     return _aggregate_phase_curves(phase, metrics = metrics, out_name = f"{strategy}_summary_metrics.png")
 
-def _mean_curves_from_replications(base_phase: str, strategy: str, metrics, expected_replications: int = 12,
-                                   x_min: int = 0, x_max: int = 240):
-    files = sorted(glob.glob(_runs_path(base_phase, strategy, "rep_*", "progress.csv")))
-    if not files:
-        return None
-
-    # Keep the first N replications deterministically so averages are always over 12 runs.
-    selected = files[:expected_replications]
-    time_index = pd.Index(range(x_min, x_max + 1), name = "timestep")
-    per_rep = []
-    for f in selected:
-        df = _read_progress_csv(f)
-        keep = ["timestep"] + [m for m in metrics if m in df.columns]
-        if len(keep) <= 1:
-            continue
-        rep = df[keep].copy()
-        rep = rep[rep["timestep"].between(x_min, x_max)].sort_values("timestep")
-        rep = rep.drop_duplicates(subset = ["timestep"], keep = "last")
-        rep = rep.set_index("timestep").reindex(time_index)
-        rep = rep.ffill().fillna(0.0)
-        per_rep.append(rep)
-
-    if not per_rep:
-        return None
-
-    mean_df = pd.concat(per_rep).groupby(level = 0).mean(numeric_only = True).reset_index()
-    out_csv = _runs_path(base_phase, strategy, "summary_metrics.csv")
-    os.makedirs(os.path.dirname(out_csv), exist_ok = True)
-    mean_df.to_csv(out_csv, index = False)
-    return mean_df
-
-def _plot_strategy_comparison_curves(base_phase: str, strategies, metrics = None, out_name: str = "strategy_comparison.png",
-                                     expected_replications: int = 12, x_min: int = 0, x_max: int = 240):
+def _plot_strategy_comparison_curves(base_phase: str, strategies, metrics = None, out_name: str = "strategy_comparison.png"):
     import matplotlib.pyplot as plt
 
     if metrics is None:
@@ -182,11 +150,10 @@ def _plot_strategy_comparison_curves(base_phase: str, strategies, metrics = None
 
     curve_by_strategy = {}
     for strategy in strategies:
-        df = _mean_curves_from_replications(
-            base_phase, strategy, metrics, expected_replications = expected_replications, x_min = x_min, x_max = x_max
-        )
-        if df is None:
+        csv_path = _runs_path(base_phase, strategy, "summary_metrics.csv")
+        if not os.path.exists(csv_path):
             continue
+        df = _read_progress_csv(csv_path)
         keep = ["timestep"] + [m for m in metrics if m in df.columns]
         if len(keep) <= 1:
             continue
@@ -212,7 +179,6 @@ def _plot_strategy_comparison_curves(base_phase: str, strategies, metrics = None
         ax.set_ylabel(metric)
         ax.grid(True, alpha = 0.3)
         ax.legend()
-        ax.set_xlim(x_min, x_max)
 
     axes[-1].set_xlabel("timestep")
     fig.suptitle(f"Strategy comparison ({base_phase})", y = 1.02)
@@ -224,43 +190,8 @@ def _plot_strategy_comparison_curves(base_phase: str, strategies, metrics = None
     plt.close(fig)
     return out_path
 
-def _build_policy_graph_package(base_phase: str, group_metric_pngs: dict, out_name: str = "policy_graph_package.zip"):
-    import csv
-    import zipfile
-
-    out_zip = _runs_path(base_phase, out_name)
-    os.makedirs(os.path.dirname(out_zip), exist_ok = True)
-    manifest_rows = []
-
-    with zipfile.ZipFile(out_zip, mode = "w", compression = zipfile.ZIP_DEFLATED) as zf:
-        for group_name in sorted(group_metric_pngs.keys()):
-            metric_map = group_metric_pngs[group_name]
-            for metric_name in sorted(metric_map.keys()):
-                path = metric_map[metric_name]
-                if not os.path.exists(path):
-                    continue
-                arcname = os.path.join("policy_pairwise_groups", group_name, f"{metric_name}.png")
-                zf.write(path, arcname = arcname)
-                manifest_rows.append({
-                    "group": group_name,
-                    "metric": metric_name,
-                    "file_in_package": arcname,
-                })
-                strategy_csv = _runs_path(base_phase, "policy_pairwise_groups", group_name, f"{metric_name}.csv")
-                if os.path.exists(strategy_csv):
-                    zf.write(strategy_csv, arcname = os.path.join("policy_pairwise_groups", group_name, f"{metric_name}.csv"))
-
-        manifest_tmp = _runs_path(base_phase, "policy_graph_manifest.csv")
-        with open(manifest_tmp, "w", newline = "") as fh:
-            writer = csv.DictWriter(fh, fieldnames = ["group", "metric", "file_in_package"])
-            writer.writeheader()
-            writer.writerows(manifest_rows)
-        zf.write(manifest_tmp, arcname = "policy_graph_manifest.csv")
-
-    return out_zip
-
 def _plot_pairwise_metric_groups(base_phase: str, groups, metrics, out_dir_name: str = "policy_pairwise_groups",
-                                 x_min: int = 0, x_max: int = 240, expected_replications: int = 12):
+                                 x_min: int = 0, x_max: int = 240):
     import matplotlib.pyplot as plt
 
     out_dir = _runs_path(base_phase, out_dir_name)
@@ -271,11 +202,10 @@ def _plot_pairwise_metric_groups(base_phase: str, groups, metrics, out_dir_name:
     for group_name, strategies in groups.items():
         curve_by_strategy = {}
         for strategy in strategies:
-            df = _mean_curves_from_replications(
-                base_phase, strategy, metrics, expected_replications = expected_replications, x_min = x_min, x_max = x_max
-            )
-            if df is None:
+            csv_path = _runs_path(base_phase, strategy, "summary_metrics.csv")
+            if not os.path.exists(csv_path):
                 continue
+            df = _read_progress_csv(csv_path)
             keep = ["timestep"] + [m for m in metrics if m in df.columns]
             if len(keep) <= 1:
                 continue
@@ -334,13 +264,6 @@ def _plot_pairwise_metric_groups(base_phase: str, groups, metrics, out_dir_name:
             plt.close(fig_m)
             saved_paths.append(metric_path)
             grouped_metric_pngs[group_name][metric] = metric_path
-            export_cols = ["timestep"] + [s for s in strategies if s in curve_by_strategy]
-            export_df = pd.DataFrame({"timestep": curve_by_strategy[export_cols[1]]["timestep"]}) if len(export_cols) > 1 else pd.DataFrame()
-            for s in strategies:
-                if s in curve_by_strategy and metric in curve_by_strategy[s].columns:
-                    export_df[s] = curve_by_strategy[s][metric].values
-            if not export_df.empty:
-                export_df.to_csv(os.path.join(metric_dir, f"{metric}.csv"), index = False)
 
     return saved_paths, grouped_metric_pngs
 
@@ -410,9 +333,6 @@ def Script():
         compare_strategies,
         metrics = ["casualty", "evacuated", "mean_evacuation_time", "shelter_utilization"],
         out_name = "strategy_comparison_overlay.png",
-        expected_replications = eval_replications,
-        x_min = 0,
-        x_max = 240,
     )
     
     pairwise_groups = {
@@ -428,7 +348,6 @@ def Script():
         out_dir_name = "policy_pairwise_groups",
         x_min = 0,
         x_max = 240,
-        expected_replications = eval_replications,
     )
 
     # Summaries for tables
@@ -481,8 +400,6 @@ def Script():
                 f"Expected {expected_graphs_per_group} metric plots for {group_name}, got {len(metric_map)}."
             )
     _print_graph_outputs(pairwise_group_metric_pngs)
-    package_path = _build_policy_graph_package(compare_phase, pairwise_group_metric_pngs)
-    print("Policy graph package:", package_path)
         
 if __name__ == "__main__":
     Script()
