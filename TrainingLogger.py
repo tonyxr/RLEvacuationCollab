@@ -98,6 +98,7 @@ class trainingLog:
         arrival          = int(metrics.get("arrival", 0))         
         casualty         = int(metrics.get("casualty", 0))
         evacuated        = int(metrics.get("evacuated", 0))
+        guided           = int(metrics.get("guided", 0))
         affected         = int(metrics.get("affected", 0))
         added_shelters   = int(metrics.get("added_shelters", 0))
         mean_evacuation_time = float(metrics.get("mean_evacuation_time", 0.0))
@@ -115,6 +116,7 @@ class trainingLog:
             arrival,
             casualty,
             evacuated,
+            guided,
             affected,
             added_shelters,
             mean_evacuation_time,

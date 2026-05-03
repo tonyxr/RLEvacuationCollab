@@ -347,9 +347,7 @@ class RLBridge:
             masked_logits = self._safe_masked_logits(sh_logits, action_mask)
             sh_dist = torch.distributions.Categorical(logits=masked_logits)
             lp_sh = sh_dist.log_prob(a_sh)
-            if picked_idx >= self.num_cells:
-                shelter_decision += " no-op (no valid candidate cell)"
-        elif shelter_gate_open:
+            if shelter_gate_open and self.deployment_strategy not in {"none", "initial_only"} and not shelter_budget_reached:
             if int(a_sh.item()) >= self.num_cells:
                 fallback_idx = self._heuristic_pick_cell_idx()
                 a_sh = torch.as_tensor([fallback_idx], dtype=torch.long, device=self.device)

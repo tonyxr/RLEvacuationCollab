@@ -50,7 +50,7 @@ class PedDS:
         self.evacuationCount = 0
         
         # default impact rate by cell state
-        self._default_casualty_prob = {0: 0.0, 1: 0.0, 2: 0.0, 3: 0.005, 4: 0.01, 5: 0.02}
+        self._default_casualty_prob = {0: 0.0, 1: 0.0, 2: 0.0, 3: 0.02, 4: 0.05, 5: 0.1}
         self._default_speed_reduct  = {0: 0.0, 1: 0.025,  2: 0.05, 3: 0.10, 4: 0.12, 5: 0.25}
         
         self.shelter_osmid_map = None
