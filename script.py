@@ -239,6 +239,28 @@ def _aggregate_strategy_curves(base_phase: str, strategy: str, metrics = None):
     phase = os.path.join(base_phase, strategy)
     return _aggregate_phase_curves(phase, metrics = metrics, out_name = f"{strategy}_summary_metrics.png")
 
+def _load_or_refresh_strategy_summary(base_phase: str, strategy: str, metrics):
+    """Load per-strategy summary CSV, regenerating from replication logs when possible.
+
+    This avoids plotting stale summary files when logs have changed.
+    """
+    strategy_phase = os.path.join(base_phase, strategy)
+    csv_path = _runs_path(strategy_phase, "summary_metrics.csv")
+
+    # If replication progress files exist, always recompute to stay in sync with logs.
+    has_rep_logs = bool(glob.glob(_runs_path(strategy_phase, "rep_*", "progress.csv")))
+    if has_rep_logs:
+        _aggregate_phase_curves(strategy_phase, metrics = metrics, out_name = f"{strategy}_summary_metrics.png")
+
+    if not os.path.exists(csv_path):
+        return None
+
+    df = _read_progress_csv(csv_path)
+    keep = ["timestep"] + [m for m in metrics if m in df.columns]
+    if len(keep) <= 1:
+        return None
+    return df[keep].copy()
+
 def _plot_strategy_comparison_curves(base_phase: str, strategies, metrics = None, out_name: str = "strategy_comparison.png"):
     if metrics is None:
         metrics = ["casualty", "mean_evacuation_time", "total_shelter_capacity", "shelter_utilization"]
@@ -248,14 +270,10 @@ def _plot_strategy_comparison_curves(base_phase: str, strategies, metrics = None
     
     curve_by_strategy = {}
     for strategy in strategies:
-        csv_path = _runs_path(base_phase, strategy, "summary_metrics.csv")
-        if not os.path.exists(csv_path):
+        df = _load_or_refresh_strategy_summary(base_phase, strategy, metrics)
+        if df is None:
             continue
-        df = _read_progress_csv(csv_path)
-        keep = ["timestep"] + [m for m in metrics if m in df.columns]
-        if len(keep) <= 1:
-            continue
-        curve_by_strategy[strategy] = df[keep].copy()
+        curve_by_strategy[strategy] = df
 
     if not curve_by_strategy:
         return None
@@ -314,15 +332,11 @@ def _plot_pairwise_metric_groups(base_phase: str, groups, metrics, out_dir_name:
     for group_name, strategies in groups.items():
         curve_by_strategy = {}
         for strategy in strategies:
-            csv_path = _runs_path(base_phase, strategy, "summary_metrics.csv")
-            if not os.path.exists(csv_path):
+            df = _load_or_refresh_strategy_summary(base_phase, strategy, metrics)
+            if df is None:
                 continue
-            df = _read_progress_csv(csv_path)
-            keep = ["timestep"] + [m for m in metrics if m in df.columns]
-            if len(keep) <= 1:
-                continue
-            curve_by_strategy[strategy] = df[keep].copy()
-
+            curve_by_strategy[strategy] = df
+            
         if not curve_by_strategy:
             continue
 
