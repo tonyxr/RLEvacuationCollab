@@ -56,6 +56,7 @@ class PedDS:
         self.shelter_osmid_map = None
         
         self.groups = defaultdict(set)
+        self._route_distance_cache = {}
         
         
     def _sample_group_sizes(self, total_population: int, min_size: int = 1, max_size: int = 50):
@@ -108,17 +109,24 @@ class PedDS:
         """
         if start_node is None or end_node is None or self.mapDS is None:
             return float("inf")
-        if int(getattr(start_node, "OSMID", -1)) == int(getattr(end_node, "OSMID", -2)):
+        src = int(getattr(start_node, "OSMID", -1))
+        dst = int(getattr(end_node, "OSMID", -2))
+        if src == dst:
             return 0.0
+        key = (src, dst)
+        if key in self._route_distance_cache:
+            return float(self._route_distance_cache[key])
         try:
             route = self.mapDS.shortestPath(start_node, end_node)
         except Exception:
             route = None
         if route is None:
+            self._route_distance_cache[key] = float("inf")
             return float("inf")
         dist = 0.0
         for edge in (getattr(route, "edgeRemained", None) or []):
             dist += float(max(0.0, getattr(edge, "edgeLen", 0.0)))
+        self._route_distance_cache[key] = float(dist)
         return float(dist)
     
     @staticmethod
@@ -210,6 +218,7 @@ class PedDS:
             return 0
 
         rerouted = 0
+        self._route_distance_cache = {}
         shelter_by_osmid = getattr(self.shelterDS, "shelterByOSMID", {}) or {}
         new_node = getattr(newShelter, "nodeMapped", None)
         if new_node is None:
@@ -412,13 +421,15 @@ class PedDS:
             destNode = mapDS.assignTerminationNode(birthNode)
         
             # Step 3: Call ShortestPathFinder to get the route, and assign to the parameter accordingly. 
-            assignedRoute = mapDS.shortestPath(birthNode, destNode)
-            # Step 4: In the extreme case, there exists no route between the assigned pair of start and destination node
-            # re-assign destination node and plan a route again.
-            if assignedRoute is None:
+            assignedRoute = None
+            for _attempt in range(6):
+                assignedRoute = mapDS.shortestPath(birthNode, destNode)
+                if assignedRoute is not None:
+                    break
                 birthNode = mapDS.assignGenerationNode()
                 destNode = mapDS.assignTerminationNode(birthNode)
-                assignedRoute = mapDS.shortestPath(birthNode, destNode)
+            if assignedRoute is None:
+                continue
             
             currNode = assignedRoute.startNode
             

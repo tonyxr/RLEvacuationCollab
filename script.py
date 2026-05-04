@@ -239,7 +239,14 @@ def _plot_strategy_comparison_curves(base_phase: str, strategies, metrics = None
         for strategy, df in curve_by_strategy.items():
             if metric not in df.columns:
                 continue
-            ax.plot(df["timestep"], df[metric], label = strategy)
+            is_rl = str(strategy).strip().lower() == "rl"
+            ax.plot(
+                df["timestep"],
+                df[metric],
+                label = strategy,
+                linewidth = 2.8 if is_rl else 1.8,
+                alpha = 1.0 if is_rl else 0.85,
+            )
         ax.set_title(f"{metric} (mean over replications)")
         ax.set_ylabel(metric)
         ax.grid(True, alpha = 0.3)
@@ -292,7 +299,7 @@ def _plot_pairwise_metric_groups(base_phase: str, groups, metrics, out_dir_name:
             metric_path = os.path.join(metric_dir, f"{metric}.svg")
             _save_svg_line_plot(
                 series_map,
-                title = f"{group_name}: {metric} (mean over 12 replications)",
+                title = f"{group_name}: {metric} (mean over replications)",
                 x_label = "timestep",
                 y_label = metric,
                 out_path = metric_path,
@@ -364,20 +371,20 @@ def Script():
 
     # (b) Policy comparison: RL vs random vs heuristic vs all shelters installed at t=0
     compare_phase = os.path.join(launch_id, "eval_compare")
-    compare_strategies = ["rl", "random", "heuristic", "initial_only"]
+    compare_strategies = ["rl", "initial_only", "random", "heuristic"]
     compare_pngs = {}
     for strategy in compare_strategies:
         _run_replications(machine, eval_replications, compare_phase, strategy, False, overrides)
         compare_pngs[strategy] = _aggregate_strategy_curves(
             compare_phase,
             strategy,
-            metrics = ["casualty", "evacuated", "mean_evacuation_time", "shelter_utilization"],
+            metrics = ["shelter_utilization", "mean_evacuation_time", "evacuated", "casualty"],
         )
         
     compare_overlay_png = _plot_strategy_comparison_curves(
         compare_phase,
         compare_strategies,
-        metrics = ["casualty", "evacuated", "mean_evacuation_time", "shelter_utilization"],
+        metrics = ["shelter_utilization", "mean_evacuation_time", "evacuated", "casualty"],
         out_name = "strategy_comparison_overlay.png",
     )
     
@@ -390,7 +397,7 @@ def Script():
     pairwise_group_pngs, pairwise_group_metric_pngs = _plot_pairwise_metric_groups(
         compare_phase,
         pairwise_groups,
-        metrics = ["casualty", "evacuated", "mean_evacuation_time", "shelter_utilization"],
+        metrics = ["shelter_utilization", "mean_evacuation_time", "evacuated", "casualty"],
         out_dir_name = "policy_pairwise_groups",
         x_min = 0,
         x_max = 240,
