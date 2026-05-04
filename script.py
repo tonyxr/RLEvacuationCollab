@@ -382,6 +382,7 @@ def _episode_summary(base_phase: str, strategy: str):
             "final_casualty": float(last.get("casualty", np.nan)),
             "final_evacuated": float(last.get("evacuated", np.nan)),
             "final_arrival": float(last.get("arrival", np.nan)),
+            "final_successful_evacuation_rate": float(last.get("successful_evacuation_rate", np.nan)),
             "mean_evacuation_time": float(last.get("mean_evacuation_time", np.nan)),
         })
     if not rows:
