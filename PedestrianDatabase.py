@@ -597,6 +597,11 @@ class PedDS:
             
             while step_left > 1e-6 and not ped.terminated:
                 if ped.atNode: 
+                    if self.shelter_osmid_map and ped.currNode and ped.currNode.OSMID in self.shelter_osmid_map:
+                        self.arrive_node(ped, ped.currNode)
+                        if ped.terminated:
+                            break
+
                     if ped.routeFollowing and ped.currNode and ped.currNode.OSMID == ped.routeFollowing.endNode.OSMID:
                         if not ped.affected:
                             self.terminatePedestrianAgent(ped, "Arrival")

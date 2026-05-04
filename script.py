@@ -10,6 +10,7 @@ import os
 import glob
 import random
 import shutil
+import zipfile
 import pandas as pd
 import numpy as np
 try:
@@ -279,7 +280,16 @@ def _plot_strategy_comparison_curves(base_phase: str, strategies, metrics = None
                 linewidth = 2.8 if is_rl else 1.8,
                 alpha = 1.0 if is_rl else 0.85,
             )
-        ax.set_title(f"{metric} (mean over replications)")
+        if metric == "shelter_utilization":
+            ax.set_title("shelter_utilization = occupied_shelter_slots / installed_shelter_capacity (mean over replications)")
+            final_vals = []
+            for _strategy, _df in curve_by_strategy.items():
+                if metric in _df.columns and len(_df[metric]) > 0:
+                    final_vals.append(float(_df[metric].iloc[-1]))
+            if final_vals and max(final_vals) <= 1e-9:
+                ax.text(0.5, 1.02, "Note: all strategies are ~0.0, indicating shelters are not reached (or no capacity installed).", transform=ax.transAxes, ha="center", va="bottom", fontsize=9, color="darkred")
+        else:
+            ax.set_title(f"{metric} (mean over replications)")
         ax.set_ylabel(metric)
         ax.grid(True, alpha = 0.3)
         ax.legend()
@@ -364,6 +374,45 @@ def _episode_summary(base_phase: str, strategy: str):
         return None
     return pd.DataFrame(rows)
 
+def _plot_training_convergence(train_phase: str, out_name: str = "training_convergence_by_replication.png"):
+    df = _episode_summary(train_phase, "rl")
+    if df is None or df.empty:
+        return None
+
+    df = df.sort_values(by="rep").reset_index(drop=True)
+    x = df["rep"].to_numpy(dtype=float)
+    y = df["final_reward_ma"].to_numpy(dtype=float)
+    win = max(3, int(len(y) * 0.2))
+    trend = pd.Series(y).rolling(win, min_periods=1).mean().to_numpy()
+
+    fig, ax = plt.subplots(1, 1, figsize=(9, 4.5))
+    ax.plot(x, y, marker="o", linewidth=1.5, alpha=0.75, label="final_reward_ma")
+    ax.plot(x, trend, linewidth=2.5, label=f"rolling_mean(w={win})")
+    ax.set_title(f"Training convergence ({train_phase})")
+    ax.set_xlabel("replication")
+    ax.set_ylabel("final_reward_ma")
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    out = _runs_path(train_phase, out_name)
+    fig.tight_layout()
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    return out
+
+
+
+def _export_launch_package(launch_id: str) -> str:
+    launch_dir = _runs_path(launch_id)
+    package_path = _runs_path(f"{launch_id}_package.zip")
+    os.makedirs(os.path.dirname(package_path), exist_ok = True)
+    with zipfile.ZipFile(package_path, "w", compression = zipfile.ZIP_DEFLATED) as zf:
+        for root, _, files in os.walk(launch_dir):
+            for fn in files:
+                full = os.path.join(root, fn)
+                rel = os.path.relpath(full, _runs_path())
+                zf.write(full, arcname = rel)
+    return package_path
+
 def _run_replications(machine: str, replications: int, phase: str, strategy: str,
                       train_mode: bool, overrides: dict):
     for r in range(1, replications + 1):
@@ -393,13 +442,13 @@ def Script():
     eval_replications = 12
     
     # user-requested fixed scenario
-    overrides = {
-    }
+    overrides = {}
     
     # (a) RL convergence diagnostics (reward logs + trajectory graph)
     train_phase = os.path.join(launch_id, "train")
     _run_replications(machine, train_replications, train_phase, "rl", True, overrides)
     train_png = _aggregate_strategy_curves(train_phase, "rl", metrics = ["reward", "reward_ma_window", "casualty", "evacuated"])
+    train_conv_png = _plot_training_convergence(train_phase)
 
     # (b) Policy comparison: RL vs random vs heuristic vs all shelters installed at t=0
     compare_phase = os.path.join(launch_id, "eval_compare")
@@ -470,6 +519,7 @@ def Script():
     
     print("\n=== Completed ===")
     print("Training summary graph:", train_png)
+    print("Training convergence graph:", train_conv_png)
     for p in compare_tables:
         print("Comparison summary table:", p)
     print("Comparison overlay graph:", compare_overlay_png)
@@ -477,6 +527,9 @@ def Script():
     required_metrics = ["shelter_utilization", "mean_evacuation_time", "evacuated", "casualty"]
     _validate_graph_outputs(pairwise_group_metric_pngs, pairwise_groups, required_metrics)
     _print_graph_outputs(pairwise_group_metric_pngs)
+    
+    package_zip = _export_launch_package(launch_id)
+    print("Download package (includes convergence graph):", package_zip)
     
     
     # Keep a stable pointer for Colab/export snippets that package `runs/`.
