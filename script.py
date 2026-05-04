@@ -79,12 +79,29 @@ def _save_svg_line_plot(series_map: dict, title: str, x_label: str, y_label: str
     with open(out_path, "w", encoding = "utf-8") as fh:
         fh.write("\n".join(lines))
 
-def _is_colab_runtime() -> bool:
-    if "COLAB_RELEASE_TAG" in os.environ:
-        return True
+def _has_live_ipython_kernel() -> bool:
     try:
+        from IPython import get_ipython
+        ip = get_ipython()
+    except Exception:
+        return False
+    return bool((ip is not None) and getattr(ip, "kernel", None) is not None)
+
+def _is_colab_runtime() -> bool:
+    if not _has_live_ipython_kernel():
+        return False
+    try:
+        from IPython import get_ipython
+        ip = get_ipython()
+        if ip is None:
+            return False
+        shell_name = ip.__class__.__module__
+        if "google.colab" in shell_name:
+            return True
+        if "COLAB_RELEASE_TAG" in os.environ:
+            return True
         import google.colab  # noqa: F401
-        return True
+        return "google.colab" in str(type(ip))
     except Exception:
         return False
     
@@ -99,7 +116,7 @@ def _print_graph_outputs(group_metric_pngs: dict):
             path = metric_map[metric_name]
             print(f"  - {metric_name}: {path}")
         print(f"  -> graph_count={len(metric_map)}")
-    if not _is_colab_runtime():
+    if not _has_live_ipython_kernel():
         return
     try:
         from IPython.display import Image, SVG, display
@@ -134,6 +151,10 @@ def _colab_download_artifacts(paths):
         from google.colab import files
     except Exception as exc:
         print(f"[COLAB DOWNLOAD] unavailable: {exc}")
+        return
+    
+    if not _has_live_ipython_kernel():
+        print("[COLAB DOWNLOAD] skipped: no live IPython kernel attached")
         return
 
     print("\n[COLAB DOWNLOAD] downloading artifacts one-by-one...")
