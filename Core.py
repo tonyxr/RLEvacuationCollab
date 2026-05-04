@@ -551,6 +551,8 @@ class Core:
             total_capacity = float(metrics["total_shelter_capacity"])
             total_flow = float(sum(getattr(sh, "shelterFlow", 0.0) for sh in self.shelterDS.shelterList.values()))
             metrics["shelter_utilization"] = (total_flow / total_capacity) if total_capacity > 0.0 else 0.0
+            classified_total = float(metrics["arrival"] + metrics["evacuated"] + metrics["casualty"])
+            metrics["successful_evacuation_rate"] = (float(metrics["evacuated"]) / classified_total) if classified_total > 0.0 else 0.0
             
             self.logger.log_step(t=time, reward=float(rl_out.get("reward_norm", rl_out.get("reward", 0.0))), metrics=metrics)
             

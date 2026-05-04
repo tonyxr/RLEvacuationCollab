@@ -97,6 +97,8 @@ class RewardProcessor:
                    timelyReroutedEvacScore: float = 0.0,
                    immediateReroutedCount: float = 0.0,
                    strandedCount: int = 0,
+                   t: int = 0,
+                   maxEpisodeSteps: int = 120,
                    ) -> float:
         
         install_cost = float(max(0.0, installedShelterCapacityThisStep))
@@ -109,13 +111,23 @@ class RewardProcessor:
         # Scale opening cost with shelter capacity volume and penalize low immediate utilization.
         waste_multiplier = 1.0 + (1.0 / (1.0 + immediate_rerouted))
         
+        progress = float(max(0.0, min(1.0, float(t) / max(1.0, float(maxEpisodeSteps)))))
+        early_focus = 1.0 - progress
+        late_focus = progress
+
+        immediate_weight = self.immediate_reroute_reward_weight * (1.0 + 1.25 * early_focus)
+        timely_weight = self.timely_rerouted_evac_weight * (1.0 + 1.25 * late_focus)
+        delayed_weight = self.delayed_new_shelter_evac_weight * (1.0 + 0.60 * late_focus)
+        cost_weight = self.shelter_install_cost_weight
+        casualty_weight = self.casualty_penalty_weight
+        
         totalReward = (
-            - self.shelter_install_cost_weight * install_cost * waste_multiplier
-            + self.immediate_reroute_reward_weight * immediate_rerouted
-            + self.delayed_new_shelter_evac_weight * delayed_evac
+            - cost_weight * install_cost * waste_multiplier
+            + immediate_weight * immediate_rerouted
+            + delayed_weight * delayed_evac
             + self.rerouted_arrival_speed_weight * rerouted_arrival_speed
-            + self.timely_rerouted_evac_weight * timely_rerouted_evac
-            - self.casualty_penalty_weight * casualty_delta
+            + timely_weight * timely_rerouted_evac
+            - casualty_weight * casualty_delta
             - self.stranded_penalty_weight * stranded_count
         )
         
@@ -144,6 +156,8 @@ class RewardProcessor:
                 kwargs.get("timelyReroutedEvacScore", 0.0),
                 kwargs.get("immediateReroutedCount", 0.0),
                 kwargs.get("strandedCount", 0),
+                kwargs.get("t", 0),
+                kwargs.get("maxEpisodeSteps", 120),
             )
 
 def _safe_sum(x, default = 0.0) -> float:
