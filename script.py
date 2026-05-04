@@ -118,6 +118,34 @@ def _print_graph_outputs(group_metric_pngs: dict):
             else:
                 display(Image(filename = path))
                 
+
+
+def _log_artifact(label: str, path: str):
+    if not path:
+        return
+    exists = os.path.exists(path)
+    status = "OK" if exists else "MISSING"
+    print(f"[ARTIFACT][{status}] {label}: {path}")
+
+def _colab_download_artifacts(paths):
+    if not _is_colab_runtime():
+        return
+    try:
+        from google.colab import files
+    except Exception as exc:
+        print(f"[COLAB DOWNLOAD] unavailable: {exc}")
+        return
+
+    print("\n[COLAB DOWNLOAD] downloading artifacts one-by-one...")
+    for p in paths:
+        if not p or (not os.path.exists(p)):
+            continue
+        try:
+            print(f"[COLAB DOWNLOAD] {p}")
+            files.download(p)
+        except Exception as exc:
+            print(f"[COLAB DOWNLOAD] failed for {p}: {exc}")
+                
 def _validate_graph_outputs(group_metric_pngs: dict, groups: dict, required_metrics):
     expected_group_names = set(groups.keys())
     actual_group_names = set(group_metric_pngs.keys())
@@ -487,6 +515,8 @@ def Script():
     _run_replications(machine, train_replications, train_phase, "rl", True, overrides)
     train_png = _aggregate_strategy_curves(train_phase, "rl", metrics = ["reward", "reward_ma_window", "casualty", "evacuated"])
     train_conv_png = _plot_training_convergence(train_phase)
+    _log_artifact("training_summary", train_png)
+    _log_artifact("training_convergence", train_conv_png)
 
     # (b) Policy comparison: RL vs random vs heuristic vs all shelters installed at t=0
     compare_phase = os.path.join(launch_id, "eval_compare")
@@ -499,6 +529,7 @@ def Script():
             strategy,
             metrics = ["shelter_utilization", "mean_evacuation_time", "evacuated", "casualty"],
         )
+        _log_artifact(f"{strategy}_summary", compare_pngs[strategy])
         
     compare_overlay_png = _plot_strategy_comparison_curves(
         compare_phase,
@@ -573,6 +604,15 @@ def Script():
     filtered_assets_zip = _runs_path(f"{launch_id}_graphs_and_tables.zip")
     _export_graph_assets_zip(_runs_path(launch_id), filtered_assets_zip)
     print("Download graph/table package:", filtered_assets_zip)
+    
+    
+    download_paths = [train_png, train_conv_png, compare_overlay_png, package_zip, filtered_assets_zip]
+    for p in compare_tables:
+        download_paths.append(p)
+    for group_name in sorted(pairwise_group_metric_pngs.keys()):
+        for metric_name in sorted(pairwise_group_metric_pngs[group_name].keys()):
+            download_paths.append(pairwise_group_metric_pngs[group_name][metric_name])
+    _colab_download_artifacts(download_paths)
     
     
     # Keep a stable pointer for Colab/export snippets that package `runs/`.
