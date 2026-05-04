@@ -433,6 +433,24 @@ def _export_launch_package(launch_id: str) -> str:
                 zf.write(full, arcname = rel)
     return package_path
 
+
+def _export_graph_assets_zip(source_root: str, out_zip_path: str, include_exts=(".png", ".svg", ".csv")) -> str:
+    """Export graph/table artifacts from ``source_root`` into a compact zip file."""
+    include_exts = tuple(ext.lower() for ext in include_exts)
+    os.makedirs(os.path.dirname(out_zip_path), exist_ok = True)
+    total = 0
+    with zipfile.ZipFile(out_zip_path, "w", compression = zipfile.ZIP_DEFLATED) as zf:
+        for root, _, files in os.walk(source_root):
+            for fn in files:
+                if os.path.splitext(fn)[1].lower() not in include_exts:
+                    continue
+                full = os.path.join(root, fn)
+                rel = os.path.relpath(full, source_root)
+                zf.write(full, arcname = rel)
+                total += 1
+    print(f"[EXPORT] graph assets zipped: files={total} root={source_root} -> {out_zip_path}")
+    return out_zip_path
+
 def _run_replications(machine: str, replications: int, phase: str, strategy: str,
                       train_mode: bool, overrides: dict):
     for r in range(1, replications + 1):
@@ -523,7 +541,7 @@ def Script():
         mean_df.to_csv(mean_out, index = False)
         compare_tables.append(mean_out)
 
-        perf_cols = ["strategy", "final_casualty", "final_evacuated", "mean_evacuation_time"]
+        perf_cols = ["strategy", "final_casualty", "final_evacuated", "final_successful_evacuation_rate", "mean_evacuation_time"]
         printable = mean_df[perf_cols].sort_values(by = "strategy").reset_index(drop = True)
         print("\n[POLICY COMPARISON] Mean performance over replications")
         print(printable.to_string(index = False))
@@ -550,6 +568,11 @@ def Script():
     
     package_zip = _export_launch_package(launch_id)
     print("Download package (includes convergence graph):", package_zip)
+    
+    
+    filtered_assets_zip = _runs_path(f"{launch_id}_graphs_and_tables.zip")
+    _export_graph_assets_zip(_runs_path(launch_id), filtered_assets_zip)
+    print("Download graph/table package:", filtered_assets_zip)
     
     
     # Keep a stable pointer for Colab/export snippets that package `runs/`.
