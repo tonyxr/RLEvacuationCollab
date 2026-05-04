@@ -94,7 +94,8 @@ def _print_graph_outputs(group_metric_pngs: dict):
     for idx, group_name in enumerate(ordered_group_names, start = 1):
         metric_map = group_metric_pngs[group_name]
         print(f"\nGroup {idx}: {group_name}")
-        for metric_name, path in metric_map.items():
+        for metric_name in sorted(metric_map.keys()):
+            path = metric_map[metric_name]
             print(f"  - {metric_name}: {path}")
         print(f"  -> graph_count={len(metric_map)}")
     if not _is_colab_runtime():
@@ -107,13 +108,44 @@ def _print_graph_outputs(group_metric_pngs: dict):
     
     for idx, group_name in enumerate(ordered_group_names, start = 1):
         print(f"\n=== Group {idx} inline display: {group_name} ===")
-        for metric_name, path in group_metric_pngs[group_name].items():
+        for metric_name in sorted(group_metric_pngs[group_name].keys()):
+            path = group_metric_pngs[group_name][metric_name]
             print(f"[{metric_name}] {path}")
             ext = os.path.splitext(path)[1].lower()
             if ext == ".svg":
                 display(SVG(filename = path))
             else:
                 display(Image(filename = path))
+                
+def _validate_graph_outputs(group_metric_pngs: dict, groups: dict, required_metrics):
+    expected_group_names = set(groups.keys())
+    actual_group_names = set(group_metric_pngs.keys())
+    missing_groups = sorted(expected_group_names - actual_group_names)
+    extra_groups = sorted(actual_group_names - expected_group_names)
+    if missing_groups or extra_groups:
+        raise RuntimeError(
+            f"Graph group mismatch. missing={missing_groups} extra={extra_groups}"
+        )
+
+    actual_groups = len(group_metric_pngs)
+    expected_groups = len(groups)
+    if actual_groups != expected_groups:
+        raise RuntimeError(f"Expected {expected_groups} groups, got {actual_groups}.")
+
+    for group_name, metric_map in group_metric_pngs.items():
+        missing_metrics = [m for m in required_metrics if m not in metric_map]
+        if missing_metrics:
+            raise RuntimeError(f"Missing required metrics for {group_name}: {missing_metrics}")
+        for metric_name, path in metric_map.items():
+            if not os.path.exists(path):
+                raise RuntimeError(f"Missing graph output for {group_name}/{metric_name}: {path}")
+            if os.path.getsize(path) == 0:
+                raise RuntimeError(f"Empty graph output for {group_name}/{metric_name}: {path}")
+            if path.lower().endswith(".svg"):
+                with open(path, "r", encoding = "utf-8") as fh:
+                    svg_text = fh.read()
+                if "<polyline" not in svg_text:
+                    raise RuntimeError(f"SVG missing polyline for {group_name}/{metric_name}: {path}")
             
 def _read_progress_csv(path: str):
     """Read progress logs robustly across schema revisions and malformed rows."""
@@ -357,7 +389,7 @@ def Script():
     print(f"[RUN ROOT] {os.path.join(RUNS_ROOT, launch_id)}")
     
     machine = "a"
-    train_replications = 30
+    train_replications = 20
     eval_replications = 12
     
     # user-requested fixed scenario
@@ -442,16 +474,8 @@ def Script():
         print("Comparison summary table:", p)
     print("Comparison overlay graph:", compare_overlay_png)
     
-    expected_groups = 4
-    expected_graphs_per_group = 4
-    actual_groups = len(pairwise_group_metric_pngs)
-    if actual_groups != expected_groups:
-        raise RuntimeError(f"Expected {expected_groups} groups, got {actual_groups}.")
-    for group_name, metric_map in pairwise_group_metric_pngs.items():
-        if len(metric_map) != expected_graphs_per_group:
-            raise RuntimeError(
-                f"Expected {expected_graphs_per_group} metric plots for {group_name}, got {len(metric_map)}."
-            )
+    required_metrics = ["shelter_utilization", "mean_evacuation_time", "evacuated", "casualty"]
+    _validate_graph_outputs(pairwise_group_metric_pngs, pairwise_groups, required_metrics)
     _print_graph_outputs(pairwise_group_metric_pngs)
     
     

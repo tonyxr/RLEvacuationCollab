@@ -306,6 +306,7 @@ class RLBridge:
         x_ped, x_haz, x_inf = self._get_obs_tensors()          # (N, D)
         g = fit_gnn(x_ped, x_haz, x_inf)                       # batch dim = 1
         a_sh, action_mask, lp_sh, value = self._select_actions(g)
+        sh_logits, _ = self.policy(g)
 
         # Map actions to environment (A-1 = no-op)
         added_sh = 0
@@ -320,7 +321,6 @@ class RLBridge:
         )
         if shelter_budget_reached:
             a_sh = torch.as_tensor([self.num_cells], dtype=torch.long, device=self.device)
-            sh_logits, _ = self.policy(g)
             masked_logits = self._safe_masked_logits(sh_logits, action_mask)
             sh_dist = torch.distributions.Categorical(logits=masked_logits)
             lp_sh = sh_dist.log_prob(a_sh)
@@ -330,7 +330,6 @@ class RLBridge:
             )
         elif self.deployment_strategy in {"none", "initial_only"}:
             a_sh = torch.as_tensor([self.num_cells], dtype=torch.long, device=self.device)
-            sh_logits, _ = self.policy(g)
             masked_logits = self._safe_masked_logits(sh_logits, action_mask)
             sh_dist = torch.distributions.Categorical(logits=masked_logits)
             lp_sh = sh_dist.log_prob(a_sh)
@@ -343,7 +342,6 @@ class RLBridge:
                 picked_idx = self._heuristic_pick_cell_idx()
                 shelter_decision = "heuristic-upper-layer"
             a_sh = torch.as_tensor([picked_idx], dtype=torch.long, device=self.device)
-            sh_logits, _ = self.policy(g)
             masked_logits = self._safe_masked_logits(sh_logits, action_mask)
             sh_dist = torch.distributions.Categorical(logits=masked_logits)
             lp_sh = sh_dist.log_prob(a_sh)
@@ -351,7 +349,6 @@ class RLBridge:
             if int(a_sh.item()) >= self.num_cells:
                 fallback_idx = self._heuristic_pick_cell_idx()
                 a_sh = torch.as_tensor([fallback_idx], dtype=torch.long, device=self.device)
-                sh_logits, _ = self.policy(g)
                 masked_logits = self._safe_masked_logits(sh_logits, action_mask)
                 sh_dist = torch.distributions.Categorical(logits=masked_logits)
                 lp_sh = sh_dist.log_prob(a_sh)
@@ -387,7 +384,6 @@ class RLBridge:
         elif not shelter_gate_open:
             # Force no-op action on non-deployment timesteps.
             a_sh = torch.as_tensor([self.num_cells], dtype=torch.long, device=self.device)
-            sh_logits, _ = self.policy(g)
             masked_logits = self._safe_masked_logits(sh_logits, action_mask)
             sh_dist = torch.distributions.Categorical(logits=masked_logits)
             lp_sh = sh_dist.log_prob(a_sh)
