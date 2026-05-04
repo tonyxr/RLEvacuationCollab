@@ -393,8 +393,12 @@ def _plot_training_convergence(train_phase: str, out_name: str = "training_conve
     if df is None or df.empty:
         return None
 
-    df = df.sort_values(by="rep").reset_index(drop=True)
-    x = df["rep"].to_numpy(dtype=float)
+    # `_episode_summary` exposes replication IDs under `replication` (e.g., "rep_3").
+    # Keep plotting resilient by deriving a numeric order even if formatting varies.
+    rep_series = df.get("replication", pd.Series(np.arange(1, len(df) + 1), index=df.index))
+    rep_numeric = rep_series.astype(str).str.extract(r"(\d+)", expand=False)
+    df = df.assign(rep=rep_numeric).sort_values(by="rep", na_position="last").reset_index(drop=True)
+    x = pd.to_numeric(df["rep"], errors="coerce").fillna(np.arange(1, len(df) + 1)).to_numpy(dtype=float)
     y = df["final_reward_ma"].to_numpy(dtype=float)
     win = max(3, int(len(y) * 0.2))
     trend = pd.Series(y).rolling(win, min_periods=1).mean().to_numpy()
