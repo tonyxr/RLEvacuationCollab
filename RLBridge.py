@@ -235,6 +235,39 @@ class RLBridge:
                 timely_rerouted_evac_score += float(delta) * completion_weight * decay
 
         return utilization, rerouted_arrival_speed_score, timely_rerouted_evac_score
+    
+    def _cell_criticality_score(self, cell_idx: int) -> float:
+        """
+        Compute a normalized [0,1] criticality score for the selected cell.
+        Combines local hazard, pedestrian density, and shelter pressure terms.
+        """
+        if cell_idx < 0 or cell_idx >= self.num_cells:
+            return 0.0
+        ct = self.core.cellTracker
+        i = int(cell_idx // self.ny)
+        j = int(cell_idx % self.ny)
+        try:
+            hazard = float(ct.dangerLevelByCell[i][j])
+            density = float(ct.countByCell[i][j])
+            shelter_pressure = float(ct.shelterFulfillByCell[i][j])
+        except Exception:
+            return 0.0
+
+        hazard_map = np.asarray(ct.dangerLevelByCell, dtype=np.float32)
+        density_map = np.asarray(ct.countByCell, dtype=np.float32)
+        pressure_map = np.asarray(ct.shelterFulfillByCell, dtype=np.float32)
+
+        def _norm(value: float, arr: np.ndarray) -> float:
+            lo = float(np.nanmin(arr))
+            hi = float(np.nanmax(arr))
+            if not np.isfinite(value) or not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+                return 0.0
+            return float(np.clip((value - lo) / (hi - lo), 0.0, 1.0))
+
+        h = _norm(hazard, hazard_map)
+        d = _norm(density, density_map)
+        p = _norm(shelter_pressure, pressure_map)
+        return float(np.clip(0.5 * h + 0.3 * d + 0.2 * p, 0.0, 1.0))
 
     # ---- helpers ----
     def _get_obs_tensors(self):
@@ -396,6 +429,9 @@ class RLBridge:
             count_casualty = int(pedRes.get("casualty", 0))
             terms = extract_reward_terms(self.core.cellTracker)
             delayed_new_shelter_evac, rerouted_arrival_speed_score, timely_rerouted_evac_score = self._latest_shelter_utilization_reward()
+            selected_cell_idx = int(a_sh.item()) if int(a_sh.item()) < self.num_cells else -1
+            cell_criticality_score = self._cell_criticality_score(selected_cell_idx)
+            local_impact_score = float(rerouted_arrival_speed_score + timely_rerouted_evac_score)
             r = self.rew.rewardMode(
                 numCasualties=count_casualty,
                 t=self.t,
@@ -403,6 +439,8 @@ class RLBridge:
                 fulfillmentSum=terms["fulfillmentSum"],
                 evacuatedTotal=int(pedRes.get("evacuated", 0)),
                 totalShelters=len(self.core.shelterDS.shelterList),
+                cellCriticalityScore=cell_criticality_score,
+                localImpactScore=local_impact_score,
                 installedShelterCapacityThisStep=installed_capacity,
                 delayedNewShelterEvac=delayed_new_shelter_evac,
                 reroutedArrivalSpeedScore=rerouted_arrival_speed_score,

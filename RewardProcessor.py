@@ -29,43 +29,17 @@ class RewardProcessor:
         mode: str = "full",
         alpha: float = 1.0,
         beta: float = 0.01,
-        delta_evac: float = 0.18,
-        gamma_u_sh: float = 0.12,
-        zeta_cost_sh: float = 0.001,
-        install_bonus_sh: float = 0.12,
-        failed_install_penalty_sh: float = 0.08,
-        capacity_waste_penalty_sh: float = 0.10,
-        timely_fill_bonus_sh: float = 0.16,
-        open_shelter_penalty_sh: float = 0.01,
-        wellness_penalty_coef: float = 0.005,
-        shelter_install_cost_weight: float = 0.005,
-        delayed_new_shelter_evac_weight: float = 0.2,
-        rerouted_arrival_speed_weight: float = 0.3,
-        immediate_reroute_reward_weight: float = 0.25,
-        timely_rerouted_evac_weight: float = 0.35,
-        casualty_penalty_weight: float = 2.5,
-        stranded_penalty_weight: float = 0.02,
+        cell_criticality_weight: float = 1.0,
+        local_impact_weight: float = 1.5,
+        step_penalty_weight: float = 0.01,
     ):
          # which reward (simple or full) mechanism to use
          self.mode = mode
          self.alpha = alpha
          self.beta = beta
-         self.delta_evac = delta_evac
-         self.gamma_u_sh = gamma_u_sh
-         self.zeta_cost_sh = zeta_cost_sh
-         self.install_bonus_sh = install_bonus_sh
-         self.failed_install_penalty_sh = failed_install_penalty_sh
-         self.capacity_waste_penalty_sh = capacity_waste_penalty_sh
-         self.timely_fill_bonus_sh = timely_fill_bonus_sh
-         self.open_shelter_penalty_sh = open_shelter_penalty_sh
-         self.wellness_penalty_coef = wellness_penalty_coef
-         self.shelter_install_cost_weight = float(shelter_install_cost_weight)
-         self.delayed_new_shelter_evac_weight = float(delayed_new_shelter_evac_weight)
-         self.rerouted_arrival_speed_weight = float(rerouted_arrival_speed_weight)
-         self.immediate_reroute_reward_weight = float(immediate_reroute_reward_weight)
-         self.timely_rerouted_evac_weight = float(timely_rerouted_evac_weight)
-         self.casualty_penalty_weight = float(casualty_penalty_weight)
-         self.stranded_penalty_weight = float(stranded_penalty_weight)
+         self.cell_criticality_weight = float(cell_criticality_weight)
+         self.local_impact_weight = float(local_impact_weight)
+         self.step_penalty_weight = float(step_penalty_weight)
          
          self.currFulfillment = 0
          self.lastFulfillment = 0
@@ -91,8 +65,8 @@ class RewardProcessor:
                    fulfillmentSum: float,
                    evacuatedTotal: int,
                    totalShelters: int,
-                   installedShelterCapacityThisStep: float = 0.0,
-                   delayedNewShelterEvac: float = 0.0,
+                   cellCriticalityScore: float = 0.0,
+                   localImpactScore: float = 0.0,
                    reroutedArrivalSpeedScore: float = 0.0,
                    timelyReroutedEvacScore: float = 0.0,
                    immediateReroutedCount: float = 0.0,
@@ -101,34 +75,18 @@ class RewardProcessor:
                    maxEpisodeSteps: int = 120,
                    ) -> float:
         
-        install_cost = float(max(0.0, installedShelterCapacityThisStep))
-        delayed_evac = float(max(0.0, delayedNewShelterEvac))
-        rerouted_arrival_speed = float(max(0.0, reroutedArrivalSpeedScore))
-        timely_rerouted_evac = float(max(0.0, timelyReroutedEvacScore))
-        immediate_rerouted = float(max(0.0, immediateReroutedCount))
-        stranded_count = float(max(0, int(strandedCount)))
-        casualty_delta = float(max(0, int(numCasualties) - int(self.lastCasualty)))
-        # Scale opening cost with shelter capacity volume and penalize low immediate utilization.
-        waste_multiplier = 1.0 + (1.0 / (1.0 + immediate_rerouted))
-        
-        progress = float(max(0.0, min(1.0, float(t) / max(1.0, float(maxEpisodeSteps)))))
-        early_focus = 1.0 - progress
-        late_focus = progress
-
-        immediate_weight = self.immediate_reroute_reward_weight * (1.0 + 1.25 * early_focus)
-        timely_weight = self.timely_rerouted_evac_weight * (1.0 + 1.25 * late_focus)
-        delayed_weight = self.delayed_new_shelter_evac_weight * (1.0 + 0.60 * late_focus)
-        cost_weight = self.shelter_install_cost_weight
-        casualty_weight = self.casualty_penalty_weight
+        # Simplified cell-selection reward:
+        # 1) reward picking critical cells now
+        # 2) reward short-horizon local improvement after picking that cell
+        # 3) constant step cost to avoid dithering
+        criticality_score = float(max(0.0, cellCriticalityScore))
+        local_impact_raw = float(localImpactScore)
+        local_impact_score = float(np.clip(local_impact_raw, -1.0, 1.0))
         
         totalReward = (
-            - cost_weight * install_cost * waste_multiplier
-            + immediate_weight * immediate_rerouted
-            + delayed_weight * delayed_evac
-            + self.rerouted_arrival_speed_weight * rerouted_arrival_speed
-            + timely_weight * timely_rerouted_evac
-            - casualty_weight * casualty_delta
-            - self.stranded_penalty_weight * stranded_count
+            self.cell_criticality_weight * criticality_score
+            + self.local_impact_weight * local_impact_score
+            - self.step_penalty_weight
         )
         
         self.lastFulfillment = fulfillmentSum
@@ -150,8 +108,11 @@ class RewardProcessor:
                 kwargs.get("fulfillmentSum", 0.0),
                 kwargs.get("evacuatedTotal", 0),
                 kwargs.get("totalShelters", 0),
-                kwargs.get("installedShelterCapacityThisStep", 0.0),
-                kwargs.get("delayedNewShelterEvac", 0.0),
+                kwargs.get("cellCriticalityScore", kwargs.get("immediateReroutedCount", 0.0)),
+                kwargs.get(
+                    "localImpactScore",
+                    kwargs.get("reroutedArrivalSpeedScore", 0.0) + kwargs.get("timelyReroutedEvacScore", 0.0),
+                ),
                 kwargs.get("reroutedArrivalSpeedScore", 0.0),
                 kwargs.get("timelyReroutedEvacScore", 0.0),
                 kwargs.get("immediateReroutedCount", 0.0),
