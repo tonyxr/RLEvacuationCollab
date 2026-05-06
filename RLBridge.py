@@ -83,6 +83,7 @@ class RLBridge:
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.rew = RewardProcessor(mode=mode)
+        self.rew.reset_episode()
 
         # Build policy
         self.nx, self.ny = int(core.cellX), int(core.cellY)
@@ -553,6 +554,7 @@ class RLBridge:
         if not self.train_mode:
             self.traj.clear()
             self.t = 0
+            self.rew.reset_episode()
             self.shelter_evac_history.clear()
             self.shelter_last_flow.clear()
             self.installed_shelter_order.clear()
@@ -704,6 +706,7 @@ class RLBridge:
         # reset episode storage
         self.traj.clear()
         self.t = 0
+        self.rew.reset_episode()
         self.shelter_evac_history.clear()
         self.shelter_last_flow.clear()
         self.installed_shelter_order.clear()

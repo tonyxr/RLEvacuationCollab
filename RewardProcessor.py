@@ -32,6 +32,9 @@ class RewardProcessor:
         cell_criticality_weight: float = 1.0,
         local_impact_weight: float = 1.5,
         step_penalty_weight: float = 0.01,
+        evac_progress_weight: float = 0.1,
+        casualty_delta_weight: float = 1.0,
+        fulfillment_delta_weight: float = 0.05,
     ):
          # which reward (simple or full) mechanism to use
          self.mode = mode
@@ -40,6 +43,9 @@ class RewardProcessor:
          self.cell_criticality_weight = float(cell_criticality_weight)
          self.local_impact_weight = float(local_impact_weight)
          self.step_penalty_weight = float(step_penalty_weight)
+         self.evac_progress_weight = float(evac_progress_weight)
+         self.casualty_delta_weight = float(casualty_delta_weight)
+         self.fulfillment_delta_weight = float(fulfillment_delta_weight)
          
          self.currFulfillment = 0
          self.lastFulfillment = 0
@@ -48,6 +54,16 @@ class RewardProcessor:
          self.lastCasualty = 0
          self.lastEvacuated = 0
          
+         self.lastTotalSHInstalled = 0
+         self.lastTotalGUInstalled = 0
+         self.lastUsedShelterCapacity = 0.0
+         
+    def reset_episode(self):
+         self.currFulfillment = 0
+         self.lastFulfillment = 0
+         self.currCasualty = 0
+         self.lastCasualty = 0
+         self.lastEvacuated = 0
          self.lastTotalSHInstalled = 0
          self.lastTotalGUInstalled = 0
          self.lastUsedShelterCapacity = 0.0
@@ -83,9 +99,26 @@ class RewardProcessor:
         local_impact_raw = float(localImpactScore)
         local_impact_score = float(np.clip(local_impact_raw, -1.0, 1.0))
         
+        # Outcome-linked shaping terms (dense deltas), normalized by active population scale
+        live_population = float(max(1, evacuatedTotal + numCasualties + max(0, strandedCount)))
+        delta_evacuated = float(evacuatedTotal - self.lastEvacuated) / live_population
+        delta_casualty = float(numCasualties - self.lastCasualty) / live_population
+        delta_fulfillment = float(fulfillmentSum - self.lastFulfillment) / live_population
+        
+        terminal_bonus = 0.0
+        is_terminal = (t >= maxEpisodeSteps - 1) or (strandedCount <= 0)
+        if is_terminal:
+            evac_rate = float(evacuatedTotal) / live_population
+            casualty_rate = float(numCasualties) / live_population
+            terminal_bonus = evac_rate - casualty_rate
+        
         totalReward = (
             self.cell_criticality_weight * criticality_score
             + self.local_impact_weight * local_impact_score
+            + self.evac_progress_weight * delta_evacuated
+            - self.casualty_delta_weight * delta_casualty
+            + self.fulfillment_delta_weight * delta_fulfillment
+            + terminal_bonus
             - self.step_penalty_weight
         )
         
