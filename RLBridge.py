@@ -138,6 +138,8 @@ class RLBridge:
         self.installed_shelter_order = []
         self.shelter_install_step = {}
         self.shelter_rerouted_count = {}
+        self.prev_tau_map = None
+        self.prev_hazard_map = None
         self.consecutive_no_reroute_installs = 0
         self.stop_new_shelter_install = False
         
@@ -247,15 +249,14 @@ class RLBridge:
         i = int(cell_idx // self.ny)
         j = int(cell_idx % self.ny)
         try:
-            hazard = float(ct.dangerLevelByCell[i][j])
-            density = float(ct.countByCell[i][j])
-            shelter_pressure = float(ct.shelterFulfillByCell[i][j])
+            hazard_map = np.asarray(ct.dangerLevelByCell, dtype=np.float32).reshape(self.nx, self.ny)
+            density_map = np.asarray(ct.countByCell, dtype=np.float32).reshape(self.nx, self.ny)
+            tau_map = self._time_to_available_shelter_map()
+            hazard = float(hazard_map[i][j])
+            density = float(density_map[i][j])
+            tau_value = float(tau_map[i][j])
         except Exception:
             return 0.0
-
-        hazard_map = np.asarray(ct.dangerLevelByCell, dtype=np.float32)
-        density_map = np.asarray(ct.countByCell, dtype=np.float32)
-        pressure_map = np.asarray(ct.shelterFulfillByCell, dtype=np.float32)
 
         def _norm(value: float, arr: np.ndarray) -> float:
             lo = float(np.nanmin(arr))
@@ -266,8 +267,62 @@ class RLBridge:
 
         h = _norm(hazard, hazard_map)
         d = _norm(density, density_map)
-        p = _norm(shelter_pressure, pressure_map)
-        return float(np.clip(0.5 * h + 0.3 * d + 0.2 * p, 0.0, 1.0))
+        tau = _norm(tau_value, tau_map)
+        return float(np.clip(0.5 * h + 0.3 * d + 0.2 * tau, 0.0, 1.0))
+
+    def _time_to_available_shelter_map(self) -> np.ndarray:
+        """
+        Approximate time-to-available-shelter per cell using Manhattan travel
+        distance plus queue delay proxy from shelter utilization.
+        """
+        max_tau = float(max(self.nx + self.ny, 1))
+        tau_map = np.full((self.nx, self.ny), max_tau, dtype=np.float32)
+        shelter_list = getattr(self.core.shelterDS, "shelterList", {})
+        available = []
+        for sh in shelter_list.values():
+            cap = float(max(0.0, getattr(sh, "shelterCap", 0.0)))
+            flow = float(max(0.0, getattr(sh, "shelterFlow", 0.0)))
+            if cap <= 0.0:
+                continue
+            cell = getattr(sh, "cellLocated", None)
+            if cell is None:
+                continue
+            ci, cj = int(cell[0]), int(cell[1])
+            if not (0 <= ci < self.nx and 0 <= cj < self.ny):
+                continue
+            if flow >= cap:
+                continue
+            queue_delay = float(flow / max(cap, 1e-6))
+            available.append((ci, cj, queue_delay))
+        if not available:
+            return tau_map
+        for i in range(self.nx):
+            for j in range(self.ny):
+                best = max_tau
+                for si, sj, qd in available:
+                    dist = abs(i - si) + abs(j - sj)
+                    cand = float(dist + qd)
+                    if cand < best:
+                        best = cand
+                tau_map[i, j] = float(best)
+        return tau_map
+
+    def _local_impact_score(self, cell_idx: int) -> float:
+        if cell_idx < 0 or cell_idx >= self.num_cells:
+            return 0.0
+        i = int(cell_idx // self.ny)
+        j = int(cell_idx % self.ny)
+        hazard_map = np.asarray(self.core.cellTracker.dangerLevelByCell, dtype=np.float32).reshape(self.nx, self.ny)
+        tau_map = self._time_to_available_shelter_map()
+        if self.prev_tau_map is None or self.prev_hazard_map is None:
+            return 0.0
+        d_tau = float(self.prev_tau_map[i, j] - tau_map[i, j])      # positive is better
+        d_haz = float(self.prev_hazard_map[i, j] - hazard_map[i, j]) # positive is better
+        # map each delta into [-1, 1] before weighted combination
+        tau_term = float(np.tanh(d_tau))
+        haz_term = float(np.tanh(d_haz))
+        return float(np.clip(0.6 * tau_term + 0.4 * haz_term, -1.0, 1.0))
+
 
     # ---- helpers ----
     def _get_obs_tensors(self):
@@ -431,7 +486,7 @@ class RLBridge:
             delayed_new_shelter_evac, rerouted_arrival_speed_score, timely_rerouted_evac_score = self._latest_shelter_utilization_reward()
             selected_cell_idx = int(a_sh.item()) if int(a_sh.item()) < self.num_cells else -1
             cell_criticality_score = self._cell_criticality_score(selected_cell_idx)
-            local_impact_score = float(rerouted_arrival_speed_score + timely_rerouted_evac_score)
+            local_impact_score = self._local_impact_score(selected_cell_idx)
             r = self.rew.rewardMode(
                 numCasualties=count_casualty,
                 t=self.t,
@@ -451,6 +506,8 @@ class RLBridge:
         else:
             # no new reward signal this step
             r = 0.0
+        self.prev_tau_map = self._time_to_available_shelter_map()
+        self.prev_hazard_map = np.asarray(self.core.cellTracker.dangerLevelByCell, dtype=np.float32).reshape(self.nx, self.ny)
         # Running normalization to improve stochastic training stability.
         delta = float(r) - self.reward_ema
         self.reward_ema += (1.0 - self.reward_norm_beta) * delta
@@ -503,6 +560,8 @@ class RLBridge:
             self.shelter_rerouted_count.clear()
             self.consecutive_no_reroute_installs = 0
             self.stop_new_shelter_install = False
+            self.prev_tau_map = None
+            self.prev_hazard_map = None
             return
 
         # Build tensors
@@ -652,6 +711,8 @@ class RLBridge:
         self.shelter_rerouted_count.clear()
         self.consecutive_no_reroute_installs = 0
         self.stop_new_shelter_install = False
+        self.prev_tau_map = None
+        self.prev_hazard_map = None
 
         if loss_history:
            pol = float(np.mean([x[0] for x in loss_history]))
