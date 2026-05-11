@@ -26,6 +26,10 @@ class HazardDS:
         self.speedReduct = speedReduct
         # container for CAProcessor
         self.cellTracker = None
+        # Keep legacy stochastic evolution code and allow temporary deterministic mode.
+        self.cell_state_evolution_mode = "deterministic"  # {"deterministic", "stochastic"}
+        self.state_duration_by_level = {1: 4, 2: 5, 3: 6, 4: 7}
+        self.spread_interval_steps = 3
         
     """Helper functions"""
     """given a (mean, variance) pair, sample prob"""
@@ -105,7 +109,11 @@ class HazardDS:
             self.hazardList[localID] = hazard
     
     def spreadUpdate(self):
-        
+        if str(self.cell_state_evolution_mode).lower() == "stochastic":
+            return self._spreadUpdateStochastic()
+        return self._spreadUpdateDeterministic()
+
+    def _spreadUpdateStochastic(self):
         if self.cellTracker is None:
             return 0
         
@@ -156,6 +164,58 @@ class HazardDS:
                     if nb not in hazard.impactedCells:
                         hazard.impactedCells.append(nb)
                 
+        return totalChange
+    
+    
+    def _spreadUpdateDeterministic(self):
+        if self.cellTracker is None:
+            return 0
+
+        totalChange = 0
+        spread_interval = max(1, int(self.spread_interval_steps))
+        for hazard in list(self.hazardList.values()):
+            if not getattr(hazard, "active", True):
+                continue
+
+            # Initialize deterministic bookkeeping fields lazily.
+            if not hasattr(hazard, "step"):
+                hazard.step = 0
+            if not hasattr(hazard, "cellImpactStep"):
+                hazard.cellImpactStep = {}
+
+            hazard.step += 1
+            fireFront = list(getattr(hazard, "impactedCells", []))
+
+            for c in fireFront:
+                hazard.cellImpactStep.setdefault(c, hazard.step)
+
+            # Deterministic spread: expand one ring every spread_interval steps.
+            newlyImpacted = []
+            if (hazard.step % spread_interval) == 0:
+                for cell in fireFront:
+                    for nb in self.cellTracker.getNeighborCells(cell):
+                        if int(self.cellTracker.getCellState(nb)) == 0:
+                            self.cellTracker.setCellState(nb, 1)
+                            hazard.cellImpactStep[nb] = hazard.step
+                            if nb not in newlyImpacted:
+                                newlyImpacted.append(nb)
+                            totalChange += 1
+                for nb in newlyImpacted:
+                    if nb not in hazard.impactedCells:
+                        hazard.impactedCells.append(nb)
+
+            # Deterministic escalation by fixed dwell-time per state level.
+            for cell in list(getattr(hazard, "impactedCells", [])):
+                curr_state = int(self.cellTracker.getCellState(cell))
+                if curr_state < 1 or curr_state >= 5:
+                    continue
+                entered_at = int(hazard.cellImpactStep.get(cell, hazard.step))
+                dwell = int(self.state_duration_by_level.get(curr_state, 5))
+                if (hazard.step - entered_at) >= dwell:
+                    self.cellTracker.setCellState(cell, curr_state + 1)
+                    hazard.cellImpactStep[cell] = hazard.step
+                    totalChange += 1
+
         return totalChange
             
         # Step 1: (If Statement, nested loop) If the cell is of State 0, iteratively check each neighboring cell to see if trigger Event 

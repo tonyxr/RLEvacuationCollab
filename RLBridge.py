@@ -92,7 +92,7 @@ class RLBridge:
         # feature dims chosen from CAProcessor wires
         self.d_ped = 2       # count, avg_vel
         self.d_haz = 3       # heat, smoke, danger
-        self.d_inf = 2       # fulfill, wellness
+        self.d_inf = 3       # fulfill, wellness, shelter_pressure(active_peds/remaining_capacity)
 
         self.policy = EvacPolicy(
             d_ped=self.d_ped, d_hazard=self.d_haz, d_infra=self.d_inf,
@@ -269,7 +269,21 @@ class RLBridge:
         h = _norm(hazard, hazard_map)
         d = _norm(density, density_map)
         tau = _norm(tau_value, tau_map)
-        return float(np.clip(0.5 * h + 0.3 * d + 0.2 * tau, 0.0, 1.0))
+        return float(np.clip(0.65 * h + 0.20 * d + 0.15 * tau, 0.0, 1.0))
+
+    def _hazard_exposure_delta(self) -> float:
+        """Positive when aggregate hazard exposure decreases from previous step."""
+        if self.prev_hazard_map is None:
+            return 0.0
+        try:
+            hazard_map = np.asarray(self.core.cellTracker.dangerLevelByCell, dtype=np.float32).reshape(self.nx, self.ny)
+            count_map = np.asarray(self.core.cellTracker.countByCell, dtype=np.float32).reshape(self.nx, self.ny)
+        except Exception:
+            return 0.0
+        prev_exposure = float(np.sum(np.clip(self.prev_hazard_map, 0.0, None) * np.clip(count_map, 0.0, None)))
+        curr_exposure = float(np.sum(np.clip(hazard_map, 0.0, None) * np.clip(count_map, 0.0, None)))
+        scale = max(1.0, float(np.sum(np.clip(count_map, 0.0, None))))
+        return float(np.clip((prev_exposure - curr_exposure) / scale, -1.0, 1.0))
 
     def _time_to_available_shelter_map(self) -> np.ndarray:
         """
@@ -344,6 +358,7 @@ class RLBridge:
         inf = torch.stack([
             _flat(ct.shelterFulfillByCell),
             _flat(ct.wellnessPenaltyByCell),
+            _flat(ct.shelterPressureByCell),
         ], dim=-1)                                     # (N,2)
         
         ped = self._safe_tensor(ped, clamp=1e6)
@@ -488,6 +503,7 @@ class RLBridge:
             selected_cell_idx = int(a_sh.item()) if int(a_sh.item()) < self.num_cells else -1
             cell_criticality_score = self._cell_criticality_score(selected_cell_idx)
             local_impact_score = self._local_impact_score(selected_cell_idx)
+            hazard_exposure_delta = self._hazard_exposure_delta()
             r = self.rew.rewardMode(
                 numCasualties=count_casualty,
                 t=self.t,
@@ -497,6 +513,7 @@ class RLBridge:
                 totalShelters=len(self.core.shelterDS.shelterList),
                 cellCriticalityScore=cell_criticality_score,
                 localImpactScore=local_impact_score,
+                hazardExposureDelta=hazard_exposure_delta,
                 installedShelterCapacityThisStep=installed_capacity,
                 delayedNewShelterEvac=delayed_new_shelter_evac,
                 reroutedArrivalSpeedScore=rerouted_arrival_speed_score,

@@ -52,6 +52,7 @@ class PedDS:
         # default impact rate by cell state
         self._default_casualty_prob = {0: 0.0, 1: 0.0, 2: 0.0, 3: 0.02, 4: 0.05, 5: 0.1}
         self._default_speed_reduct  = {0: 0.0, 1: 0.025,  2: 0.05, 3: 0.10, 4: 0.12, 5: 0.25}
+        self.casualty_mode = "danger_level"  # {"danger_level", "cell_state"}
         
         self.shelter_osmid_map = None
         
@@ -559,7 +560,7 @@ class PedDS:
             base_speed = float(getattr(ped, "desired_speed", self.maxSpeed or ped.currSpeed or 0.0))
             ped.currSpeed = max(self._speed_floor_value(), base_speed * (1.0 - reduct))
             
-            casualtyProb = float(self._default_casualty_prob.get(cellState, 0.0))
+            casualtyProb = float(self._casualty_probability(ped, cellState))
             casualtyProb = max(0.0, min(1.0, casualtyProb))
             if cellState > 3 and casualtyProb > 0.0 and np.random.random() < casualtyProb: 
                 self.terminatePedestrianAgent(ped, "Casualty")
@@ -573,6 +574,28 @@ class PedDS:
         # Step 2: Based on the casualty rate, sample by random number on if the pedestrian is to become a casualty. If so, call TerminatePedestrianAgent for pedestrian status change. 
         
         return 0
+    def _casualty_probability(self, ped, cell_state):
+        # Keep legacy logic available.
+        if str(getattr(self, "casualty_mode", "danger_level")).lower() == "cell_state":
+            return float(self._default_casualty_prob.get(int(cell_state), 0.0))
+
+        # Temporary mode: rely on cell danger level only.
+        if self.cellTracker is None or getattr(ped, "currCell", None) is None:
+            return float(self._default_casualty_prob.get(int(cell_state), 0.0))
+        ci, cj = int(ped.currCell[0]), int(ped.currCell[1])
+        idx = ci * int(self.cellY) + cj
+        danger_arr = np.asarray(getattr(self.cellTracker, "dangerLevelByCell", []), dtype=float)
+        if idx < 0 or idx >= int(danger_arr.size):
+            return float(self._default_casualty_prob.get(int(cell_state), 0.0))
+
+        danger = float(max(0.0, min(1.0, danger_arr[idx])))
+        if danger < 0.40:
+            return 0.0
+        if danger < 0.60:
+            return 0.02
+        if danger < 0.80:
+            return 0.05
+        return 0.10
     
     def pedestrianNetworkInteraction(self):
         """

@@ -47,7 +47,8 @@ class CellTracker:
         self.heatByCell = np.zeros(self.cellXNum * self.cellYNum, dtype=float)
         self.smokeByCell = np.zeros(self.cellXNum * self.cellYNum, dtype=float)
         self.dangerLevelByCell = np.zeros(self.cellXNum * self.cellYNum, dtype=float)
-        self.shelterFulfillByCell = np.zeros(self.cellXNum * self.cellYNum, dtype=float)
+        # active pedestrians / remaining shelter capacity in the cell
+        self.shelterPressureByCell = np.zeros(self.cellXNum * self.cellYNum, dtype=float)
         self.guidanceInterByCell = np.zeros(self.cellXNum * self.cellYNum, dtype=float)
         self.wellnessPenaltyByCell = np.zeros(self.cellXNum * self.cellYNum, dtype=float)
         
@@ -205,6 +206,7 @@ class CellTracker:
         count_arr  = np.zeros(total, dtype=float)
         speed_arr  = np.zeros(total, dtype=float)
         shFulfill  = np.zeros(total, dtype=float)
+        shPressure = np.zeros(total, dtype=float)
         guFlow     = np.zeros(total, dtype=float)
         danger_arr = np.zeros(total, dtype=float)
         
@@ -230,6 +232,8 @@ class CellTracker:
                     sh_cap += float(getattr(sh, "shelterCap", 0.0))
 
                 sh_fulfill = (sh_flow / sh_cap) if sh_cap > 0 else 0.0
+                sh_remain = max(0.0, sh_cap - sh_flow)
+                sh_pressure = (float(ped_volume) / max(1.0, sh_remain))
                 
                 # get guidance flow in this cell
                 gu_flow = 0.0
@@ -275,6 +279,7 @@ class CellTracker:
                 smoke_raw[k_flat] = smoke_val
                 count_arr[k_flat] = float(ped_volume)
                 shFulfill[k_flat] = float(sh_fulfill)
+                shPressure[k_flat] = float(sh_pressure)
                 guFlow[k_flat] = float(gu_flow)
                 
                 # pick speed_after if valid else before, else 0
@@ -304,6 +309,7 @@ class CellTracker:
         self.countByCell = count_arr
         self.avgVelocityByCell = speed_arr
         self.shelterFulfillByCell = shFulfill
+        self.shelterPressureByCell = shPressure
         self.guidanceInterByCell = guFlow
         self.wellnessPenaltyByCell = wellness_penalty
         

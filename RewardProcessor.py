@@ -29,12 +29,14 @@ class RewardProcessor:
         mode: str = "full",
         alpha: float = 1.0,
         beta: float = 0.01,
-        cell_criticality_weight: float = 1.0,
-        local_impact_weight: float = 1.5,
+        cell_criticality_weight: float = 0.8,
+        local_impact_weight: float = 0.9,
+        use_impact_score: bool = True,
         step_penalty_weight: float = 0.01,
-        evac_progress_weight: float = 0.1,
-        casualty_delta_weight: float = 1.0,
-        fulfillment_delta_weight: float = 0.05,
+        evac_progress_weight: float = 0.7,
+        casualty_delta_weight: float = 2.0,
+        fulfillment_delta_weight: float = 0.03,
+        hazard_exposure_weight: float = 0.1,
     ):
          # which reward (simple or full) mechanism to use
          self.mode = mode
@@ -42,10 +44,13 @@ class RewardProcessor:
          self.beta = beta
          self.cell_criticality_weight = float(cell_criticality_weight)
          self.local_impact_weight = float(local_impact_weight)
+         self.use_impact_score = bool(use_impact_score)
          self.step_penalty_weight = float(step_penalty_weight)
          self.evac_progress_weight = float(evac_progress_weight)
          self.casualty_delta_weight = float(casualty_delta_weight)
          self.fulfillment_delta_weight = float(fulfillment_delta_weight)
+         self.hazard_exposure_weight = float(hazard_exposure_weight)
+         self.hazard_exposure_weight = float(hazard_exposure_weight)
          
          self.currFulfillment = 0
          self.lastFulfillment = 0
@@ -86,6 +91,7 @@ class RewardProcessor:
                    reroutedArrivalSpeedScore: float = 0.0,
                    timelyReroutedEvacScore: float = 0.0,
                    immediateReroutedCount: float = 0.0,
+                   hazardExposureDelta: float = 0.0,
                    strandedCount: int = 0,
                    t: int = 0,
                    maxEpisodeSteps: int = 120,
@@ -97,13 +103,17 @@ class RewardProcessor:
         # 3) constant step cost to avoid dithering
         criticality_score = float(max(0.0, cellCriticalityScore))
         local_impact_raw = float(localImpactScore)
-        local_impact_score = float(np.clip(local_impact_raw, -1.0, 1.0))
+        local_impact_score = float(np.clip(local_impact_raw, -1.0, 1.0)) if self.use_impact_score else 0.0
+        # Avoid over-counting near-term impact after adding explicit hazard exposure shaping.
+        if self.hazard_exposure_weight > 0.0:
+            local_impact_score *= 0.5
         
         # Outcome-linked shaping terms (dense deltas), normalized by active population scale
         live_population = float(max(1, evacuatedTotal + numCasualties + max(0, strandedCount)))
         delta_evacuated = float(evacuatedTotal - self.lastEvacuated) / live_population
         delta_casualty = float(numCasualties - self.lastCasualty) / live_population
         delta_fulfillment = float(fulfillmentSum - self.lastFulfillment) / live_population
+        hazard_exposure_delta = float(np.clip(hazardExposureDelta, -1.0, 1.0))
         
         terminal_bonus = 0.0
         is_terminal = (t >= maxEpisodeSteps - 1) or (strandedCount <= 0)
@@ -118,6 +128,7 @@ class RewardProcessor:
             + self.evac_progress_weight * delta_evacuated
             - self.casualty_delta_weight * delta_casualty
             + self.fulfillment_delta_weight * delta_fulfillment
+            + self.hazard_exposure_weight * hazard_exposure_delta
             + terminal_bonus
             - self.step_penalty_weight
         )
@@ -148,7 +159,7 @@ class RewardProcessor:
                 ),
                 kwargs.get("reroutedArrivalSpeedScore", 0.0),
                 kwargs.get("timelyReroutedEvacScore", 0.0),
-                kwargs.get("immediateReroutedCount", 0.0),
+                kwargs.get("hazardExposureDelta", 0.0),
                 kwargs.get("strandedCount", 0),
                 kwargs.get("t", 0),
                 kwargs.get("maxEpisodeSteps", 120),
