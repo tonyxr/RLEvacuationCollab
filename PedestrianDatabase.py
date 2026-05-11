@@ -583,7 +583,10 @@ class PedDS:
         if self.cellTracker is None or getattr(ped, "currCell", None) is None:
             return float(self._default_casualty_prob.get(int(cell_state), 0.0))
         ci, cj = int(ped.currCell[0]), int(ped.currCell[1])
-        idx = ci * int(self.cellY) + cj
+        cell_y = int(getattr(self.cellTracker, "cellYNum", 0))
+        if cell_y <= 0:
+            return float(self._default_casualty_prob.get(int(cell_state), 0.0))
+        idx = ci * cell_y + cj
         danger_arr = np.asarray(getattr(self.cellTracker, "dangerLevelByCell", []), dtype=float)
         if idx < 0 or idx >= int(danger_arr.size):
             return float(self._default_casualty_prob.get(int(cell_state), 0.0))
