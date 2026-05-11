@@ -187,7 +187,8 @@ class HazardDS:
             fireFront = list(getattr(hazard, "impactedCells", []))
 
             for c in fireFront:
-                hazard.cellImpactStep.setdefault(c, hazard.step)
+                c_key = tuple(c) if isinstance(c, list) else c
+                hazard.cellImpactStep.setdefault(c_key, hazard.step)
 
             # Deterministic spread: expand one ring every spread_interval steps.
             newlyImpacted = []
@@ -196,7 +197,8 @@ class HazardDS:
                     for nb in self.cellTracker.getNeighborCells(cell):
                         if int(self.cellTracker.getCellState(nb)) == 0:
                             self.cellTracker.setCellState(nb, 1)
-                            hazard.cellImpactStep[nb] = hazard.step
+                            nb_key = tuple(nb) if isinstance(nb, list) else nb
+                            hazard.cellImpactStep[nb_key] = hazard.step
                             if nb not in newlyImpacted:
                                 newlyImpacted.append(nb)
                             totalChange += 1
@@ -209,11 +211,12 @@ class HazardDS:
                 curr_state = int(self.cellTracker.getCellState(cell))
                 if curr_state < 1 or curr_state >= 5:
                     continue
-                entered_at = int(hazard.cellImpactStep.get(cell, hazard.step))
+                cell_key = tuple(cell) if isinstance(cell, list) else cell
+                entered_at = int(hazard.cellImpactStep.get(cell_key, hazard.step))
                 dwell = int(self.state_duration_by_level.get(curr_state, 5))
                 if (hazard.step - entered_at) >= dwell:
                     self.cellTracker.setCellState(cell, curr_state + 1)
-                    hazard.cellImpactStep[cell] = hazard.step
+                    hazard.cellImpactStep[cell_key] = hazard.step
                     totalChange += 1
 
         return totalChange
