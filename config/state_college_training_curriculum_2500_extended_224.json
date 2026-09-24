@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "curriculum_id": "state_college_2500_h3_p50_stationary_v1",
+  "description": "Train one State College policy for the model-version-16 administrator-facing relational GNN under a stationary distribution of 2,500 individual evacuees, three hazards, and 50% first-exposure panic susceptibility.",
+  "stages": [
+    {
+      "stage_id": "S1",
+      "label": "stationary_state_college_2500_h3_p50",
+      "episodes_per_city": 224,
+      "variants": [
+        {
+          "variant_id": "nominal",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 2500,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "panicRate": 0.5
+          }
+        }
+      ]
+    }
+  ]
+}

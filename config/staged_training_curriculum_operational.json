@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "curriculum_id": "population_hazard_shelter_operational_v1",
+  "description": "Legacy computationally bounded five-city curriculum using weighted cohorts. Panic is explicitly disabled because individual panic/herding cannot be represented by cohort agents.",
+  "stages": [
+    {
+      "stage_id": "S1",
+      "label": "low_load_single_hazard",
+      "episodes_per_city": 2,
+      "variants": [
+        {
+          "variant_id": "nominal",
+          "weight": 1,
+          "overrides": {"pedVol": 10000, "pedestrianGroupSize": 10, "hazardVol": 1, "panicRate": 0.0}
+        }
+      ]
+    },
+    {
+      "stage_id": "S2",
+      "label": "medium_load_single_hazard",
+      "episodes_per_city": 2,
+      "variants": [
+        {
+          "variant_id": "nominal",
+          "weight": 1,
+          "overrides": {"pedVol": 20000, "pedestrianGroupSize": 20, "hazardVol": 1, "panicRate": 0.0}
+        }
+      ]
+    },
+    {
+      "stage_id": "S3",
+      "label": "medium_load_multi_hazard",
+      "episodes_per_city": 2,
+      "variants": [
+        {
+          "variant_id": "nominal",
+          "weight": 1,
+          "overrides": {"pedVol": 30000, "pedestrianGroupSize": 20, "hazardVol": 2, "panicRate": 0.0}
+        }
+      ]
+    },
+    {
+      "stage_id": "S4",
+      "label": "high_load_multi_hazard",
+      "episodes_per_city": 2,
+      "variants": [
+        {
+          "variant_id": "nominal",
+          "weight": 1,
+          "overrides": {"pedVol": 40000, "pedestrianGroupSize": 20, "hazardVol": 2, "panicRate": 0.0}
+        }
+      ]
+    },
+    {
+      "stage_id": "S5",
+      "label": "target_scale_domain_randomization",
+      "episodes_per_city": 6,
+      "variants": [
+        {
+          "variant_id": "nominal",
+          "weight": 2,
+          "overrides": {"pedVol": 50000, "pedestrianGroupSize": 20, "hazardVol": 2, "shelterCanVol": 20, "initShelterVol": 2, "panicRate": 0.0}
+        },
+        {
+          "variant_id": "lower_hazard_count",
+          "weight": 1,
+          "overrides": {"pedVol": 50000, "pedestrianGroupSize": 20, "hazardVol": 1, "shelterCanVol": 20, "initShelterVol": 2, "panicRate": 0.0}
+        },
+        {
+          "variant_id": "higher_hazard_count",
+          "weight": 1,
+          "overrides": {"pedVol": 50000, "pedestrianGroupSize": 20, "hazardVol": 3, "shelterCanVol": 20, "initShelterVol": 2, "panicRate": 0.0}
+        },
+        {
+          "variant_id": "candidate_loss",
+          "weight": 1,
+          "overrides": {"pedVol": 50000, "pedestrianGroupSize": 20, "hazardVol": 2, "shelterCanVol": 16, "initShelterVol": 2, "panicRate": 0.0}
+        },
+        {
+          "variant_id": "scarce_initial_shelters",
+          "weight": 1,
+          "overrides": {"pedVol": 50000, "pedestrianGroupSize": 20, "hazardVol": 2, "shelterCanVol": 20, "initShelterVol": 1, "panicRate": 0.0}
+        }
+      ]
+    },
+    {
+      "stage_id": "S6",
+      "label": "target_scale_nominal_consolidation",
+      "episodes_per_city": 6,
+      "variants": [
+        {
+          "variant_id": "nominal",
+          "weight": 1,
+          "overrides": {"pedVol": 50000, "pedestrianGroupSize": 20, "hazardVol": 2, "shelterCanVol": 20, "initShelterVol": 2, "panicRate": 0.0}
+        }
+      ]
+    }
+  ]
+}

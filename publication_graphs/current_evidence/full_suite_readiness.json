@@ -1,0 +1,307 @@
+{
+  "complete": false,
+  "design_checks": [
+    {
+      "check": "confirmatory_training_sample",
+      "expected_episodes_per_policy_city": 120,
+      "expected_policy_seeds": 8,
+      "observed_counts": {
+        "policy_001/chicago_il": 32,
+        "policy_001/reading_pa": 32,
+        "policy_001/seattle_wa": 32,
+        "policy_001/spokane_wa": 32,
+        "policy_001/state_college_pa": 32
+      },
+      "observed_policy_seeds": 1,
+      "passed": false
+    },
+    {
+      "check": "map_visualization_non_interventional",
+      "passed": true,
+      "rows": 20
+    }
+  ],
+  "expected_evaluation_factor_cells": 18,
+  "expected_evaluation_scenarios_per_city": 90,
+  "expected_policy_seeds": 8,
+  "expected_training_episodes_per_city": 120,
+  "failed_design_checks": [
+    "confirmatory_training_sample"
+  ],
+  "figure_statuses": [
+    {
+      "artifacts": [
+        "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/current_evidence/01_training_reward_and_convergence.png",
+        "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/current_evidence/01_training_reward_and_convergence.svg"
+      ],
+      "detail": "Training-only fallback; checkpoint evaluation table is not yet available.",
+      "figure_id": "F01",
+      "status": "generated",
+      "title": "Training reward and held-out convergence"
+    },
+    {
+      "artifacts": [
+        "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/current_evidence/02_ppo_optimization_diagnostics.png",
+        "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/current_evidence/02_ppo_optimization_diagnostics.svg",
+        "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/current_evidence/02_ppo_update_averages.csv"
+      ],
+      "detail": "",
+      "figure_id": "F02",
+      "status": "generated",
+      "title": "PPO optimization diagnostics"
+    },
+    {
+      "artifacts": [
+        "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/current_evidence/03_primary_policy_performance.png",
+        "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/current_evidence/03_primary_policy_performance.svg"
+      ],
+      "detail": "Source: legacy policy-objective table.",
+      "figure_id": "F03",
+      "status": "generated",
+      "title": "Primary policy performance"
+    },
+    {
+      "artifacts": [
+        "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/current_evidence/06_safety_casualty_timeliness_frontier.png",
+        "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/current_evidence/06_safety_casualty_timeliness_frontier.svg"
+      ],
+      "detail": "Source: legacy policy-objective table.",
+      "figure_id": "F06",
+      "status": "generated",
+      "title": "Safety, casualty, and timeliness frontier"
+    },
+    {
+      "artifacts": [
+        "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/current_evidence/04_city_specific_paired_effects.png",
+        "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/current_evidence/04_city_specific_paired_effects.svg"
+      ],
+      "detail": "",
+      "figure_id": "F04",
+      "status": "generated",
+      "title": "City-specific paired effects"
+    },
+    {
+      "artifacts": [],
+      "detail": "Missing valid regime_evaluation table.",
+      "figure_id": "F05",
+      "status": "skipped",
+      "title": "Capacity by hazard performance surface"
+    },
+    {
+      "artifacts": [],
+      "detail": "Missing valid scalability_evaluation table.",
+      "figure_id": "F07",
+      "status": "skipped",
+      "title": "Hierarchical action scalability"
+    },
+    {
+      "artifacts": [],
+      "detail": "Missing valid ablation_evaluation table.",
+      "figure_id": "F08",
+      "status": "skipped",
+      "title": "Reward and architecture ablations"
+    },
+    {
+      "artifacts": [],
+      "detail": "Missing valid transfer_evaluation table.",
+      "figure_id": "F09",
+      "status": "skipped",
+      "title": "Leave-one-city-out transfer"
+    },
+    {
+      "artifacts": [],
+      "detail": "Missing valid robustness_evaluation table.",
+      "figure_id": "F10",
+      "status": "skipped",
+      "title": "Robustness under operating perturbations"
+    },
+    {
+      "artifacts": [],
+      "detail": "Missing valid scale_stress_evaluation table.",
+      "figure_id": "F13",
+      "status": "skipped",
+      "title": "Population by shelter-candidate scale stress"
+    },
+    {
+      "artifacts": [
+        "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/current_evidence/maps/f11_shelter_installations_state_college_pa.png",
+        "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/current_evidence/maps/f11_shelter_installations_reading_pa.png",
+        "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/current_evidence/maps/f11_shelter_installations_spokane_wa.png",
+        "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/current_evidence/maps/f11_shelter_installations_seattle_wa.png",
+        "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/current_evidence/maps/f11_shelter_installations_chicago_il.png"
+      ],
+      "detail": "",
+      "figure_id": "F11",
+      "status": "generated",
+      "title": "Shelter installations on OpenStreetMap"
+    },
+    {
+      "artifacts": [
+        "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/current_evidence/maps/f12_evacuation_progress_state_college_pa.png",
+        "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/current_evidence/maps/f12_evacuation_progress_reading_pa.png",
+        "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/current_evidence/maps/f12_evacuation_progress_spokane_wa.png",
+        "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/current_evidence/maps/f12_evacuation_progress_seattle_wa.png",
+        "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/current_evidence/maps/f12_evacuation_progress_chicago_il.png"
+      ],
+      "detail": "",
+      "figure_id": "F12",
+      "status": "generated",
+      "title": "Evacuation progress on OpenStreetMap"
+    }
+  ],
+  "interpretation_warning": "Generated figures describe only available pilot/smoke evidence and must not be presented as the complete E0--E6 experiment.",
+  "report_mode": "partial_available_data",
+  "required_table_failures": [
+    "scenario_calibration",
+    "evaluation_summary",
+    "checkpoint_evaluation",
+    "regime_evaluation",
+    "scalability_evaluation",
+    "ablation_evaluation",
+    "transfer_evaluation",
+    "robustness_evaluation",
+    "scale_stress_evaluation"
+  ],
+  "scale_stress_horizon_timesteps": 120,
+  "scale_stress_population_levels": [
+    2500,
+    5000,
+    7500,
+    10000,
+    12500
+  ],
+  "scale_stress_shelter_candidate_levels": [
+    25,
+    50,
+    75,
+    100,
+    125
+  ],
+  "schema_version": 1,
+  "suite_id": "urban_shelter_priority_e0_e6_v1",
+  "table_statuses": {
+    "ablation_evaluation": {
+      "exists": false,
+      "experiment": "E4",
+      "missing_columns": [],
+      "path": "/Users/huali/Desktop/RLEvacuationCollab/runs/multicity_five_city_lr1e3_learning_audit_arm_20260906/full_suite_tables/ablation_evaluation.csv",
+      "required_for_complete_suite": true,
+      "row_count": 0,
+      "sha256": null,
+      "table_id": "ablation_evaluation",
+      "valid": false
+    },
+    "checkpoint_evaluation": {
+      "exists": false,
+      "experiment": "E1",
+      "missing_columns": [],
+      "path": "/Users/huali/Desktop/RLEvacuationCollab/runs/multicity_five_city_lr1e3_learning_audit_arm_20260906/full_suite_tables/checkpoint_evaluation.csv",
+      "required_for_complete_suite": true,
+      "row_count": 0,
+      "sha256": null,
+      "table_id": "checkpoint_evaluation",
+      "valid": false
+    },
+    "evaluation_summary": {
+      "exists": true,
+      "experiment": "E1",
+      "missing_columns": [
+        "objective_episode_return"
+      ],
+      "path": "/Users/huali/Desktop/RLEvacuationCollab/runs/multicity_five_city_lr1e3_learning_audit_arm_20260906/evaluation_episode_summary.csv",
+      "required_for_complete_suite": true,
+      "row_count": 50,
+      "sha256": "9d72360045a5aa0607a8eb36eff8fda2fd93507b476155091f8e2d2363c822d8",
+      "table_id": "evaluation_summary",
+      "valid": false
+    },
+    "map_figure_index": {
+      "exists": true,
+      "experiment": "E2",
+      "missing_columns": [],
+      "path": "/Users/huali/Desktop/RLEvacuationCollab/runs/multicity_five_city_lr1e3_learning_audit_arm_20260906/paper_figures/map_figure_index.csv",
+      "required_for_complete_suite": true,
+      "row_count": 20,
+      "sha256": "4b311c4c4192a382bc047d41208af4a3f9cd92bc7c67f54bb6d100f16fc5a49b",
+      "table_id": "map_figure_index",
+      "valid": true
+    },
+    "regime_evaluation": {
+      "exists": false,
+      "experiment": "E2",
+      "missing_columns": [],
+      "path": "/Users/huali/Desktop/RLEvacuationCollab/runs/multicity_five_city_lr1e3_learning_audit_arm_20260906/full_suite_tables/regime_evaluation.csv",
+      "required_for_complete_suite": true,
+      "row_count": 0,
+      "sha256": null,
+      "table_id": "regime_evaluation",
+      "valid": false
+    },
+    "robustness_evaluation": {
+      "exists": false,
+      "experiment": "E6",
+      "missing_columns": [],
+      "path": "/Users/huali/Desktop/RLEvacuationCollab/runs/multicity_five_city_lr1e3_learning_audit_arm_20260906/full_suite_tables/robustness_evaluation.csv",
+      "required_for_complete_suite": true,
+      "row_count": 0,
+      "sha256": null,
+      "table_id": "robustness_evaluation",
+      "valid": false
+    },
+    "scalability_evaluation": {
+      "exists": false,
+      "experiment": "E3",
+      "missing_columns": [],
+      "path": "/Users/huali/Desktop/RLEvacuationCollab/runs/multicity_five_city_lr1e3_learning_audit_arm_20260906/full_suite_tables/scalability_evaluation.csv",
+      "required_for_complete_suite": true,
+      "row_count": 0,
+      "sha256": null,
+      "table_id": "scalability_evaluation",
+      "valid": false
+    },
+    "scale_stress_evaluation": {
+      "exists": false,
+      "experiment": "E6",
+      "missing_columns": [],
+      "path": "/Users/huali/Desktop/RLEvacuationCollab/runs/multicity_five_city_lr1e3_learning_audit_arm_20260906/full_suite_tables/scale_stress_evaluation.csv",
+      "required_for_complete_suite": true,
+      "row_count": 0,
+      "sha256": null,
+      "table_id": "scale_stress_evaluation",
+      "valid": false
+    },
+    "scenario_calibration": {
+      "exists": false,
+      "experiment": "E0",
+      "missing_columns": [],
+      "path": "/Users/huali/Desktop/RLEvacuationCollab/runs/multicity_five_city_lr1e3_learning_audit_arm_20260906/full_suite_tables/scenario_calibration.csv",
+      "required_for_complete_suite": true,
+      "row_count": 0,
+      "sha256": null,
+      "table_id": "scenario_calibration",
+      "valid": false
+    },
+    "training_summary": {
+      "exists": true,
+      "experiment": "E1",
+      "missing_columns": [],
+      "path": "/Users/huali/Desktop/RLEvacuationCollab/runs/multicity_five_city_lr1e3_learning_audit_arm_20260906/training_episode_summary.csv",
+      "required_for_complete_suite": true,
+      "row_count": 160,
+      "sha256": "a000eda21c5e4b873b51c70d4208bfd2f2331557084599fbd0b42a52f109bef7",
+      "table_id": "training_summary",
+      "valid": true
+    },
+    "transfer_evaluation": {
+      "exists": false,
+      "experiment": "E5",
+      "missing_columns": [],
+      "path": "/Users/huali/Desktop/RLEvacuationCollab/runs/multicity_five_city_lr1e3_learning_audit_arm_20260906/full_suite_tables/transfer_evaluation.csv",
+      "required_for_complete_suite": true,
+      "row_count": 0,
+      "sha256": null,
+      "table_id": "transfer_evaluation",
+      "valid": false
+    }
+  }
+}

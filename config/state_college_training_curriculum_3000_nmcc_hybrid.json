@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "curriculum_id": "state_college_3000_nmcc_hybrid_v21",
+  "description": "Operational Hybrid-NMCC curriculum for State College with 3,000 individual evacuees. Exact common-noise action-versus-WAIT branches supervise an action-independent natural model and a candidate-local residual ensemble; recurrent PPO uses the paired causal advantage, a factorized critic, a delayed/fading robust-planner teacher, and a decaying exploration schedule. The fixed five-shelter-addition capacity budget is unchanged from every benchmark.",
+  "stages": [
+    {
+      "stage_id": "N1",
+      "label": "hybrid_nmcc_exact_pair_world_model_and_recurrent_ppo",
+      "episodes_per_city": 64,
+      "variants": [
+        {
+          "variant_id": "state_college_3000_calibrated_hazard",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 3000,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "maxAdditionalShelters": 5,
+            "shelterCapacityToken": 500,
+            "nmccEnabled": true,
+            "nmccCounterfactualHorizon": 10,
+            "nmccCounterfactualWeight": 1.0,
+            "nmccInterventionCost": 0.0,
+            "nmccEnsembleSize": 3,
+            "nmccNaturalLossCoefficient": 0.5,
+            "nmccCausalLossCoefficient": 1.0,
+            "nmccDuelingLossCoefficient": 0.25,
+            "nmccTeacherCoefficient": 0.2,
+            "nmccTeacherDecayUpdates": 64,
+            "nmccGuidanceMaximum": 0.5,
+            "nmccGuidanceWarmupUpdates": 8,
+            "nmccGuidanceRampUpdates": 16,
+            "nmccUncertaintyPenalty": 0.5,
+            "entropyCoefficientEnd": 0.001,
+            "explorationDecayUpdates": 128,
+            "actionTemperatureStart": 1.35,
+            "actionTemperatureEnd": 1.0
+          }
+        }
+      ]
+    }
+  ]
+}

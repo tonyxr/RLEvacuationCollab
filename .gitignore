@@ -1,0 +1,17 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# Local assistant exports and generated scratch images.
+Claude outputs/
+Codex Image*.png
+
+# Regenerable simulation and experiment outputs. Intentionally published
+# evidence can be force-added under a dedicated release directory.
+runs/
+
+# OSM downloads and local tool intermediates are reproducible inputs/cache.
+cache/
+tmp/

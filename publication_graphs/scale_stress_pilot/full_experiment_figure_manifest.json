@@ -1,0 +1,193 @@
+{
+  "artifacts": {
+    "13_population_candidate_scale_stress.png": {
+      "path": "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/scale_stress_pilot/13_population_candidate_scale_stress.png",
+      "sha256": "b67c2651dcaac58eaff7da41381ae1ea0136077721a1e7f453a323cb5c38ee91"
+    },
+    "13_population_candidate_scale_stress.svg": {
+      "path": "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/scale_stress_pilot/13_population_candidate_scale_stress.svg",
+      "sha256": "ad9dd1476a326aaa6be337146b49e49708da096b71d8fb827f8a008190166d5b"
+    },
+    "figure_statistical_summary.csv": {
+      "path": "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/scale_stress_pilot/figure_statistical_summary.csv",
+      "sha256": "c33ada8d7655c6395511359cd18fa62ea546951fa7287dcd468372b95ae57d98"
+    },
+    "full_suite_readiness.json": {
+      "path": "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/scale_stress_pilot/full_suite_readiness.json",
+      "sha256": "b9b401f28e7280f7200548dc0ab32c1f4844395b2576b7d80f68de6530842816"
+    }
+  },
+  "figure_statuses": [
+    {
+      "artifacts": [],
+      "detail": "Missing valid training_summary table.",
+      "figure_id": "F01",
+      "status": "skipped",
+      "title": "Training reward and held-out convergence"
+    },
+    {
+      "artifacts": [],
+      "detail": "Missing valid training_summary table.",
+      "figure_id": "F02",
+      "status": "skipped",
+      "title": "PPO optimization diagnostics"
+    },
+    {
+      "artifacts": [],
+      "detail": "No valid evaluation table is available.",
+      "figure_id": "F03",
+      "status": "skipped",
+      "title": "Primary policy performance"
+    },
+    {
+      "artifacts": [],
+      "detail": "No valid evaluation table is available.",
+      "figure_id": "F06",
+      "status": "skipped",
+      "title": "Safety, casualty, and timeliness frontier"
+    },
+    {
+      "artifacts": [],
+      "detail": "No valid matched RL/heuristic evaluation is available.",
+      "figure_id": "F04",
+      "status": "skipped",
+      "title": "City-specific paired effects"
+    },
+    {
+      "artifacts": [],
+      "detail": "Missing valid regime_evaluation table.",
+      "figure_id": "F05",
+      "status": "skipped",
+      "title": "Capacity by hazard performance surface"
+    },
+    {
+      "artifacts": [],
+      "detail": "Missing valid scalability_evaluation table.",
+      "figure_id": "F07",
+      "status": "skipped",
+      "title": "Hierarchical action scalability"
+    },
+    {
+      "artifacts": [],
+      "detail": "Missing valid ablation_evaluation table.",
+      "figure_id": "F08",
+      "status": "skipped",
+      "title": "Reward and architecture ablations"
+    },
+    {
+      "artifacts": [],
+      "detail": "Missing valid transfer_evaluation table.",
+      "figure_id": "F09",
+      "status": "skipped",
+      "title": "Leave-one-city-out transfer"
+    },
+    {
+      "artifacts": [],
+      "detail": "Missing valid robustness_evaluation table.",
+      "figure_id": "F10",
+      "status": "skipped",
+      "title": "Robustness under operating perturbations"
+    },
+    {
+      "artifacts": [
+        "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/scale_stress_pilot/13_population_candidate_scale_stress.png",
+        "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/scale_stress_pilot/13_population_candidate_scale_stress.svg"
+      ],
+      "detail": "",
+      "figure_id": "F13",
+      "status": "generated",
+      "title": "Population by shelter-candidate scale stress"
+    },
+    {
+      "artifacts": [],
+      "detail": "Map generation disabled by --skip-maps.",
+      "figure_id": "F11",
+      "status": "skipped",
+      "title": "Shelter installations on OpenStreetMap"
+    },
+    {
+      "artifacts": [],
+      "detail": "Map generation disabled by --skip-maps.",
+      "figure_id": "F12",
+      "status": "skipped",
+      "title": "Evacuation progress on OpenStreetMap"
+    }
+  ],
+  "report_is_read_only_with_respect_to_simulation": true,
+  "schema_version": 1,
+  "source_launch": "/Users/huali/Desktop/RLEvacuationCollab/runs/population_candidate_scale_seed_20260908_pilot",
+  "source_tables": {
+    "ablation_evaluation": {
+      "path": "/Users/huali/Desktop/RLEvacuationCollab/runs/population_candidate_scale_seed_20260908_pilot/full_suite_tables/ablation_evaluation.csv",
+      "row_count": 0,
+      "sha256": null,
+      "valid": false
+    },
+    "checkpoint_evaluation": {
+      "path": "/Users/huali/Desktop/RLEvacuationCollab/runs/population_candidate_scale_seed_20260908_pilot/full_suite_tables/checkpoint_evaluation.csv",
+      "row_count": 0,
+      "sha256": null,
+      "valid": false
+    },
+    "evaluation_summary": {
+      "path": "/Users/huali/Desktop/RLEvacuationCollab/runs/population_candidate_scale_seed_20260908_pilot/evaluation_episode_summary.csv",
+      "row_count": 0,
+      "sha256": null,
+      "valid": false
+    },
+    "map_figure_index": {
+      "path": "/Users/huali/Desktop/RLEvacuationCollab/runs/population_candidate_scale_seed_20260908_pilot/paper_figures/map_figure_index.csv",
+      "row_count": 0,
+      "sha256": null,
+      "valid": false
+    },
+    "regime_evaluation": {
+      "path": "/Users/huali/Desktop/RLEvacuationCollab/runs/population_candidate_scale_seed_20260908_pilot/full_suite_tables/regime_evaluation.csv",
+      "row_count": 0,
+      "sha256": null,
+      "valid": false
+    },
+    "robustness_evaluation": {
+      "path": "/Users/huali/Desktop/RLEvacuationCollab/runs/population_candidate_scale_seed_20260908_pilot/full_suite_tables/robustness_evaluation.csv",
+      "row_count": 0,
+      "sha256": null,
+      "valid": false
+    },
+    "scalability_evaluation": {
+      "path": "/Users/huali/Desktop/RLEvacuationCollab/runs/population_candidate_scale_seed_20260908_pilot/full_suite_tables/scalability_evaluation.csv",
+      "row_count": 0,
+      "sha256": null,
+      "valid": false
+    },
+    "scale_stress_evaluation": {
+      "path": "/Users/huali/Desktop/RLEvacuationCollab/runs/population_candidate_scale_seed_20260908_pilot/full_suite_tables/scale_stress_evaluation.csv",
+      "row_count": 2,
+      "sha256": "dfc708e0cb25bcd207c13fc86dadf68e7c87641ec2ae8c250a47d9df284e1848",
+      "valid": true
+    },
+    "scenario_calibration": {
+      "path": "/Users/huali/Desktop/RLEvacuationCollab/runs/population_candidate_scale_seed_20260908_pilot/full_suite_tables/scenario_calibration.csv",
+      "row_count": 0,
+      "sha256": null,
+      "valid": false
+    },
+    "training_summary": {
+      "path": "/Users/huali/Desktop/RLEvacuationCollab/runs/population_candidate_scale_seed_20260908_pilot/training_episode_summary.csv",
+      "row_count": 0,
+      "sha256": null,
+      "valid": false
+    },
+    "transfer_evaluation": {
+      "path": "/Users/huali/Desktop/RLEvacuationCollab/runs/population_candidate_scale_seed_20260908_pilot/full_suite_tables/transfer_evaluation.csv",
+      "row_count": 0,
+      "sha256": null,
+      "valid": false
+    }
+  },
+  "statistical_method": "Policy seeds are resampled globally across fixed cities; matched scenarios are resampled independently within city; cities are equally weighted and are not resampled.",
+  "suite_config": {
+    "path": "/Users/huali/Desktop/RLEvacuationCollab/config/full_experiment_suite.json",
+    "sha256": "a5251fe0a3f690ee371d47fcdd9b2dc5b6b06cc3e97b9aa1421ec45a68afabaf"
+  },
+  "suite_id": "urban_shelter_priority_e0_e6_v1"
+}

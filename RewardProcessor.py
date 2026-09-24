@@ -1,185 +1,176 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""Stateless outcome reward for exact shelter-candidate decisions.
+
+For decision interval ``k`` the training reward is
+
+    r_k = (Delta safe_k - 3 Delta casualty_k) / P
+          - active_person_time_k / (P H)
+          - hazard_exposure_person_time_k / (P H)
+
+The two person-time terms are intentionally separate: the first rewards faster
+completion for everyone still evacuating; the second additionally penalizes
+time spent in hazardous regions.  Since normalized danger is in ``[0, 1]``, a
+person can avoid at most two normalized units of future time cost by leaving
+the active population.  The casualty coefficient of three therefore makes a
+death strictly worse than that artificial shortcut. No shelter-service shaping
+or site-selection bonus is included; policy and evaluation optimize the same
+population outcome objective.
 """
-Created on Fri Sep 26 14:26:44 2025
 
-@author: Xiaoru Shi
-"""
+from dataclasses import asdict, dataclass
 
-from dataclasses import dataclass
-from typing import Dict, Tuple, Optional
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
 import numpy as np
-import os
 
-_HAS_PYG = False
-if os.getenv("EVAC_ENABLE_PYG", "0") == "1":   
-    try:
-        from torch_geometric.nn import GATConv, global_mean_pool   
-        from torch_geometric.data import Data                      
-        _HAS_PYG = True
-    except Exception:
-        _HAS_PYG = False
+from DecisionInterface import OutcomeSnapshot
+
+
+REWARD_COMPONENT_NAMES = (
+    "safe_completion",
+    "casualty",
+    "evacuation_time",
+    "hazard_exposure",
+)
+
+# One source of truth for the physical objective.  The recurrent critic,
+# natural/causal outcome model, exact branch scorer, training reward and held-
+# out evaluator all import these constants; changing a reward weight can no
+# longer leave the GNN optimizing a stale hard-coded decomposition.
+DEFAULT_SAFE_COMPLETION_WEIGHT = 1.0
+DEFAULT_CASUALTY_WEIGHT = 3.0
+DEFAULT_EVACUATION_TIME_WEIGHT = 1.0
+DEFAULT_HAZARD_EXPOSURE_WEIGHT = 1.0
+
+
+@dataclass(frozen=True)
+class RewardBreakdown:
+    safe_completion_reward: float
+    casualty_penalty: float
+    evacuation_time_penalty: float
+    hazard_exposure_penalty: float
+    total: float
+    new_safe_completions: int
+    new_casualties: int
+    active_person_time: float
+    hazard_exposure_person_time: float
+
+    def as_dict(self) -> dict[str, float]:
+        return asdict(self)
+
+    def component_vector(self) -> np.ndarray:
+        """Return the signed objective branches in the registered order."""
+        return np.asarray(
+            (
+                self.safe_completion_reward,
+                self.casualty_penalty,
+                self.evacuation_time_penalty,
+                self.hazard_exposure_penalty,
+            ),
+            dtype=np.float32,
+        )
+
+    @property
+    def risk_time_penalty(self) -> float:
+        """Backward-compatible aggregate of the two explicit time terms."""
+        return self.evacuation_time_penalty + self.hazard_exposure_penalty
+
+    @property
+    def risk_weighted_person_time(self) -> float:
+        return self.active_person_time + self.hazard_exposure_person_time
+
+    @property
+    def shelter_service_reward(self) -> float:
+        """Deprecated diagnostic: service shaping is excluded from the reward."""
+        return 0.0
+
+    @property
+    def attributed_shelter_service(self) -> int:
+        return 0
+
 
 class RewardProcessor:
-    def __init__(self, 
-        mode: str = "full",
-        alpha: float = 1.0,
-        beta: float = 0.01,
-        cell_criticality_weight: float = 0.8,
-        local_impact_weight: float = 0.9,
-        use_impact_score: bool = True,
-        step_penalty_weight: float = 0.01,
-        evac_progress_weight: float = 0.7,
-        casualty_delta_weight: float = 2.0,
-        fulfillment_delta_weight: float = 0.03,
-        hazard_exposure_weight: float = 0.1,
+    """Pure interval reward with fixed, interpretable normalization."""
+
+    def __init__(
+        self,
+        *,
+        casualty_weight: float = DEFAULT_CASUALTY_WEIGHT,
+        evacuation_time_weight: float = DEFAULT_EVACUATION_TIME_WEIGHT,
+        hazard_exposure_weight: float = DEFAULT_HAZARD_EXPOSURE_WEIGHT,
     ):
-         # which reward (simple or full) mechanism to use
-         self.mode = mode
-         self.alpha = alpha
-         self.beta = beta
-         self.cell_criticality_weight = float(cell_criticality_weight)
-         self.local_impact_weight = float(local_impact_weight)
-         self.use_impact_score = bool(use_impact_score)
-         self.step_penalty_weight = float(step_penalty_weight)
-         self.evac_progress_weight = float(evac_progress_weight)
-         self.casualty_delta_weight = float(casualty_delta_weight)
-         self.fulfillment_delta_weight = float(fulfillment_delta_weight)
-         self.hazard_exposure_weight = float(hazard_exposure_weight)
-         self.hazard_exposure_weight = float(hazard_exposure_weight)
-         
-         self.currFulfillment = 0
-         self.lastFulfillment = 0
-         
-         self.currCasualty = 0
-         self.lastCasualty = 0
-         self.lastEvacuated = 0
-         
-         self.lastTotalSHInstalled = 0
-         self.lastTotalGUInstalled = 0
-         self.lastUsedShelterCapacity = 0.0
-         
-    def reset_episode(self):
-         self.currFulfillment = 0
-         self.lastFulfillment = 0
-         self.currCasualty = 0
-         self.lastCasualty = 0
-         self.lastEvacuated = 0
-         self.lastTotalSHInstalled = 0
-         self.lastTotalGUInstalled = 0
-         self.lastUsedShelterCapacity = 0.0
-    
-    """Simple reward mechanism, equation 9"""
-    def simpleReward(self, 
-                     numCasualties: int, 
-                     t: int) -> float:
-        
-        return -self.alpha * float(numCasualties) - self.beta * float(t)
-    
-    def fullReward(self,
-                   numCasualties: int, 
-                   wellnessPenaltySum: float,
-                   fulfillmentSum: float,
-                   evacuatedTotal: int,
-                   totalShelters: int,
-                   cellCriticalityScore: float = 0.0,
-                   localImpactScore: float = 0.0,
-                   reroutedArrivalSpeedScore: float = 0.0,
-                   timelyReroutedEvacScore: float = 0.0,
-                   immediateReroutedCount: float = 0.0,
-                   hazardExposureDelta: float = 0.0,
-                   strandedCount: int = 0,
-                   t: int = 0,
-                   maxEpisodeSteps: int = 120,
-                   ) -> float:
-        
-        # Simplified cell-selection reward:
-        # 1) reward picking critical cells now
-        # 2) reward short-horizon local improvement after picking that cell
-        # 3) constant step cost to avoid dithering
-        criticality_score = float(max(0.0, cellCriticalityScore))
-        local_impact_raw = float(localImpactScore)
-        local_impact_score = float(np.clip(local_impact_raw, -1.0, 1.0)) if self.use_impact_score else 0.0
-        # Avoid over-counting near-term impact after adding explicit hazard exposure shaping.
-        if self.hazard_exposure_weight > 0.0:
-            local_impact_score *= 0.5
-        
-        # Outcome-linked shaping terms (dense deltas), normalized by active population scale
-        live_population = float(max(1, evacuatedTotal + numCasualties + max(0, strandedCount)))
-        delta_evacuated = float(evacuatedTotal - self.lastEvacuated) / live_population
-        delta_casualty = float(numCasualties - self.lastCasualty) / live_population
-        delta_fulfillment = float(fulfillmentSum - self.lastFulfillment) / live_population
-        hazard_exposure_delta = float(np.clip(hazardExposureDelta, -1.0, 1.0))
-        
-        terminal_bonus = 0.0
-        is_terminal = (t >= maxEpisodeSteps - 1) or (strandedCount <= 0)
-        if is_terminal:
-            evac_rate = float(evacuatedTotal) / live_population
-            casualty_rate = float(numCasualties) / live_population
-            terminal_bonus = evac_rate - casualty_rate
-        
-        totalReward = (
-            self.cell_criticality_weight * criticality_score
-            + self.local_impact_weight * local_impact_score
-            + self.evac_progress_weight * delta_evacuated
-            - self.casualty_delta_weight * delta_casualty
-            + self.fulfillment_delta_weight * delta_fulfillment
-            + self.hazard_exposure_weight * hazard_exposure_delta
-            + terminal_bonus
-            - self.step_penalty_weight
+        evacuation_time_weight = float(evacuation_time_weight)
+        hazard_exposure_weight = float(hazard_exposure_weight)
+        if not np.isfinite(evacuation_time_weight) or evacuation_time_weight <= 0.0:
+            raise ValueError("evacuation_time_weight must be finite and positive")
+        if not np.isfinite(hazard_exposure_weight) or hazard_exposure_weight <= 0.0:
+            raise ValueError("hazard_exposure_weight must be finite and positive")
+        casualty_weight = float(casualty_weight)
+        maximum_avoided_time_cost = evacuation_time_weight + hazard_exposure_weight
+        if not np.isfinite(casualty_weight) or casualty_weight <= maximum_avoided_time_cost:
+            raise ValueError(
+                "casualty_weight must exceed the sum of the evacuation-time and "
+                "hazard-exposure weights so casualties cannot reduce total cost"
+            )
+        self.casualty_weight = casualty_weight
+        self.evacuation_time_weight = evacuation_time_weight
+        self.hazard_exposure_weight = hazard_exposure_weight
+
+    def evaluate(
+        self,
+        *,
+        before: OutcomeSnapshot,
+        after: OutcomeSnapshot,
+        active_person_time: float,
+        hazard_exposure_person_time: float,
+        initial_population: int,
+        horizon: int,
+    ) -> RewardBreakdown:
+        population = int(initial_population)
+        horizon = int(horizon)
+        if population <= 0:
+            raise ValueError("initial_population must be positive")
+        if horizon <= 0:
+            raise ValueError("horizon must be positive")
+        active_time = float(active_person_time)
+        exposure_time = float(hazard_exposure_person_time)
+        if not np.isfinite(active_time) or active_time < 0.0:
+            raise ValueError("active_person_time must be finite and non-negative")
+        if not np.isfinite(exposure_time) or exposure_time < 0.0:
+            raise ValueError(
+                "hazard_exposure_person_time must be finite and non-negative"
+            )
+
+        new_safe = int(after.safe_completed - before.safe_completed)
+        new_casualties = int(after.casualties - before.casualties)
+        if new_safe < 0 or new_casualties < 0:
+            raise ValueError("Cumulative population outcomes must be monotone")
+        safe_reward = (
+            DEFAULT_SAFE_COMPLETION_WEIGHT * float(new_safe) / float(population)
         )
-        
-        self.lastFulfillment = fulfillmentSum
-        self.lastCasualty = numCasualties
-        self.lastEvacuated = evacuatedTotal
-        return float(totalReward)
-    
-    def rewardMode(self, **kwargs) -> float:
-        
-        if self.mode == "simple":
-            return self.simpleReward(
-                kwargs.get("numCasualties", 0),
-                kwargs.get("t", 0),
-            )
-        else:
-            return self.fullReward(
-                kwargs.get("numCasualties", 0),
-                kwargs.get("wellnessPenaltySum", 0.0),
-                kwargs.get("fulfillmentSum", 0.0),
-                kwargs.get("evacuatedTotal", 0),
-                kwargs.get("totalShelters", 0),
-                kwargs.get("cellCriticalityScore", kwargs.get("immediateReroutedCount", 0.0)),
-                kwargs.get(
-                    "localImpactScore",
-                    kwargs.get("reroutedArrivalSpeedScore", 0.0) + kwargs.get("timelyReroutedEvacScore", 0.0),
-                ),
-                kwargs.get("reroutedArrivalSpeedScore", 0.0),
-                kwargs.get("timelyReroutedEvacScore", 0.0),
-                kwargs.get("hazardExposureDelta", 0.0),
-                kwargs.get("strandedCount", 0),
-                kwargs.get("t", 0),
-                kwargs.get("maxEpisodeSteps", 120),
-            )
+        casualty_penalty = -self.casualty_weight * float(new_casualties) / float(population)
+        evacuation_time_penalty = -(
+            self.evacuation_time_weight * active_time / float(population * horizon)
+        )
+        hazard_exposure_penalty = -(
+            self.hazard_exposure_weight * exposure_time / float(population * horizon)
+        )
+        total = (
+            safe_reward
+            + casualty_penalty
+            + evacuation_time_penalty
+            + hazard_exposure_penalty
+        )
+        if not np.isfinite(total):
+            raise FloatingPointError("Reward total is non-finite")
 
-def _safe_sum(x, default = 0.0) -> float:
-    if x is None:
-        return float(default)
-    a = np.asarray(x, dtype = float).reshape(-1)
-    if a.size == 0:
-        return float(default)
-    
-    a = np.nan_to_num(a, nan = 0.0, posinf = 0.0, neginf = 0.0)
-    return float(a.sum())
-
-def extract_reward_terms(cellTracker) -> Dict[str, float]:
-    wellness = getattr(cellTracker, "wellnessPenaltyByCell", None)
-    fulfill = getattr(cellTracker, "shelterFulfillByCell", None)
-    
-    return dict(
-        wellnessPenaltySum = _safe_sum(wellness, 0.0),
-        fulfillmentSum = _safe_sum(fulfill, 0.0),
-    )
+        return RewardBreakdown(
+            safe_completion_reward=safe_reward,
+            casualty_penalty=casualty_penalty,
+            evacuation_time_penalty=evacuation_time_penalty,
+            hazard_exposure_penalty=hazard_exposure_penalty,
+            total=float(total),
+            new_safe_completions=new_safe,
+            new_casualties=new_casualties,
+            active_person_time=active_time,
+            hazard_exposure_person_time=exposure_time,
+        )

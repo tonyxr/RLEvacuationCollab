@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "description": "Presentation-only map extents for the standalone OSM-versus-skeleton paper figures. These settings do not rewrite completed experimental run manifests.",
+  "city_overrides": {
+    "malibu_ca": {
+      "display_name": "Malibu-Santa Monica Bay / North & West Los Angeles",
+      "center_lat": 33.98,
+      "center_lon": -118.6,
+      "radius_m": 35000,
+      "scope_label": "regional study area",
+      "distance_label": "70 × 70 km footprint",
+      "graph_mode": "regional_major_roads",
+      "skeleton_title": "Regional OpenStreetMap road-network skeleton",
+      "highway_filter": "[\"highway\"~\"motorway|motorway_link|trunk|trunk_link|primary|primary_link|secondary|secondary_link|tertiary|tertiary_link\"]",
+      "extent_note": "A 35 km point-centered bounding footprint includes the full Malibu coast and Santa Monica Bay together with substantial northern and western Los Angeles. The regional-scale skeleton retains major OSM road classes so nodes and edges remain legible at paper scale."
+    }
+  }
+}

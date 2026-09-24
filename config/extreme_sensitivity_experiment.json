@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "suite_id": "extreme_policy_sensitivity_v2_confirmatory",
+  "frozen_utc": "2026-09-09T17:00:00Z",
+  "design_amendment": {
+    "development_pilot": "runs/extreme_sensitivity_pilot_20260909",
+    "calibration_run": "runs/extreme_sensitivity_calibration_grid9_20260909",
+    "reason": "The 20-update pipeline pilot was intentionally noninferential and did not learn a policy distinct from the heuristic. An independent 500-update grid-9 calibration recovered the intended safe-center mechanism. The confirmatory seed count was increased from 8 to 16 so the minimum attainable two-sided exact sign-randomization p-value remains resolvable after Holm adjustment across 120 registered contrasts.",
+    "held_out_confirmatory_results_examined_before_amendment": false
+  },
+  "evidence_scope": "Controlled one-decision extreme-case mechanism and computational sensitivity; not city evacuation efficacy",
+  "strategies": [
+    "rl",
+    "population_heuristic",
+    "static_expected_demand",
+    "oracle"
+  ],
+  "extreme_variants": [
+    "safe_center",
+    "dangerous_center",
+    "center_unavailable",
+    "asymmetric_ring"
+  ],
+  "population_levels": [
+    10000,
+    20000,
+    30000,
+    40000,
+    50000
+  ],
+  "grid_levels": [
+    5,
+    7,
+    9,
+    11,
+    13
+  ],
+  "base_condition": {
+    "population": 30000,
+    "city_id": "spokane_wa",
+    "grid_side": 9
+  },
+  "policy_training": {
+    "policy_seeds": 16,
+    "updates_per_seed_grid": 500,
+    "batch_size": 64,
+    "learning_rate": 0.0008,
+    "weight_decay": 0.0001,
+    "variant_probabilities": {
+      "safe_center": 0.55,
+      "dangerous_center": 0.20,
+      "center_unavailable": 0.15,
+      "asymmetric_ring": 0.10
+    },
+    "quick_policy_seeds": 2,
+    "quick_updates_per_seed_grid": 20,
+    "quick_batch_size": 32
+  },
+  "evaluation": {
+    "held_out_scenarios_per_variant_condition": 100,
+    "quick_held_out_scenarios_per_variant_condition": 10,
+    "inference_warmups_per_grid": 20,
+    "inference_torch_threads": 1,
+    "primary_metric": "decision utility",
+    "comparisons": [
+      "rl minus population_heuristic",
+      "rl minus static_expected_demand"
+    ],
+    "inference_unit": "policy seed",
+    "multiplicity": "Holm adjustment across all registered RL-baseline sensitivity contrasts"
+  },
+  "city_complexity": {
+    "profile_path": "config/city_profiles.json",
+    "complexity_descriptors": [
+      "fixed map radius",
+      "cached OSM road-node count",
+      "cached directed-edge count"
+    ],
+    "service_range_m": 1300.0,
+    "interpretation": "The controlled utility uses physical grid-cell distance and fixed service range; graph size is used for measured preprocessing/state-aggregation timing"
+  },
+  "state_aggregation_benchmark": {
+    "partition_modes": [
+      "equal_area",
+      "node_density_adaptive"
+    ],
+    "repetitions": 30,
+    "quick_repetitions": 5,
+    "scope": "Vectorized assignment of road-node-sampled pedestrian positions to regional cells; excludes routing, congestion, hazards, and movement"
+  },
+  "observational_simulator_timing": {
+    "source_launch": "runs/pooled_five_city_60min_50k_confirmatory_seed20260908",
+    "scope": "Incomplete legacy model-version-8 training launch; elapsed episode intervals reconstructed from run_metadata and episode_summary file timestamps",
+    "claim_limit": "Descriptive runtime evidence only; not a complete or current-version training result"
+  },
+  "figure_plan": [
+    "F13_extreme_policy_sensitivity",
+    "F14_training_and_state_scaling",
+    "F15_policy_evaluation_latency",
+    "F16_partition_mode_preprocessing_scaling"
+  ]
+}

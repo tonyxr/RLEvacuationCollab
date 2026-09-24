@@ -1,0 +1,115 @@
+{
+  "artifact_hashes": {
+    "checkpoint": "021d136d56730da75901bd4b29b7cfdf07dfc5803f22f12ba7c5bfce7c24edac",
+    "comparison_figures": {
+      "state_college_pa/state_college_pa__population_2500__candidates_10__hazards_3__rep_01/evacuation_progress_comparison.png": "52d36949cb992891729a8cdef4ea9f84c4ece515d3fcfa2fcd28f6b64d1e4d22",
+      "state_college_pa/state_college_pa__population_2500__candidates_10__hazards_3__rep_01/priority_decision_epoch_comparison.png": "506bcb3c203951cfa67eb0cbca84725b294b35c95726419044553018e8c81f8e",
+      "state_college_pa/state_college_pa__population_2500__candidates_10__hazards_3__rep_01/shelter_decision_sequence_comparison.png": "206c71750e0d3539878bb715f3705024ff4a43c349dbe736f7ce802ebc2d78cd"
+    },
+    "evaluation_table": "d40e95961be82efb8461ac75b0b9f6d4158fa01a98e9ea16ca5b43a0a534bcbc",
+    "figure_index": "d40e95961be82efb8461ac75b0b9f6d4158fa01a98e9ea16ca5b43a0a534bcbc"
+  },
+  "artifacts": {
+    "evaluation_table": "/Users/huali/Desktop/RLEvacuationCollab/runs/factorial_maps_seed_20260908_v5_pilot/map_factorial_evaluation.csv",
+    "figure_index": "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/factorial_maps/factorial_maps_seed_20260908_v5_pilot/map_factorial_figure_index.csv",
+    "figure_root": "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/factorial_maps/factorial_maps_seed_20260908_v5_pilot"
+  },
+  "command": [
+    "/private/tmp/rlevac_arm_env/bin/python",
+    "/Users/huali/Desktop/RLEvacuationCollab/map_factorial_backtest.py",
+    "--pilot",
+    "--resume",
+    "--launch-id",
+    "factorial_maps_seed_20260908_v5",
+    "--pilot-population",
+    "2500",
+    "--pilot-candidates",
+    "10",
+    "--pilot-hazards",
+    "3"
+  ],
+  "completed_utc": "2026-09-08T22:16:30.047797+00:00",
+  "created_utc": "2026-09-08T22:16:22.388998+00:00",
+  "design": {
+    "early_termination_rule": "freeze the true terminal state as an explicitly labeled absorbing MDP state at later requested milestones; never synthesize post-terminal pedestrian positions",
+    "experiment_id": "five_city_population_candidate_hazard_maps_v2",
+    "path": "/Users/huali/Desktop/RLEvacuationCollab/config/map_visualization_experiment.json",
+    "sha256": "8131cfb8b7746099837408fa3bf37a09f7ad4cc36eec5a8920f9168525e432c8"
+  },
+  "execution_plan": {
+    "checkpoint": "/Users/huali/Desktop/RLEvacuationCollab/runs/multicity_five_city_lr1e3_learning_audit_arm_20260906/policies/policy_001/regional_policy.pt",
+    "checkpoint_available": true,
+    "city_ids": [
+      "state_college_pa"
+    ],
+    "decision_epoch_comparison_maps": 1,
+    "decision_sequence_maps": 1,
+    "episodes": 3,
+    "factor_cells": 1,
+    "hazard_count_levels": [
+      3
+    ],
+    "horizon_timesteps": 120,
+    "initial_shelters": 2,
+    "maximum_additional_shelters": 5,
+    "mode": "pilot",
+    "population_levels": [
+      2500
+    ],
+    "progress_comparison_maps": 1,
+    "progress_milestones": [
+      0,
+      20,
+      40,
+      60,
+      80,
+      100,
+      120
+    ],
+    "replications_per_cell": 1,
+    "shelter_candidate_levels": [
+      10
+    ],
+    "simulator_stop_time": 121,
+    "source_launch": "/Users/huali/Desktop/RLEvacuationCollab/runs/multicity_five_city_lr1e3_learning_audit_arm_20260906",
+    "source_manifest": "/Users/huali/Desktop/RLEvacuationCollab/runs/multicity_five_city_lr1e3_learning_audit_arm_20260906/experiment_manifest.json",
+    "source_manifest_sha256": "5ecc70e508a990c88af2e11d21ae0d33b2b879589f1eb85c064ebc2a43b67b08",
+    "source_policy_replicates": 1,
+    "source_training_converged": true,
+    "source_training_horizon_by_city": {
+      "state_college_pa": 14
+    },
+    "source_training_horizon_mismatches": {
+      "state_college_pa": 14
+    },
+    "source_training_installation_budget_by_city": {
+      "state_college_pa": 0
+    },
+    "source_training_installation_budget_mismatches": {
+      "state_college_pa": 0
+    },
+    "strategies": [
+      "rl",
+      "heuristic",
+      "initial_only"
+    ]
+  },
+  "launch_id": "factorial_maps_seed_20260908_v5_pilot",
+  "launch_seed": 20260908,
+  "limitations": [
+    "Pilot checkpoint was trained at a different horizon; maps validate the pipeline and are not confirmatory policy evidence.",
+    "Pilot checkpoint predates the fixed five-addition resource budget; confirmatory training must use the evaluation budget."
+  ],
+  "row_count": 3,
+  "schema_version": 1,
+  "scientific_contract": {
+    "candidate_identity": "OSM node id plus local coordinates and decision order",
+    "common_random_numbers": true,
+    "dynamic_interface_parity": "RL and heuristic share observation, feasible mask, action timing, budget, and lower-level optimizer",
+    "fixed_resource_budget": "at most 5 additional shelters, independent of candidate-pool size",
+    "progress_rule": "prespecified milestones plus true early terminal state",
+    "static_policy_role": "anticipative comparator; additional shelters are predeployed at t=0"
+  },
+  "status": "pilot_complete",
+  "unavailable_candidate_conditions": []
+}

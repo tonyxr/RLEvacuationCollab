@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "curriculum_id": "five_city_population_hazard_panic_confirmatory_v2",
+  "description": "Default full curriculum: 120 episodes per city with individual pedestrians and the exact population, hazard-count, and persistent-panic factor levels used by the confirmatory experiment.",
+  "stages": [
+    {"stage_id": "S1", "label": "low_load_low_panic", "episodes_per_city": 4, "variants": [{"variant_id": "nominal", "weight": 1, "overrides": {"pedVol": 5000, "pedestrianGroupSize": 1, "hazardVol": 1, "panicRate": 0.1}}]},
+    {"stage_id": "S2", "label": "moderate_load_moderate_panic", "episodes_per_city": 4, "variants": [{"variant_id": "nominal", "weight": 1, "overrides": {"pedVol": 10000, "pedestrianGroupSize": 1, "hazardVol": 2, "panicRate": 0.3}}]},
+    {"stage_id": "S3", "label": "nominal_factor_center", "episodes_per_city": 8, "variants": [{"variant_id": "nominal", "weight": 1, "overrides": {"pedVol": 15000, "pedestrianGroupSize": 1, "hazardVol": 3, "panicRate": 0.5}}]},
+    {"stage_id": "S4", "label": "factor_range_randomization", "episodes_per_city": 20, "variants": [
+      {"variant_id": "small_high_disruption", "weight": 1, "overrides": {"pedVol": 5000, "pedestrianGroupSize": 1, "hazardVol": 5, "panicRate": 0.9}},
+      {"variant_id": "low_medium_high", "weight": 1, "overrides": {"pedVol": 10000, "pedestrianGroupSize": 1, "hazardVol": 4, "panicRate": 0.7}},
+      {"variant_id": "center", "weight": 1, "overrides": {"pedVol": 15000, "pedestrianGroupSize": 1, "hazardVol": 3, "panicRate": 0.5}},
+      {"variant_id": "high_medium_low", "weight": 1, "overrides": {"pedVol": 20000, "pedestrianGroupSize": 1, "hazardVol": 2, "panicRate": 0.3}},
+      {"variant_id": "large_low_disruption", "weight": 1, "overrides": {"pedVol": 25000, "pedestrianGroupSize": 1, "hazardVol": 1, "panicRate": 0.1}}
+    ]},
+    {"stage_id": "S5", "label": "stationary_nominal_consolidation", "episodes_per_city": 84, "variants": [{"variant_id": "nominal", "weight": 1, "overrides": {"pedVol": 15000, "pedestrianGroupSize": 1, "hazardVol": 3, "panicRate": 0.5}}]}
+  ]
+}

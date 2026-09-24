@@ -1,0 +1,44 @@
+{
+  "schema_version": 2,
+  "experiment_id": "five_city_population_candidate_hazard_maps_v3",
+  "population_levels": [
+    10000,
+    20000,
+    30000,
+    40000,
+    50000
+  ],
+  "shelter_candidate_levels": [
+    5,
+    10,
+    15,
+    20
+  ],
+  "hazard_count_levels": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "initial_shelters": 2,
+  "maximum_additional_shelters": 5,
+  "shelter_action_interval": 2,
+  "horizon_timesteps": 60,
+  "progress_milestones": [
+    0,
+    10,
+    20,
+    30,
+    40,
+    50,
+    60
+  ],
+  "strategies": [
+    "rl",
+    "heuristic",
+    "initial_only"
+  ],
+  "visualization_replications_per_cell": 1,
+  "early_termination_rule": "freeze the true terminal state as an explicitly labeled absorbing MDP state at later requested milestones; never synthesize post-terminal pedestrian positions"
+}

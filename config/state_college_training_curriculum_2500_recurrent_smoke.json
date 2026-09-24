@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "curriculum_id": "state_college_2500_h3_p50_recurrent_v17_smoke",
+  "description": "Eight-episode engineering backtest of model-version-17 recurrent GNN-PPO with 2,500 individual State College evacuees. This is not a convergence or efficacy study.",
+  "stages": [
+    {
+      "stage_id": "S1",
+      "label": "recurrent_pipeline_engineering_backtest",
+      "episodes_per_city": 8,
+      "variants": [
+        {
+          "variant_id": "nominal",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 2500,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "panicRate": 0.5
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -9,7 +9,6 @@
 """
 
 from Cell import Cell
-import math
 import numpy as np
 
 class CellTracker:
@@ -22,7 +21,7 @@ class CellTracker:
         self.cellWiseShelterCan = None
         # 
         self.cellWiseGuidances = None
-    
+
         self.cellWiseShelters = None
         
         self.cellXNum = int(cellXNum)
@@ -64,17 +63,29 @@ class CellTracker:
         if self.cellXNum <= 0 or self.cellYNum <= 0:
             raise ValueError("cellXNum and cellYNum must be positive integers")
         
-        # Step 1: Cut both X and Y ranges into segments of the defined dimensions.
-        # If xEdges/yEdges are provided, use those as adaptive boundaries.
-        if xEdges is not None and len(xEdges) == self.cellXNum + 1:
-            self.xEdges = [float(v) for v in xEdges]
+        def validated_edges(values, expected, axis_name):
+            if len(values) != expected + 1:
+                raise ValueError(
+                    f"{axis_name}Edges must contain exactly {expected + 1} boundaries"
+                )
+            result = np.asarray(values, dtype=float)
+            if not np.isfinite(result).all() or not np.all(np.diff(result) > 0.0):
+                raise ValueError(
+                    f"{axis_name}Edges must be finite and strictly increasing"
+                )
+            return [float(value) for value in result]
+
+        # Step 1: Cut both projected-metre axes.  Explicit boundaries may be
+        # equal-area or density-adaptive; CellTracker is deliberately agnostic.
+        if xEdges is not None:
+            self.xEdges = validated_edges(xEdges, self.cellXNum, "x")
             self.cellXLen = float(networkXLength) / self.cellXNum
         else:
             self.cellXLen = float(networkXLength) / self.cellXNum
             self.xEdges = [i * self.cellXLen for i in range(self.cellXNum)] + [float(networkXLength)]
             
-        if yEdges is not None and len(yEdges) == self.cellYNum + 1:
-            self.yEdges = [float(v) for v in yEdges]
+        if yEdges is not None:
+            self.yEdges = validated_edges(yEdges, self.cellYNum, "y")
             self.cellYLen = float(networkYLength) / self.cellYNum
         else:
             self.cellYLen = float(networkYLength) / self.cellYNum
@@ -175,30 +186,26 @@ class CellTracker:
             z = (arr - lo) / (hi - lo)
             return np.clip(z, 0.0, 1.0)
         
-        def agents_in_cell(i, j):
-            if pedDS is None:
-                return []
-            
-            out = []
-            
-            for ped in pedDS.pedAgentList.values():
-                if getattr(ped, "terminated", False):
-                    continue
-                c = getattr(ped, "currCell", None)
-                if c is None:
-                    continue
-                
-                ci = int(c[0])
-                cj = int(c[1])
-                if ci == i and cj == j:
-                    out.append(ped)
-            
-            return out
-        
         # function preparation, dimension and container for the state of the overall environment
         Nx, Ny = self.cellXNum, self.cellYNum
         total = Nx * Ny
         snapshot = [[None for _ in range(Ny)] for _ in range(Nx)]
+
+        # Index active agents once per timestep. The previous implementation
+        # rescanned the entire population separately for every cell, making the
+        # same calculation O(number_of_cells * population). This preserves
+        # agent order and numerical behavior while reducing it to O(population).
+        agents_by_cell = [[[] for _ in range(Ny)] for _ in range(Nx)]
+        if pedDS is not None:
+            for ped in pedDS.pedAgentList.values():
+                if getattr(ped, "terminated", False):
+                    continue
+                cell = getattr(ped, "currCell", None)
+                if cell is None:
+                    continue
+                i, j = int(cell[0]), int(cell[1])
+                if 0 <= i < Nx and 0 <= j < Ny:
+                    agents_by_cell[i][j].append(ped)
         
         # containers for per-cell raw data
         heat_raw   = np.zeros(total, dtype=float)
@@ -220,8 +227,10 @@ class CellTracker:
                 stateLevel = cell.getState() if hasattr(cell, "getState") else getattr(cell, "impactedLevel", 0)
                 
                 # group and volume of pedestrians in the currently reviewing cell
-                agents = agents_in_cell(i, j)
-                ped_volume = len(agents)
+                agents = agents_by_cell[i][j]
+                ped_volume = sum(
+                    max(1, int(getattr(ped, "group_size", 1))) for ped in agents
+                )
                 
                 # get shelter flow and total shelter capacity in the current cell
                 sh_flow = 0.0
@@ -245,20 +254,17 @@ class CellTracker:
                 avg_speed_after = None
                 
                 if ped_volume > 0:
-                    speeds_before = [float(getattr(ped, "currSpeed", 0.0)) for ped in agents]
-                    avg_speed_before = sum(speeds_before) / ped_volume
+                    speed_mass = sum(
+                        float(getattr(ped, "currSpeed", 0.0))
+                        * max(1, int(getattr(ped, "group_size", 1)))
+                        for ped in agents
+                    )
+                    avg_speed_before = speed_mass / float(ped_volume)
                     
-                    # apply forces
-                    if forceTracker is not None and hasattr(forceTracker, "computeSpeed"):
-                        speeds_after = []
-                        for ped in agents:
-                            base_v = float(getattr(ped, "currSpeed", 0.0))
-                            new_v = float(forceTracker.computeSpeed(base_v, cell))
-                            ped.currSpeed = new_v
-                            speeds_after.append(new_v)
-                        avg_speed_after = sum(speeds_after) / ped_volume
-                    else:
-                        avg_speed_after = avg_speed_before
+                    # Hazard effects have already been applied before movement.
+                    # Cell aggregation is observational and must not mutate
+                    # speed after the transition merely for logging/RL state.
+                    avg_speed_after = avg_speed_before
                 
                     # document per-cell snapshot/state for analysis
                 snapshot[i][j] = {
@@ -297,8 +303,10 @@ class CellTracker:
         heat_norm = _norm(heat_raw, *heat_range)
         smoke_norm = _norm(smoke_raw, *smoke_range)
         
-        # danger level computed with weighted heat and smoke levels
-        danger_combo = (float(heat_weight) * heat_norm + float(neighbor_push) * smoke_norm)
+        # The decision process uses the documented five-level hazard state as
+        # its one normalized danger variable. This keeps D_i interpretable and
+        # guarantees the [0, 1] bound used by the reward-dominance proof.
+        danger_combo = np.clip(danger_arr / float(max(1, int(max_state))), 0.0, 1.0)
         
         wellness_penalty = danger_combo.copy()
         
@@ -449,4 +457,3 @@ class CellTracker:
         if isinstance(cellID, list):
             cellID = tuple(cellID)
         return self.cellList[cellID].corners
-    

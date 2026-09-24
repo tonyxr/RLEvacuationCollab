@@ -35,6 +35,14 @@ class Edge:
         
         # indicate the cell this edge is located (for impact purpose)
         self.cellID = cellID
+
+        # Synchronized pedestrian-congestion state. ``edgeFlow`` is the
+        # directional occupancy queued on this edge at the start of the
+        # current integration substep; the fields below combine both directions
+        # of the same physical OSM segment.
+        self.congestionOccupancy = 0
+        self.congestionDensityPedPerM2 = 0.0
+        self.congestionSpeedRatio = 1.0
         
     def getEdgeID(self):
         return self.edgeID

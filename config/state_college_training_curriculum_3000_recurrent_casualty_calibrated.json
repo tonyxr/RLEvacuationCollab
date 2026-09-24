@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "curriculum_id": "state_college_3000_h3_p50_c40_recurrent_v17_smoke",
+  "description": "Eight-episode engineering backtest of model-version-17 recurrent GNN-PPO with 3,000 individual State College evacuees. Hazard casualty probability is calibrated to a 40 percent mean cumulative probability after 60 minutes of uninterrupted Level-5 exposure (variance 9 percentage-points squared); lower severity and shorter exposure reduce realized population casualty incidence. This is not a convergence or efficacy study.",
+  "stages": [
+    {
+      "stage_id": "S1",
+      "label": "recurrent_pipeline_3000_casualty_calibrated_backtest",
+      "episodes_per_city": 8,
+      "variants": [
+        {
+          "variant_id": "casualty_calibrated",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 3000,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5
+          }
+        }
+      ]
+    }
+  ]
+}

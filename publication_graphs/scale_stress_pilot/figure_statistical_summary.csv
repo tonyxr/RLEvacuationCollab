@@ -1,0 +1,5 @@
+bootstrap_95_ci_lower,bootstrap_95_ci_upper,comparison,estimate,figure_id,horizon_timesteps,metric,population_level,shelter_candidate_level
+0.010304000015258885,0.010304000015258885,rl_minus_heuristic,0.010304000015258885,F13,120,objective_episode_return,2500,25
+0.0016000000000000458,0.0016000000000000458,rl_minus_heuristic,0.0016000000000000458,F13,120,safe_fraction,2500,25
+0.0016000000000000007,0.0016000000000000007,rl_minus_heuristic,0.0016000000000000007,F13,120,casualty_fraction,2500,25
+102.86296925001079,102.86296925001079,rl_absolute,102.86296925001079,F13,120,simulation_runtime_s,2500,25

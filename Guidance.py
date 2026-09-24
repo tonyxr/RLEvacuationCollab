@@ -1,13 +1,30 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-@author: Xiaoru Shi
+"""Deprecated guidance-point entity.
 
-7/30: constructed the skeletons
+Guidance is outside the current planner-side shelter-deployment model.  The
+class remains importable only so historical checkpoints and scripts fail
+gracefully instead of encountering a missing module.
 """
+
+import warnings
+
+DEPRECATED = True
+DEPRECATION_MESSAGE = (
+    "Guidance is deprecated and excluded from the active simulation model"
+)
 
 class Guidance:
+    """Deprecated compatibility type; no production code creates instances."""
+
+    DEPRECATED = True
+
     def __init__(self, guidanceID, nodeMapped, cellLocated, shelterPointer, totalFlow, guidedFlow, guStatus):
+        warnings.warn(
+            DEPRECATION_MESSAGE,
+            DeprecationWarning,
+            stacklevel=2,
+        )
         # Unique identifier of the guidance point entity.
         self.guidanceID = guidanceID
         # Corresponding to the intersection node upon which this guidance point is established.

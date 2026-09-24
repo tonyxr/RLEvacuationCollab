@@ -1,0 +1,116 @@
+{
+  "attribution": "\u00a9 OpenStreetMap contributors \u00b7 Open Database License (ODbL)",
+  "contact_sheet": "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/city_network_pairs/all_cities__osm_vs_skeleton.png",
+  "figure_profile_path": "/Users/huali/Desktop/RLEvacuationCollab/config/city_network_figure_profiles.json",
+  "figure_profile_sha256": "5724a7a91b9093232da6d15695593d2e52b235ebb29676d979fb4e8ce58d3ff6",
+  "figures": [
+    {
+      "city_id": "malibu_ca",
+      "display_name": "Malibu-Santa Monica Bay / North & West Los Angeles",
+      "experimental_graph_directed_edges": 33027,
+      "experimental_graph_nodes": 13781,
+      "extent_note": "A 35 km point-centered bounding footprint includes the full Malibu coast and Santa Monica Bay together with substantial northern and western Los Angeles. The regional-scale skeleton retains major OSM road classes so nodes and edges remain legible at paper scale.",
+      "graph_cache_path": "/Users/huali/Desktop/RLEvacuationCollab/cache/graph_regional_malibu_santa_monica_bay_4889ebb162de.graphml",
+      "graph_cache_sha256": "beefa0f3ae9a8b4d94c055cce297914e36388233c8c2dbcbba9e10d8632e5186",
+      "graph_mode": "regional_major_roads",
+      "intersection_consolidation": {
+        "enabled": false,
+        "tolerance_m": null
+      },
+      "output_path": "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/city_network_pairs/malibu_ca__osm_vs_skeleton.png",
+      "pdf_path": "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/city_network_pairs/malibu_ca__osm_vs_skeleton.pdf",
+      "radius_m": 35000.0,
+      "scope_label": "regional study area",
+      "tile_provider": "OpenStreetMap Standard",
+      "tile_zoom": 12,
+      "tiles_downloaded_this_run": 0
+    },
+    {
+      "city_id": "state_college_pa",
+      "display_name": "State College, Pennsylvania",
+      "experimental_graph_directed_edges": 25804,
+      "experimental_graph_nodes": 6973,
+      "extent_note": null,
+      "graph_cache_path": "/Users/huali/Desktop/RLEvacuationCollab/cache/graph_walk_State_College__PA__USA_6cb8fa0092e2.graphml",
+      "graph_cache_sha256": "450117161f89f272e0079da7375e2b42e1dfa959bd8c88db180b1672988ad05d",
+      "graph_mode": "experimental_walking_network",
+      "intersection_consolidation": {
+        "enabled": true,
+        "tolerance_m": 5.0
+      },
+      "output_path": "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/city_network_pairs/state_college_pa__osm_vs_skeleton.png",
+      "pdf_path": "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/city_network_pairs/state_college_pa__osm_vs_skeleton.pdf",
+      "radius_m": 3000.0,
+      "scope_label": "experimental study area",
+      "tile_provider": "OpenStreetMap Standard",
+      "tile_zoom": 15,
+      "tiles_downloaded_this_run": 0
+    },
+    {
+      "city_id": "spokane_wa",
+      "display_name": "Spokane, Washington",
+      "experimental_graph_directed_edges": 49838,
+      "experimental_graph_nodes": 13129,
+      "extent_note": null,
+      "graph_cache_path": "/Users/huali/Desktop/RLEvacuationCollab/cache/graph_walk_Spokane__WA__USA_586ca7735ba9.graphml",
+      "graph_cache_sha256": "4a32040626e5d3b7f0e5f09138bbf66591ed47d6062bef114835e50902b15507",
+      "graph_mode": "experimental_walking_network",
+      "intersection_consolidation": {
+        "enabled": true,
+        "tolerance_m": 5.0
+      },
+      "output_path": "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/city_network_pairs/spokane_wa__osm_vs_skeleton.png",
+      "pdf_path": "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/city_network_pairs/spokane_wa__osm_vs_skeleton.pdf",
+      "radius_m": 4000.0,
+      "scope_label": "experimental study area",
+      "tile_provider": "OpenStreetMap Standard",
+      "tile_zoom": 14,
+      "tiles_downloaded_this_run": 0
+    },
+    {
+      "city_id": "seattle_wa",
+      "display_name": "Seattle, Washington",
+      "experimental_graph_directed_edges": 79174,
+      "experimental_graph_nodes": 22278,
+      "extent_note": null,
+      "graph_cache_path": "/Users/huali/Desktop/RLEvacuationCollab/cache/graph_walk_Seattle__WA__USA_3a4610cc8af0.graphml",
+      "graph_cache_sha256": "ff9e205aea39fb01bdf77303893d8d31b7c7e73a61fae5ea22357c9713fdd229",
+      "graph_mode": "experimental_walking_network",
+      "intersection_consolidation": {
+        "enabled": true,
+        "tolerance_m": 5.0
+      },
+      "output_path": "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/city_network_pairs/seattle_wa__osm_vs_skeleton.png",
+      "pdf_path": "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/city_network_pairs/seattle_wa__osm_vs_skeleton.pdf",
+      "radius_m": 5000.0,
+      "scope_label": "experimental study area",
+      "tile_provider": "OpenStreetMap Standard",
+      "tile_zoom": 14,
+      "tiles_downloaded_this_run": 0
+    },
+    {
+      "city_id": "chicago_il",
+      "display_name": "Chicago, Illinois",
+      "experimental_graph_directed_edges": 123692,
+      "experimental_graph_nodes": 33396,
+      "extent_note": null,
+      "graph_cache_path": "/Users/huali/Desktop/RLEvacuationCollab/cache/graph_walk_Chicago__IL__USA_687212355d81.graphml",
+      "graph_cache_sha256": "928f10ffaac5959d1aa09572af40c098ace0af2ecb5f3336529e28e697a42282",
+      "graph_mode": "experimental_walking_network",
+      "intersection_consolidation": {
+        "enabled": true,
+        "tolerance_m": 5.0
+      },
+      "output_path": "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/city_network_pairs/chicago_il__osm_vs_skeleton.png",
+      "pdf_path": "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/city_network_pairs/chicago_il__osm_vs_skeleton.pdf",
+      "radius_m": 6000.0,
+      "scope_label": "experimental study area",
+      "tile_provider": "OpenStreetMap Standard",
+      "tile_zoom": 14,
+      "tiles_downloaded_this_run": 0
+    }
+  ],
+  "profile_path": "/Users/huali/Desktop/RLEvacuationCollab/config/city_profiles.json",
+  "profile_sha256": "f38a0eb9525221fc88fb7efad9985c953c91fa87912290034581cda2a4147435",
+  "schema_version": 1
+}

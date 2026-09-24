@@ -1,0 +1,120 @@
+{
+  "schema_version": 1,
+  "suite_id": "cell_partition_comparison_v1",
+  "frozen_utc": "2026-09-09T00:00:00Z",
+  "research_question": "How do equal-area and road-node-density-adaptive regional grids affect spatial balance, online scalability, and held-out evacuation decision quality?",
+  "partition_modes": [
+    "equal_area",
+    "node_density_adaptive"
+  ],
+  "partition_contract": {
+    "coordinate_system": "local projected-metre approximation used by MapDS",
+    "cell_count": "Exactly n squared rectangular cells under both modes",
+    "topology": "Identical row-major indexing and four-neighbour GNN adjacency",
+    "equal_area": "Equally spaced x and y boundaries over the occupied road-network extent",
+    "node_density_adaptive": "Empirical OSM road-node quantiles independently define x and y boundaries; dense axis ranges receive narrower cells",
+    "minimum_axis_width_fraction": 0.0001,
+    "density_proxy_limitation": "OSM road-node density is an infrastructure-resolution proxy, not resident population density"
+  },
+  "state_college_characterization": {
+    "city_id": "state_college_pa",
+    "display_name": "State College, Pennsylvania",
+    "address": "State College, PA, USA",
+    "center": [
+      40.7934,
+      -77.86
+    ],
+    "radius_m": 2000,
+    "network_type": "walk",
+    "graph_cache_path": "cache/graph_walk_State_College__PA__USA_ba20c740bb9f.graphml",
+    "grid_levels": [
+      4,
+      6,
+      8,
+      10,
+      12,
+      16,
+      20,
+      24,
+      32
+    ],
+    "illustration_grid": 8
+  },
+  "confirmatory_accuracy_design": {
+    "status": "pending_compute",
+    "execution_order": [
+      "State College gate",
+      "remaining four cities after gate passes"
+    ],
+    "cities": [
+      "state_college_pa",
+      "reading_pa",
+      "spokane_wa",
+      "seattle_wa",
+      "chicago_il"
+    ],
+    "population_levels": [
+      10000,
+      20000,
+      30000,
+      40000,
+      50000
+    ],
+    "accuracy_grid_levels": [
+      4,
+      6,
+      8,
+      10,
+      12,
+      16
+    ],
+    "policy_seeds": 8,
+    "held_out_scenarios_per_cell": 10,
+    "training_episodes_per_city_mode_grid": 120,
+    "state_college_gate": {
+      "grid_level": 8,
+      "population_levels": [
+        10000,
+        30000,
+        50000
+      ],
+      "policy_seeds": 3,
+      "held_out_scenarios_per_cell": 3,
+      "training_episodes_per_mode_seed": 120,
+      "planned_training_episodes": 720,
+      "planned_evaluation_episodes_including_heuristic": 72
+    },
+    "planned_full_episode_counts": {
+      "pooled_training_city_episodes": 57600,
+      "learned_policy_evaluation_episodes": 24000,
+      "heuristic_evaluation_episodes": 3000,
+      "total_evaluation_episodes": 27000
+    },
+    "pairing": "Common map, population, candidates, hazard path, pedestrian outcome stream, policy seed, and scenario seed across partition modes",
+    "policy_training": "Train a separate policy for every partition mode and grid resolution; never transfer an equal-area checkpoint to an adaptive grid or vice versa",
+    "primary_outcomes": [
+      "casualty_fraction",
+      "restricted_mean_time_to_safety"
+    ],
+    "secondary_outcomes": [
+      "safe_completion_fraction",
+      "unfinished_fraction",
+      "normalized_risk_weighted_person_time",
+      "online_decision_latency_ms"
+    ],
+    "statistical_model": "Paired mode differences with two-way policy-seed/scenario bootstrap within city and equal-city macro averaging",
+    "multiplicity": "Holm correction across casualty fraction and restricted mean time to safety",
+    "noninferiority": "A decision-quality noninferiority margin must be numerically preregistered before held-out evaluation; this file intentionally does not invent one without domain calibration"
+  },
+  "planned_figures": [
+    "F8a_partition_geometry_and_node_balance",
+    "F8b_grid_resolution_by_partition_mode_accuracy",
+    "F8c_grid_resolution_by_partition_mode_latency",
+    "F8d_partition_mode_paired_effect_forest"
+  ],
+  "claim_policy": {
+    "geometry_claim": "May be made from deterministic node-balance characterization",
+    "accuracy_claim": "Requires separately trained policies and complete held-out paired city trials",
+    "population_claim": "Prohibited because the adaptive boundaries use road-node density rather than census or pedestrian density"
+  }
+}

@@ -1,0 +1,176 @@
+{
+  "artifact_hashes": {
+    "checkpoint": "021d136d56730da75901bd4b29b7cfdf07dfc5803f22f12ba7c5bfce7c24edac",
+    "comparison_figures": {
+      "state_college_pa/state_college_pa__population_2500__candidates_10__hazards_3__rep_01/evacuation_progress_comparison.png": "d022132c71aeec9f3600cc2877cb0d83bd43d2c0186e632648019981c8292cb7",
+      "state_college_pa/state_college_pa__population_2500__candidates_10__hazards_3__rep_01/pedestrian_congestion_diagnostics.png": "417f2fb40bf4308c44212c1fe691f3b59efa50e0896bf5e5c480c4da1f163ef2",
+      "state_college_pa/state_college_pa__population_2500__candidates_10__hazards_3__rep_01/priority_decision_epoch_comparison.png": "745096ae2bf557d6f5a192e2bf1e9138fee98f842c1d9b3ad37cec68dcf8bbd3",
+      "state_college_pa/state_college_pa__population_2500__candidates_10__hazards_3__rep_01/shelter_decision_sequence_comparison.png": "e286dc13b8c2194750282361bce960284cd23cfdf75d329f7b27e36e99931bd3"
+    },
+    "evaluation_table": "0f8b212ce62a044e7e00f66fd876062527e0e97ae69842f9e987af9a6d75a958",
+    "figure_index": "0f8b212ce62a044e7e00f66fd876062527e0e97ae69842f9e987af9a6d75a958"
+  },
+  "artifacts": {
+    "evaluation_table": "/Users/huali/Desktop/RLEvacuationCollab/runs/factorial_maps_seed_20260908_v8_congestion_pilot/map_factorial_evaluation.csv",
+    "figure_index": "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/factorial_maps/factorial_maps_seed_20260908_v8_congestion_pilot/map_factorial_figure_index.csv",
+    "figure_root": "/Users/huali/Desktop/RLEvacuationCollab/publication_graphs/factorial_maps/factorial_maps_seed_20260908_v8_congestion_pilot"
+  },
+  "command": [
+    "/Users/huali/opt/anaconda3/envs/evacuationModel/bin/python",
+    "/Users/huali/Desktop/RLEvacuationCollab/map_factorial_backtest.py",
+    "--pilot",
+    "--resume",
+    "--launch-id",
+    "factorial_maps_seed_20260908_v8_congestion_pilot",
+    "--pilot-population",
+    "2500",
+    "--pilot-candidates",
+    "10",
+    "--pilot-hazards",
+    "3"
+  ],
+  "completed_utc": "2026-09-09T00:04:18.542810+00:00",
+  "created_utc": "2026-09-09T00:04:11.967509+00:00",
+  "design": {
+    "early_termination_rule": "freeze the true terminal state as an explicitly labeled absorbing MDP state at later requested milestones; never synthesize post-terminal pedestrian positions",
+    "experiment_id": "five_city_population_candidate_hazard_maps_v2",
+    "path": "/Users/huali/Desktop/RLEvacuationCollab/config/map_visualization_experiment.json",
+    "sha256": "8131cfb8b7746099837408fa3bf37a09f7ad4cc36eec5a8920f9168525e432c8"
+  },
+  "execution_plan": {
+    "checkpoint": "/Users/huali/Desktop/RLEvacuationCollab/runs/multicity_five_city_lr1e3_learning_audit_arm_20260906/policies/policy_001/regional_policy.pt",
+    "checkpoint_available": true,
+    "city_ids": [
+      "state_college_pa"
+    ],
+    "congestion_diagnostic_graphs": 1,
+    "decision_epoch_comparison_maps": 1,
+    "decision_sequence_maps": 1,
+    "episodes": 3,
+    "evaluation_congestion_contract_by_city": {
+      "state_college_pa": {
+        "effective_width_m": 3.0,
+        "enabled": true,
+        "jam_density_ped_per_m2": 5.4,
+        "minimum_speed_ratio": 0.05,
+        "model": "weidmann_physical_link_v1",
+        "shape": 1.913,
+        "time_step_minutes": 1.0
+      }
+    },
+    "factor_cells": 1,
+    "hazard_count_levels": [
+      3
+    ],
+    "horizon_timesteps": 120,
+    "initial_shelters": 2,
+    "maximum_additional_shelters": 5,
+    "maximum_person_transitions": 900000,
+    "mode": "pilot",
+    "population_levels": [
+      2500
+    ],
+    "progress_comparison_maps": 1,
+    "progress_milestones": [
+      0,
+      20,
+      40,
+      60,
+      80,
+      100,
+      120
+    ],
+    "replications_per_cell": 1,
+    "requested_pedestrian_trajectories": 7500,
+    "shelter_candidate_levels": [
+      10
+    ],
+    "simulator_stop_time": 121,
+    "source_launch": "/Users/huali/Desktop/RLEvacuationCollab/runs/multicity_five_city_lr1e3_learning_audit_arm_20260906",
+    "source_manifest": "/Users/huali/Desktop/RLEvacuationCollab/runs/multicity_five_city_lr1e3_learning_audit_arm_20260906/experiment_manifest.json",
+    "source_manifest_sha256": "5ecc70e508a990c88af2e11d21ae0d33b2b879589f1eb85c064ebc2a43b67b08",
+    "source_policy_replicates": 1,
+    "source_training_congestion_contract_by_city": {
+      "state_college_pa": {
+        "effective_width_m": null,
+        "enabled": false,
+        "jam_density_ped_per_m2": null,
+        "minimum_speed_ratio": null,
+        "model": "none",
+        "shape": null,
+        "time_step_minutes": 1.0
+      }
+    },
+    "source_training_congestion_contract_mismatches": {
+      "state_college_pa": {
+        "evaluation": {
+          "effective_width_m": 3.0,
+          "enabled": true,
+          "jam_density_ped_per_m2": 5.4,
+          "minimum_speed_ratio": 0.05,
+          "model": "weidmann_physical_link_v1",
+          "shape": 1.913,
+          "time_step_minutes": 1.0
+        },
+        "source": {
+          "effective_width_m": null,
+          "enabled": false,
+          "jam_density_ped_per_m2": null,
+          "minimum_speed_ratio": null,
+          "model": "none",
+          "shape": null,
+          "time_step_minutes": 1.0
+        }
+      }
+    },
+    "source_training_converged": true,
+    "source_training_horizon_by_city": {
+      "state_college_pa": 14
+    },
+    "source_training_horizon_mismatches": {
+      "state_college_pa": 14
+    },
+    "source_training_installation_budget_by_city": {
+      "state_college_pa": 0
+    },
+    "source_training_installation_budget_mismatches": {
+      "state_college_pa": 0
+    },
+    "strategies": [
+      "rl",
+      "heuristic",
+      "initial_only"
+    ],
+    "total_comparison_and_diagnostic_graphs": 4
+  },
+  "launch_id": "factorial_maps_seed_20260908_v8_congestion_pilot",
+  "launch_seed": 20260908,
+  "limitations": [
+    "Pilot checkpoint was trained at a different horizon; maps validate the pipeline and are not confirmatory policy evidence.",
+    "Pilot checkpoint predates the fixed five-addition resource budget; confirmatory training must use the evaluation budget.",
+    "Pilot checkpoint predates the pedestrian link-congestion transition law; maps validate mechanics only and are not policy-performance evidence."
+  ],
+  "row_count": 3,
+  "schema_version": 1,
+  "scientific_contract": {
+    "candidate_identity": "OSM node id plus local coordinates and decision order",
+    "common_random_numbers": true,
+    "dynamic_interface_parity": "RL and heuristic share observation, feasible mask, action timing, budget, and lower-level optimizer",
+    "fixed_resource_budget": "at most 5 additional shelters, independent of candidate-pool size",
+    "pedestrian_motion": {
+      "state_college_pa": {
+        "effective_width_m": 3.0,
+        "enabled": true,
+        "jam_density_ped_per_m2": 5.4,
+        "minimum_speed_ratio": 0.05,
+        "model": "weidmann_physical_link_v1",
+        "shape": 1.913,
+        "time_step_minutes": 1.0
+      }
+    },
+    "progress_rule": "prespecified milestones plus true early terminal state",
+    "static_policy_role": "anticipative comparator; additional shelters are predeployed at t=0"
+  },
+  "status": "pilot_complete",
+  "unavailable_candidate_conditions": []
+}

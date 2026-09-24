@@ -1,0 +1,536 @@
+{
+  "schema_version": 2,
+  "suite_id": "urban_shelter_priority_e0_e6_v3",
+  "description": "Confirmatory and mechanism experiment suite for hierarchical regional shelter-capacity decisions under stochastic urban hazards.",
+  "city_profiles": "city_profiles.json",
+  "confirmatory_analysis": {
+    "policy_seeds": 8,
+    "train_episodes_per_city": 120,
+    "bootstrap_draws": 20000,
+    "confidence_level": 0.95,
+    "primary_metric": "objective_episode_return",
+    "primary_comparison": "rl_minus_heuristic",
+    "city_weighting": "equal_city_macro_average"
+  },
+  "evaluation_factorial": {
+    "factors": {
+      "capacity_regime": [
+        "scarce",
+        "moderate",
+        "ample"
+      ],
+      "hazard_regime": [
+        "low",
+        "moderate",
+        "severe"
+      ],
+      "demand_pattern": [
+        "dispersed",
+        "clustered"
+      ]
+    },
+    "replications_per_factor_cell": 5
+  },
+  "scale_stress_design": {
+    "population_levels": [
+      10000,
+      20000,
+      30000,
+      40000,
+      50000
+    ],
+    "shelter_candidate_levels": [
+      25,
+      50,
+      75,
+      100,
+      125
+    ],
+    "horizon_timesteps": 60,
+    "shelter_action_interval": 2,
+    "replications_per_cell": 5
+  },
+  "experiments": {
+    "E0": {
+      "title": "Scenario calibration and feasibility",
+      "research_question": "Do the factorial scenarios span nontrivial but feasible evacuation conditions without floor or ceiling effects?",
+      "design": {
+        "policies": [
+          "no_dynamic_deployment"
+        ],
+        "use": "calibration_only_not_policy_selection",
+        "checks": [
+          "initial_capacity_coverage",
+          "feasible_region_fraction",
+          "hazard_exposure",
+          "outcome_floor_ceiling"
+        ]
+      },
+      "outputs": [
+        "scenario_calibration"
+      ]
+    },
+    "E1": {
+      "title": "Primary RL efficacy",
+      "research_question": "Does the learned regional-priority policy improve the simple evacuation objective over the active-population heuristic?",
+      "design": {
+        "policies": [
+          "rl",
+          "heuristic"
+        ],
+        "pairing": "common_random_numbers_within_city_factor_cell",
+        "training": "balanced_pooled_five_city_ppo",
+        "estimand": "equal_city_macro_mean_rl_minus_heuristic"
+      },
+      "outputs": [
+        "training_summary",
+        "evaluation_summary",
+        "checkpoint_evaluation"
+      ]
+    },
+    "E2": {
+      "title": "Sequential versus static placement",
+      "research_question": "What is gained by adaptive sequential regional prioritization relative to random online and static predeployment policies?",
+      "design": {
+        "policies": [
+          "rl",
+          "risk_reduction",
+          "heuristic",
+          "hazard_weighted",
+          "accessibility_deficit",
+          "random",
+          "static_greedy",
+          "rl_precommit",
+          "initial_only"
+        ],
+        "comparability": "dynamic_policies_share_observation_mask_budget_cadence_and_lower_level_executor; static and precommit policies are separately labeled timing controls",
+        "factorial": "full_capacity_by_hazard_by_demand"
+      },
+      "outputs": [
+        "regime_evaluation",
+        "map_figure_index"
+      ]
+    },
+    "E3": {
+      "title": "Hierarchical action scalability",
+      "research_question": "Does regional prioritization preserve decision quality while avoiding the candidate-level action-space and latency growth?",
+      "design": {
+        "methods": [
+          "hierarchical_region",
+          "flat_candidate"
+        ],
+        "outcomes": [
+          "decision_latency_ms",
+          "action_count",
+          "episode_return"
+        ],
+        "scope": "matched_small_and_medium_instances_where_both_methods_are_computable"
+      },
+      "outputs": [
+        "scalability_evaluation"
+      ]
+    },
+    "E4": {
+      "title": "Reward and architecture ablation",
+      "research_question": "Which parsimonious objective terms and hierarchical policy components account for learned performance?",
+      "design": {
+        "ablations": [
+          "full_model",
+          "no_risk_person_time",
+          "no_casualty_priority",
+          "no_heuristic_residual_prior",
+          "no_neighbor_message",
+          "flat_candidate_action"
+        ],
+        "comparison": "paired_against_full_model_on_identical_scenarios",
+        "selection_rule": "no_post_hoc_reward_weight_tuning_on_confirmatory_scenarios"
+      },
+      "outputs": [
+        "ablation_evaluation"
+      ]
+    },
+    "E5": {
+      "title": "Cross-city transfer",
+      "research_question": "Does the learned regional decision rule transfer to an unseen city without a city identifier?",
+      "design": {
+        "protocol": "leave_one_city_out",
+        "models": [
+          "pooled_all_cities",
+          "leave_one_city_out",
+          "heuristic"
+        ],
+        "held_out_units": "each_of_five_cities",
+        "no_target_city_finetuning": true
+      },
+      "outputs": [
+        "transfer_evaluation"
+      ]
+    },
+    "E6": {
+      "title": "Robustness to operating uncertainty",
+      "research_question": "Is the policy advantage stable under demand, hazard, map, and shelter-capacity perturbations not used for policy selection?",
+      "design": {
+        "perturbations": [
+          "demand_shift",
+          "hazard_intensity_shift",
+          "hazard_location_shift",
+          "shelter_capacity_error",
+          "candidate_availability_loss"
+        ],
+        "comparison": "rl_minus_heuristic",
+        "analysis": "paired_effect_by_perturbation_and_level"
+      },
+      "outputs": [
+        "robustness_evaluation",
+        "scale_stress_evaluation"
+      ]
+    }
+  },
+  "output_tables": {
+    "scenario_calibration": {
+      "path": "full_suite_tables/scenario_calibration.csv",
+      "experiment": "E0",
+      "required_for_complete_suite": true,
+      "required_columns": [
+        "city_id",
+        "capacity_regime",
+        "hazard_regime",
+        "demand_pattern",
+        "scenario_seed",
+        "initial_population",
+        "initial_capacity_coverage",
+        "feasible_region_fraction",
+        "baseline_safe_fraction",
+        "baseline_casualty_fraction"
+      ]
+    },
+    "training_summary": {
+      "path": "training_episode_summary.csv",
+      "experiment": "E1",
+      "required_for_complete_suite": true,
+      "required_columns": [
+        "policy_replication",
+        "replication",
+        "city_id",
+        "city_scale_rank",
+        "episode_return",
+        "safe_completion_reward",
+        "casualty_penalty",
+        "risk_time_penalty",
+        "entropy",
+        "heuristic_agreement_rate"
+      ]
+    },
+    "evaluation_summary": {
+      "path": "evaluation_episode_summary.csv",
+      "experiment": "E1",
+      "required_for_complete_suite": true,
+      "required_columns": [
+        "policy_replication",
+        "city_id",
+        "city_scale_rank",
+        "city_scenario_replication",
+        "deployment_strategy",
+        "scenario_seed",
+        "episode_return",
+        "objective_episode_return",
+        "safe_completed",
+        "casualty",
+        "unfinished",
+        "restricted_mean_time_to_safety",
+        "normalized_risk_weighted_person_time",
+        "initial_population"
+      ]
+    },
+    "checkpoint_evaluation": {
+      "path": "full_suite_tables/checkpoint_evaluation.csv",
+      "experiment": "E1",
+      "required_for_complete_suite": true,
+      "required_columns": [
+        "training_episode_per_city",
+        "policy_replication",
+        "city_id",
+        "city_scenario_replication",
+        "deployment_strategy",
+        "scenario_seed",
+        "episode_return",
+        "objective_episode_return",
+        "initial_population",
+        "safe_completed",
+        "casualty"
+      ]
+    },
+    "regime_evaluation": {
+      "path": "full_suite_tables/regime_evaluation.csv",
+      "experiment": "E2",
+      "required_for_complete_suite": true,
+      "required_columns": [
+        "policy_replication",
+        "city_id",
+        "city_scale_rank",
+        "city_scenario_replication",
+        "capacity_regime",
+        "hazard_regime",
+        "demand_pattern",
+        "deployment_strategy",
+        "scenario_seed",
+        "episode_return",
+        "objective_episode_return",
+        "safe_completed",
+        "casualty",
+        "unfinished",
+        "restricted_mean_time_to_safety",
+        "normalized_risk_weighted_person_time",
+        "initial_population"
+      ]
+    },
+    "map_figure_index": {
+      "path": "paper_figures/map_figure_index.csv",
+      "experiment": "E2",
+      "required_for_complete_suite": true,
+      "required_columns": [
+        "city_id",
+        "strategy",
+        "scenario_seed",
+        "shelter_installation_map",
+        "evacuation_progress_map",
+        "visualization_manifest",
+        "non_interventional"
+      ]
+    },
+    "scalability_evaluation": {
+      "path": "full_suite_tables/scalability_evaluation.csv",
+      "experiment": "E3",
+      "required_for_complete_suite": true,
+      "required_columns": [
+        "city_id",
+        "scenario_seed",
+        "method",
+        "graph_nodes",
+        "candidate_count",
+        "action_count",
+        "decision_latency_ms",
+        "episode_return"
+      ]
+    },
+    "ablation_evaluation": {
+      "path": "full_suite_tables/ablation_evaluation.csv",
+      "experiment": "E4",
+      "required_for_complete_suite": true,
+      "required_columns": [
+        "policy_replication",
+        "city_id",
+        "city_scenario_replication",
+        "scenario_seed",
+        "ablation",
+        "episode_return",
+        "objective_episode_return",
+        "safe_completed",
+        "casualty",
+        "initial_population"
+      ]
+    },
+    "transfer_evaluation": {
+      "path": "full_suite_tables/transfer_evaluation.csv",
+      "experiment": "E5",
+      "required_for_complete_suite": true,
+      "required_columns": [
+        "policy_replication",
+        "held_out_city",
+        "city_scenario_replication",
+        "scenario_seed",
+        "deployment_strategy",
+        "episode_return",
+        "objective_episode_return",
+        "safe_completed",
+        "casualty",
+        "initial_population"
+      ]
+    },
+    "robustness_evaluation": {
+      "path": "full_suite_tables/robustness_evaluation.csv",
+      "experiment": "E6",
+      "required_for_complete_suite": true,
+      "required_columns": [
+        "policy_replication",
+        "city_id",
+        "city_scenario_replication",
+        "scenario_seed",
+        "perturbation",
+        "level",
+        "deployment_strategy",
+        "episode_return",
+        "objective_episode_return",
+        "safe_completed",
+        "casualty",
+        "initial_population"
+      ]
+    },
+    "scale_stress_evaluation": {
+      "path": "full_suite_tables/scale_stress_evaluation.csv",
+      "experiment": "E6",
+      "required_for_complete_suite": true,
+      "required_columns": [
+        "policy_replication",
+        "city_id",
+        "city_scale_rank",
+        "scale_replication",
+        "deployment_strategy",
+        "scenario_seed",
+        "population_level",
+        "shelter_candidate_level",
+        "actual_candidate_count",
+        "horizon_timesteps",
+        "shelter_action_interval_timesteps",
+        "stop_time_config",
+        "simulation_runtime_s",
+        "episode_return",
+        "objective_episode_return",
+        "safe_completed",
+        "casualty",
+        "unfinished",
+        "restricted_mean_time_to_safety",
+        "normalized_risk_weighted_person_time",
+        "initial_population"
+      ]
+    }
+  },
+  "figure_families": [
+    {
+      "figure_id": "F01",
+      "title": "Training reward and held-out convergence",
+      "experiments": [
+        "E1"
+      ],
+      "source_tables": [
+        "training_summary",
+        "checkpoint_evaluation"
+      ]
+    },
+    {
+      "figure_id": "F02",
+      "title": "PPO optimization diagnostics",
+      "experiments": [
+        "E1"
+      ],
+      "source_tables": [
+        "training_summary"
+      ]
+    },
+    {
+      "figure_id": "F03",
+      "title": "Primary policy performance",
+      "experiments": [
+        "E1",
+        "E2"
+      ],
+      "source_tables": [
+        "evaluation_summary",
+        "regime_evaluation"
+      ]
+    },
+    {
+      "figure_id": "F04",
+      "title": "City-specific paired effects",
+      "experiments": [
+        "E1"
+      ],
+      "source_tables": [
+        "evaluation_summary"
+      ]
+    },
+    {
+      "figure_id": "F05",
+      "title": "Capacity by hazard performance surface",
+      "experiments": [
+        "E0",
+        "E2"
+      ],
+      "source_tables": [
+        "scenario_calibration",
+        "regime_evaluation"
+      ]
+    },
+    {
+      "figure_id": "F06",
+      "title": "Safety, casualty, and timeliness frontier",
+      "experiments": [
+        "E1",
+        "E2"
+      ],
+      "source_tables": [
+        "regime_evaluation"
+      ]
+    },
+    {
+      "figure_id": "F07",
+      "title": "Hierarchical action scalability",
+      "experiments": [
+        "E3"
+      ],
+      "source_tables": [
+        "scalability_evaluation"
+      ]
+    },
+    {
+      "figure_id": "F08",
+      "title": "Reward and architecture ablations",
+      "experiments": [
+        "E4"
+      ],
+      "source_tables": [
+        "ablation_evaluation"
+      ]
+    },
+    {
+      "figure_id": "F09",
+      "title": "Leave-one-city-out transfer",
+      "experiments": [
+        "E5"
+      ],
+      "source_tables": [
+        "transfer_evaluation"
+      ]
+    },
+    {
+      "figure_id": "F10",
+      "title": "Robustness under operating perturbations",
+      "experiments": [
+        "E6"
+      ],
+      "source_tables": [
+        "robustness_evaluation"
+      ]
+    },
+    {
+      "figure_id": "F11",
+      "title": "Shelter installations on OpenStreetMap",
+      "experiments": [
+        "E2"
+      ],
+      "source_tables": [
+        "map_figure_index"
+      ]
+    },
+    {
+      "figure_id": "F12",
+      "title": "Evacuation progress on OpenStreetMap",
+      "experiments": [
+        "E2"
+      ],
+      "source_tables": [
+        "map_figure_index"
+      ]
+    },
+    {
+      "figure_id": "F13",
+      "title": "Population by shelter-candidate scale stress",
+      "experiments": [
+        "E6"
+      ],
+      "source_tables": [
+        "scale_stress_evaluation"
+      ]
+    }
+  ]
+}

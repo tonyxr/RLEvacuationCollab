@@ -1,0 +1,162 @@
+{
+  "schema_version": 1,
+  "suite_id": "or_journal_shelter_deployment_v1",
+  "frozen_utc": "2026-09-09T00:00:00Z",
+  "study_objective": "Estimate the safety, speed, adaptivity, and computational effects of hierarchical sequential shelter deployment without conflating population growth with shelter scarcity.",
+  "cities": [
+    "state_college_pa",
+    "reading_pa",
+    "spokane_wa",
+    "seattle_wa",
+    "chicago_il"
+  ],
+  "population_levels": [
+    10000,
+    20000,
+    30000,
+    40000,
+    50000
+  ],
+  "grid_levels": [
+    4,
+    6,
+    8,
+    10,
+    12,
+    16,
+    20,
+    24,
+    32
+  ],
+  "candidate_levels": [
+    25,
+    50,
+    100,
+    200,
+    400,
+    800,
+    1600,
+    3200,
+    6400
+  ],
+  "strategies": {
+    "primary": [
+      "rl",
+      "heuristic"
+    ],
+    "timing_isolation": [
+      "rl",
+      "rl_precommit"
+    ],
+    "static_comparison": [
+      "static_greedy",
+      "initial_only"
+    ],
+    "diagnostic": [
+      "random"
+    ]
+  },
+  "confirmatory_design": {
+    "policy_seeds": 8,
+    "held_out_scenarios_per_city_population": 10,
+    "training_episodes_per_city": 120,
+    "bootstrap_draws": 20000,
+    "confidence_level": 0.95,
+    "familywise_alpha": 0.05,
+    "primary_estimand": "equal-city macro mean RL minus heuristic objective return",
+    "primary_outcomes": [
+      "casualty_fraction",
+      "restricted_mean_time_to_safety"
+    ],
+    "secondary_outcomes": [
+      "safe_completion_fraction",
+      "normalized_risk_weighted_person_time",
+      "unfinished_fraction"
+    ],
+    "capacity_regimes": {
+      "fixed_resource": "Hold shelter count and realized capacity fixed while population increases; estimates operational stress.",
+      "proportional_capacity": "Scale sampled capacity to hold initial capacity per pedestrian approximately constant; estimates computational scaling with scarcity controlled."
+    },
+    "pairing": "Common scenario, hazard, and pedestrian-outcome random streams within city-population-policy comparison.",
+    "multiplicity": "Holm correction across the two primary outcomes; secondary intervals are descriptive.",
+    "missingness": "A failed or timed-out run remains missing and is never replaced by a favorable seed; report completion by design cell."
+  },
+  "state_college_gate": {
+    "required_before_multicity_launch": true,
+    "population_levels": [
+      10000,
+      30000,
+      50000
+    ],
+    "policy_seeds": 3,
+    "held_out_scenarios_per_population": 3,
+    "pass_conditions": [
+      "all population accounting identities hold",
+      "all matched-interface checks hold",
+      "no design cell has zero feasible actions at the first decision",
+      "wall-clock projection is recorded before five-city allocation",
+      "no NaN or infinite training diagnostics"
+    ]
+  },
+  "latency_benchmark": {
+    "device": "cpu",
+    "torch_threads": 1,
+    "warmup_repetitions": 50,
+    "measured_repetitions": 500,
+    "quick_warmup_repetitions": 10,
+    "quick_measured_repetitions": 100,
+    "reported_statistics": [
+      "median_ms",
+      "p95_ms",
+      "log_log_slope"
+    ],
+    "scope": "Policy scoring and feasible-action selection only; state construction and shared site execution are excluded and must be timed separately in simulator runs."
+  },
+  "extreme_ring_design": {
+    "grid": 9,
+    "policy_seeds": 8,
+    "training_updates": 500,
+    "batch_size": 96,
+    "held_out_scenarios_per_variant": 200,
+    "quick_policy_seeds": 4,
+    "quick_training_updates": 160,
+    "quick_batch_size": 64,
+    "quick_held_out_scenarios_per_variant": 80,
+    "variants": [
+      "safe_center",
+      "dangerous_center",
+      "center_unavailable",
+      "asymmetric_ring"
+    ],
+    "primary_outcomes": [
+      "decision_utility",
+      "oracle_regret",
+      "center_selection_rate"
+    ],
+    "interpretation": "A controlled one-decision contextual-bandit mechanism test using the production policy architecture and observation channels; it is not a city evacuation outcome trial."
+  },
+  "figure_plan": [
+    "F1_city_population_effects",
+    "F2_primary_paired_forest",
+    "F3_sequential_timing_ablation",
+    "F4_training_convergence",
+    "F5_dynamic_map_sequence",
+    "F6_grid_latency_scaling",
+    "F7_candidate_action_scaling",
+    "F8_grid_accuracy_tradeoff",
+    "F9_extreme_ring_mechanism",
+    "F10_runtime_decomposition",
+    "F11_robustness_heatmap",
+    "F12_completion_and_missingness"
+  ],
+  "claim_policy": {
+    "sequential_claim_requires": "RL improves outcomes relative to both heuristic and its own frozen rl_precommit selector.",
+    "hierarchy_claim_requires": "Latency or memory scaling improves relative to a candidate-level action representation while paired decision quality remains within a preregistered noninferiority margin.",
+    "reward_claim_requires": "Stable diagnostics plus reward-component ablations; training curves alone are insufficient.",
+    "prohibited_substitutions": [
+      "do not treat the controlled ring stress test as a city evacuation result",
+      "do not treat policy-only latency as total simulation runtime",
+      "do not pool cities by raw episode count without equal-city weighting"
+    ]
+  }
+}

@@ -1,15 +1,31 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-@author: Xiaoru Shi
+"""Deprecated guidance-point database retained for compatibility only.
 
-7/30: constructed the skeletons
+The active simulator neither constructs this database nor populates guidance
+candidates.  Shelter deployment is the sole planner action.
 """
+
+import warnings
 
 from Guidance import Guidance
 
+DEPRECATED = True
+DEPRECATION_MESSAGE = (
+    "GuidanceDatabase is deprecated and excluded from the active simulation model"
+)
+
 class GuidanceDS:
+    """Deprecated compatibility database; excluded from production runs."""
+
+    DEPRECATED = True
+
     def __init__(self, candidateVol, initVol):
+        warnings.warn(
+            DEPRECATION_MESSAGE,
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.guidanceList = {}
         self.guidanceByOSMID = {}
         
@@ -229,4 +245,3 @@ class GuidanceDS:
             if not found:
                 break
         return deployed
-        

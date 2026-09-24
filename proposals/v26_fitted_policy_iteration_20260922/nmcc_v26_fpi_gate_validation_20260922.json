@@ -1,0 +1,98 @@
+{
+  "summary": {
+    "null": {
+      "splits": 400,
+      "certification_rate": 0.005,
+      "false_certification_rate": 0.005,
+      "mean_true_gain_when_certified": -0.5484106044411223,
+      "mean_true_gain_deployed": -0.002742053022205612,
+      "mean_true_gain_ungated_lambda8": -1.020764437466549,
+      "share_of_splits_ungated_harms": 0.97,
+      "share_of_splits_deployed_harms": 0.005,
+      "mean_rank_corr_vs_held_tapes": 0.0013217723862042339,
+      "mean_headroom_held_tapes": 2.0659961006363314
+    },
+    "oracle_noise_0.25": {
+      "splits": 400,
+      "certification_rate": 0.66,
+      "false_certification_rate": 0.0,
+      "mean_true_gain_when_certified": 2.0545362002811944,
+      "mean_true_gain_deployed": 1.3559938921855883,
+      "mean_true_gain_ungated_lambda8": 2.021505551151124,
+      "share_of_splits_ungated_harms": 0.0,
+      "share_of_splits_deployed_harms": 0.0,
+      "mean_rank_corr_vs_held_tapes": 0.9384987259865955,
+      "mean_headroom_held_tapes": 2.0659961006363314
+    },
+    "oracle_noise_0.5": {
+      "splits": 400,
+      "certification_rate": 0.5675,
+      "false_certification_rate": 0.0,
+      "mean_true_gain_when_certified": 1.9987279616449438,
+      "mean_true_gain_deployed": 1.1342781182335056,
+      "mean_true_gain_ungated_lambda8": 1.942058180590422,
+      "share_of_splits_ungated_harms": 0.0,
+      "share_of_splits_deployed_harms": 0.0,
+      "mean_rank_corr_vs_held_tapes": 0.8774395324675536,
+      "mean_headroom_held_tapes": 2.0659961006363314
+    },
+    "oracle_noise_1": {
+      "splits": 400,
+      "certification_rate": 0.4025,
+      "false_certification_rate": 0.0,
+      "mean_true_gain_when_certified": 1.8542422190034082,
+      "mean_true_gain_deployed": 0.7463324931488718,
+      "mean_true_gain_ungated_lambda8": 1.7364360183283023,
+      "share_of_splits_ungated_harms": 0.0,
+      "share_of_splits_deployed_harms": 0.0,
+      "mean_rank_corr_vs_held_tapes": 0.7653209847046998,
+      "mean_headroom_held_tapes": 2.0659961006363314
+    },
+    "oracle_noise_2": {
+      "splits": 400,
+      "certification_rate": 0.225,
+      "false_certification_rate": 0.0,
+      "mean_true_gain_when_certified": 1.5207764984221341,
+      "mean_true_gain_deployed": 0.34217471214498024,
+      "mean_true_gain_ungated_lambda8": 1.2833193733255914,
+      "share_of_splits_ungated_harms": 0.0,
+      "share_of_splits_deployed_harms": 0.0,
+      "mean_rank_corr_vs_held_tapes": 0.5905620781339433,
+      "mean_headroom_held_tapes": 2.0659961006363314
+    },
+    "replica_ridge": {
+      "splits": 400,
+      "certification_rate": 0.005,
+      "false_certification_rate": 0.0,
+      "mean_true_gain_when_certified": 0.7839860387894277,
+      "mean_true_gain_deployed": 0.003919930193947139,
+      "mean_true_gain_ungated_lambda8": -0.1687232874306858,
+      "share_of_splits_ungated_harms": 0.595,
+      "share_of_splits_deployed_harms": 0.0,
+      "mean_rank_corr_vs_held_tapes": 0.28627304253198504,
+      "mean_headroom_held_tapes": 2.0659961006363314
+    }
+  },
+  "settings": {
+    "splits": 400,
+    "holdout_episodes": 8,
+    "draws": 2000,
+    "seed": 20260922,
+    "lambda_grid": [
+      0.0,
+      0.5,
+      2.0,
+      8.0
+    ],
+    "beta_grid": [
+      0.0,
+      1.0
+    ],
+    "alpha": 0.1,
+    "gate_labels": "tape 0, full horizon, all feasible cells",
+    "truth": "mean of tapes 1 and 2, full horizon",
+    "episodes": 16,
+    "states": 43
+  },
+  "wall_seconds": 22.416200399398804
+}

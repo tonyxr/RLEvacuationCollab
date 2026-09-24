@@ -1,0 +1,175 @@
+{
+  "schema_version": 1,
+  "curriculum_id": "state_college_2500_nmcc_staged_v22",
+  "description": "Gated 64-episode Hybrid-NMCC pilot for State College with 2,500 individual evacuees. One eight-episode rollout pretrains the action-independent natural model, one pretrains the causal residual ensemble, two warm up the recurrent controller, and four jointly optimize the controller with the exact local causal signal reduced to 0.35 so full-tail global GAE contributes to the final policy.",
+  "stages": [
+    {
+      "stage_id": "N0",
+      "label": "natural_dynamics_pretraining",
+      "episodes_per_city": 8,
+      "variants": [
+        {
+          "variant_id": "state_college_2500_calibrated_hazard",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 2500,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "maxAdditionalShelters": 5,
+            "shelterCapacityToken": 500,
+            "nmccEnabled": true,
+            "nmccCounterfactualHorizon": 10,
+            "nmccCounterfactualWeight": 1.0,
+            "nmccJointCounterfactualWeight": 0.35,
+            "nmccInterventionCost": 0.0,
+            "nmccEnsembleSize": 3,
+            "nmccNaturalLossCoefficient": 0.5,
+            "nmccCausalLossCoefficient": 1.0,
+            "nmccDuelingLossCoefficient": 0.25,
+            "nmccTeacherCoefficient": 0.2,
+            "nmccTeacherDecayUpdates": 24,
+            "nmccGuidanceMaximum": 0.5,
+            "nmccGuidanceWarmupUpdates": 0,
+            "nmccGuidanceRampUpdates": 8,
+            "nmccUncertaintyPenalty": 0.5,
+            "entropyCoefficientEnd": 0.001,
+            "explorationDecayUpdates": 24,
+            "actionTemperatureStart": 1.5,
+            "actionTemperatureEnd": 1.0,
+            "nmccNaturalPretrainRollouts": 1,
+            "nmccCausalPretrainRollouts": 1,
+            "nmccControllerWarmupRollouts": 2
+          }
+        }
+      ]
+    },
+    {
+      "stage_id": "N1",
+      "label": "causal_residual_pretraining",
+      "episodes_per_city": 8,
+      "variants": [
+        {
+          "variant_id": "state_college_2500_calibrated_hazard",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 2500,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "maxAdditionalShelters": 5,
+            "shelterCapacityToken": 500,
+            "nmccEnabled": true,
+            "nmccCounterfactualHorizon": 10,
+            "nmccCounterfactualWeight": 1.0,
+            "nmccJointCounterfactualWeight": 0.35,
+            "nmccInterventionCost": 0.0,
+            "nmccEnsembleSize": 3,
+            "nmccNaturalLossCoefficient": 0.5,
+            "nmccCausalLossCoefficient": 1.0,
+            "nmccDuelingLossCoefficient": 0.25,
+            "nmccTeacherCoefficient": 0.2,
+            "nmccTeacherDecayUpdates": 24,
+            "nmccGuidanceMaximum": 0.5,
+            "nmccGuidanceWarmupUpdates": 0,
+            "nmccGuidanceRampUpdates": 8,
+            "nmccUncertaintyPenalty": 0.5,
+            "entropyCoefficientEnd": 0.001,
+            "explorationDecayUpdates": 24,
+            "actionTemperatureStart": 1.5,
+            "actionTemperatureEnd": 1.0,
+            "nmccNaturalPretrainRollouts": 1,
+            "nmccCausalPretrainRollouts": 1,
+            "nmccControllerWarmupRollouts": 2
+          }
+        }
+      ]
+    },
+    {
+      "stage_id": "N2",
+      "label": "controller_warmup_with_exact_causal_credit",
+      "episodes_per_city": 16,
+      "variants": [
+        {
+          "variant_id": "state_college_2500_calibrated_hazard",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 2500,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "maxAdditionalShelters": 5,
+            "shelterCapacityToken": 500,
+            "nmccEnabled": true,
+            "nmccCounterfactualHorizon": 10,
+            "nmccCounterfactualWeight": 1.0,
+            "nmccJointCounterfactualWeight": 0.35,
+            "nmccInterventionCost": 0.0,
+            "nmccEnsembleSize": 3,
+            "nmccNaturalLossCoefficient": 0.5,
+            "nmccCausalLossCoefficient": 1.0,
+            "nmccDuelingLossCoefficient": 0.25,
+            "nmccTeacherCoefficient": 0.2,
+            "nmccTeacherDecayUpdates": 24,
+            "nmccGuidanceMaximum": 0.5,
+            "nmccGuidanceWarmupUpdates": 0,
+            "nmccGuidanceRampUpdates": 8,
+            "nmccUncertaintyPenalty": 0.5,
+            "entropyCoefficientEnd": 0.001,
+            "explorationDecayUpdates": 24,
+            "actionTemperatureStart": 1.5,
+            "actionTemperatureEnd": 1.0,
+            "nmccNaturalPretrainRollouts": 1,
+            "nmccCausalPretrainRollouts": 1,
+            "nmccControllerWarmupRollouts": 2
+          }
+        }
+      ]
+    },
+    {
+      "stage_id": "N3",
+      "label": "joint_global_optimization",
+      "episodes_per_city": 32,
+      "variants": [
+        {
+          "variant_id": "state_college_2500_calibrated_hazard",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 2500,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "maxAdditionalShelters": 5,
+            "shelterCapacityToken": 500,
+            "nmccEnabled": true,
+            "nmccCounterfactualHorizon": 10,
+            "nmccCounterfactualWeight": 1.0,
+            "nmccJointCounterfactualWeight": 0.35,
+            "nmccInterventionCost": 0.0,
+            "nmccEnsembleSize": 3,
+            "nmccNaturalLossCoefficient": 0.5,
+            "nmccCausalLossCoefficient": 1.0,
+            "nmccDuelingLossCoefficient": 0.25,
+            "nmccTeacherCoefficient": 0.2,
+            "nmccTeacherDecayUpdates": 24,
+            "nmccGuidanceMaximum": 0.5,
+            "nmccGuidanceWarmupUpdates": 0,
+            "nmccGuidanceRampUpdates": 8,
+            "nmccUncertaintyPenalty": 0.5,
+            "entropyCoefficientEnd": 0.001,
+            "explorationDecayUpdates": 24,
+            "actionTemperatureStart": 1.5,
+            "actionTemperatureEnd": 1.0,
+            "nmccNaturalPretrainRollouts": 1,
+            "nmccCausalPretrainRollouts": 1,
+            "nmccControllerWarmupRollouts": 2
+          }
+        }
+      ]
+    }
+  ]
+}

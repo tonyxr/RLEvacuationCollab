@@ -1,0 +1,140 @@
+{
+  "schema_version": 2,
+  "curriculum_id": "scenario_general_risk_value_v28",
+  "description": "Scenario-domain curriculum for one shared v28 conservative risk-time-reduction controller with conserved en-route shelter capacity. Population, hazard-instance count, and persistent-panic susceptibility vary by episode and are explicit normalized GNN inputs. The learner contract is declared once and applied identically to every city, stage, and scenario variant.",
+  "learner_overrides": {
+    "shelterCapacityToken": 500,
+    "maximumShelterForecastDanger": 0.6,
+    "requireCandidateOperationalBenefit": true,
+    "minimumCandidateReroutableFraction": 0.0,
+    "minimumCandidateRouteTimeSaving": 0.0,
+    "minimumCandidateHazardSafetyMargin": 0.05,
+    "nmccEnsembleSize": 5,
+    "nmccEnabled": false,
+    "nmccGuidanceMaximum": 0.0,
+    "nmccTeacherCoefficient": 0.0,
+    "nmccNaturalPretrainRollouts": 2,
+    "nmccCausalPretrainRollouts": 3,
+    "nmccControllerWarmupRollouts": 0,
+    "nmccPolicyImprovement": true,
+    "nmccPiActorObjective": "value_lcb",
+    "nmccPiEpsilon": 0.2,
+    "nmccPiEtaMin": 0.03,
+    "nmccPiKlCap": 0.3,
+    "nmccPiBranchHorizon": 20,
+    "nmccPiFullHorizonDecisions": 2,
+    "nmccPiTapes": 1,
+    "nmccPiExhaustiveDecisions": 2,
+    "nmccPiMaxBranches": 6,
+    "nmccPiBasePolicy": "risk_reduction",
+    "nmccPiValueScale": 0.05,
+    "nmccPiValueLossCoefficient": 1.0,
+    "nmccPiModelFill": false,
+    "nmccPiGateSpearman": 0.6,
+    "nmccPiGateUpdates": 3,
+    "nmccPiModelUncertaintyPenalty": 1.0,
+    "nmccPiActorEpochs": 12,
+    "nmccPiFitTolerance": 0.15,
+    "nmccPiRankingTemperature": 0.05,
+    "nmccPiRankMargin": 0.25,
+    "nmccPiRankMarginCoefficient": 0.5,
+    "nmccPiReplayMaxEpisodes": 256,
+    "nmccPiReplayEpochs": 24,
+    "nmccPiValidationFraction": 0.2,
+    "nmccPiEarlyStoppingPatience": 4,
+    "nmccPiMinimumValidationStates": 8,
+    "nmccPiValidationGainZ": 2.0,
+    "nmccPiReplayRefit": true,
+    "explorationRateStart": 0.4,
+    "explorationRateEnd": 0.02,
+    "explorationDecayUpdates": 24,
+    "learningRateSchedule": "cosine",
+    "learningRateWarmupUpdates": 2,
+    "learningRateDecayUpdates": 32,
+    "actorLearningRateMinimumFraction": 0.1,
+    "criticLearningRateMinimumFraction": 0.25,
+    "actorPrior": "risk_time_reduction",
+    "actorPriorScale": 1.0,
+    "representationMode": "shared_phasic",
+    "representationCloneCoefficient": 1.0,
+    "representationKlCap": 0.05,
+    "actorLearningRate": 0.0001,
+    "criticLearningRate": 0.0003,
+    "actorPpoEpochs": 1,
+    "criticPpoEpochs": 4,
+    "actorBaselineDecay": 0.95,
+    "advantageScaleFloor": 0.05,
+    "entropyCoefficientEnd": 0.001,
+    "actionTemperatureStart": 1.0,
+    "actionTemperatureEnd": 1.0
+  },
+  "stages": [
+    {
+      "stage_id": "S1",
+      "label": "low_load_system_identification",
+      "episodes_per_city": 4,
+      "variants": [
+        {"variant_id": "low", "weight": 1, "overrides": {"pedVol": 1000, "pedestrianGroupSize": 1, "hazardVol": 1, "hazardCasualtyRate": [40, 9], "panicRate": 0.1, "maxAdditionalShelters": 5}}
+      ]
+    },
+    {
+      "stage_id": "S2",
+      "label": "nominal_system_identification",
+      "episodes_per_city": 4,
+      "variants": [
+        {"variant_id": "nominal", "weight": 1, "overrides": {"pedVol": 2500, "pedestrianGroupSize": 1, "hazardVol": 3, "hazardCasualtyRate": [40, 9], "panicRate": 0.5, "maxAdditionalShelters": 5}}
+      ]
+    },
+    {
+      "stage_id": "S3",
+      "label": "interaction_extremes",
+      "episodes_per_city": 8,
+      "variants": [
+        {"variant_id": "large_low_disruption", "weight": 1, "overrides": {"pedVol": 5000, "pedestrianGroupSize": 1, "hazardVol": 1, "hazardCasualtyRate": [40, 9], "panicRate": 0.1, "maxAdditionalShelters": 5}},
+        {"variant_id": "small_high_disruption", "weight": 1, "overrides": {"pedVol": 1000, "pedestrianGroupSize": 1, "hazardVol": 5, "hazardCasualtyRate": [40, 9], "panicRate": 0.9, "maxAdditionalShelters": 5}}
+      ]
+    },
+    {
+      "stage_id": "S4",
+      "label": "population_hazard_panic_factor_coverage",
+      "episodes_per_city": 54,
+      "variants": [
+        {"variant_id": "p1_h1_r1", "weight": 1, "overrides": {"pedVol": 1000, "pedestrianGroupSize": 1, "hazardVol": 1, "hazardCasualtyRate": [40, 9], "panicRate": 0.1, "maxAdditionalShelters": 5}},
+        {"variant_id": "p1_h1_r5", "weight": 1, "overrides": {"pedVol": 1000, "pedestrianGroupSize": 1, "hazardVol": 1, "hazardCasualtyRate": [40, 9], "panicRate": 0.5, "maxAdditionalShelters": 5}},
+        {"variant_id": "p1_h1_r9", "weight": 1, "overrides": {"pedVol": 1000, "pedestrianGroupSize": 1, "hazardVol": 1, "hazardCasualtyRate": [40, 9], "panicRate": 0.9, "maxAdditionalShelters": 5}},
+        {"variant_id": "p1_h3_r1", "weight": 1, "overrides": {"pedVol": 1000, "pedestrianGroupSize": 1, "hazardVol": 3, "hazardCasualtyRate": [40, 9], "panicRate": 0.1, "maxAdditionalShelters": 5}},
+        {"variant_id": "p1_h3_r5", "weight": 1, "overrides": {"pedVol": 1000, "pedestrianGroupSize": 1, "hazardVol": 3, "hazardCasualtyRate": [40, 9], "panicRate": 0.5, "maxAdditionalShelters": 5}},
+        {"variant_id": "p1_h3_r9", "weight": 1, "overrides": {"pedVol": 1000, "pedestrianGroupSize": 1, "hazardVol": 3, "hazardCasualtyRate": [40, 9], "panicRate": 0.9, "maxAdditionalShelters": 5}},
+        {"variant_id": "p1_h5_r1", "weight": 1, "overrides": {"pedVol": 1000, "pedestrianGroupSize": 1, "hazardVol": 5, "hazardCasualtyRate": [40, 9], "panicRate": 0.1, "maxAdditionalShelters": 5}},
+        {"variant_id": "p1_h5_r5", "weight": 1, "overrides": {"pedVol": 1000, "pedestrianGroupSize": 1, "hazardVol": 5, "hazardCasualtyRate": [40, 9], "panicRate": 0.5, "maxAdditionalShelters": 5}},
+        {"variant_id": "p1_h5_r9", "weight": 1, "overrides": {"pedVol": 1000, "pedestrianGroupSize": 1, "hazardVol": 5, "hazardCasualtyRate": [40, 9], "panicRate": 0.9, "maxAdditionalShelters": 5}},
+        {"variant_id": "p25_h1_r1", "weight": 1, "overrides": {"pedVol": 2500, "pedestrianGroupSize": 1, "hazardVol": 1, "hazardCasualtyRate": [40, 9], "panicRate": 0.1, "maxAdditionalShelters": 5}},
+        {"variant_id": "p25_h1_r5", "weight": 1, "overrides": {"pedVol": 2500, "pedestrianGroupSize": 1, "hazardVol": 1, "hazardCasualtyRate": [40, 9], "panicRate": 0.5, "maxAdditionalShelters": 5}},
+        {"variant_id": "p25_h1_r9", "weight": 1, "overrides": {"pedVol": 2500, "pedestrianGroupSize": 1, "hazardVol": 1, "hazardCasualtyRate": [40, 9], "panicRate": 0.9, "maxAdditionalShelters": 5}},
+        {"variant_id": "p25_h3_r1", "weight": 1, "overrides": {"pedVol": 2500, "pedestrianGroupSize": 1, "hazardVol": 3, "hazardCasualtyRate": [40, 9], "panicRate": 0.1, "maxAdditionalShelters": 5}},
+        {"variant_id": "p25_h3_r5", "weight": 1, "overrides": {"pedVol": 2500, "pedestrianGroupSize": 1, "hazardVol": 3, "hazardCasualtyRate": [40, 9], "panicRate": 0.5, "maxAdditionalShelters": 5}},
+        {"variant_id": "p25_h3_r9", "weight": 1, "overrides": {"pedVol": 2500, "pedestrianGroupSize": 1, "hazardVol": 3, "hazardCasualtyRate": [40, 9], "panicRate": 0.9, "maxAdditionalShelters": 5}},
+        {"variant_id": "p25_h5_r1", "weight": 1, "overrides": {"pedVol": 2500, "pedestrianGroupSize": 1, "hazardVol": 5, "hazardCasualtyRate": [40, 9], "panicRate": 0.1, "maxAdditionalShelters": 5}},
+        {"variant_id": "p25_h5_r5", "weight": 1, "overrides": {"pedVol": 2500, "pedestrianGroupSize": 1, "hazardVol": 5, "hazardCasualtyRate": [40, 9], "panicRate": 0.5, "maxAdditionalShelters": 5}},
+        {"variant_id": "p25_h5_r9", "weight": 1, "overrides": {"pedVol": 2500, "pedestrianGroupSize": 1, "hazardVol": 5, "hazardCasualtyRate": [40, 9], "panicRate": 0.9, "maxAdditionalShelters": 5}},
+        {"variant_id": "p5_h1_r1", "weight": 1, "overrides": {"pedVol": 5000, "pedestrianGroupSize": 1, "hazardVol": 1, "hazardCasualtyRate": [40, 9], "panicRate": 0.1, "maxAdditionalShelters": 5}},
+        {"variant_id": "p5_h1_r5", "weight": 1, "overrides": {"pedVol": 5000, "pedestrianGroupSize": 1, "hazardVol": 1, "hazardCasualtyRate": [40, 9], "panicRate": 0.5, "maxAdditionalShelters": 5}},
+        {"variant_id": "p5_h1_r9", "weight": 1, "overrides": {"pedVol": 5000, "pedestrianGroupSize": 1, "hazardVol": 1, "hazardCasualtyRate": [40, 9], "panicRate": 0.9, "maxAdditionalShelters": 5}},
+        {"variant_id": "p5_h3_r1", "weight": 1, "overrides": {"pedVol": 5000, "pedestrianGroupSize": 1, "hazardVol": 3, "hazardCasualtyRate": [40, 9], "panicRate": 0.1, "maxAdditionalShelters": 5}},
+        {"variant_id": "p5_h3_r5", "weight": 1, "overrides": {"pedVol": 5000, "pedestrianGroupSize": 1, "hazardVol": 3, "hazardCasualtyRate": [40, 9], "panicRate": 0.5, "maxAdditionalShelters": 5}},
+        {"variant_id": "p5_h3_r9", "weight": 1, "overrides": {"pedVol": 5000, "pedestrianGroupSize": 1, "hazardVol": 3, "hazardCasualtyRate": [40, 9], "panicRate": 0.9, "maxAdditionalShelters": 5}},
+        {"variant_id": "p5_h5_r1", "weight": 1, "overrides": {"pedVol": 5000, "pedestrianGroupSize": 1, "hazardVol": 5, "hazardCasualtyRate": [40, 9], "panicRate": 0.1, "maxAdditionalShelters": 5}},
+        {"variant_id": "p5_h5_r5", "weight": 1, "overrides": {"pedVol": 5000, "pedestrianGroupSize": 1, "hazardVol": 5, "hazardCasualtyRate": [40, 9], "panicRate": 0.5, "maxAdditionalShelters": 5}},
+        {"variant_id": "p5_h5_r9", "weight": 1, "overrides": {"pedVol": 5000, "pedestrianGroupSize": 1, "hazardVol": 5, "hazardCasualtyRate": [40, 9], "panicRate": 0.9, "maxAdditionalShelters": 5}}
+      ]
+    },
+    {
+      "stage_id": "S5",
+      "label": "nominal_consolidation",
+      "episodes_per_city": 50,
+      "variants": [
+        {"variant_id": "nominal", "weight": 1, "overrides": {"pedVol": 2500, "pedestrianGroupSize": 1, "hazardVol": 3, "hazardCasualtyRate": [40, 9], "panicRate": 0.5, "maxAdditionalShelters": 5}}
+      ]
+    }
+  ]
+}

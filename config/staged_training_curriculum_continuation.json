@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "curriculum_id": "hazard_dynamics_nominal_consolidation_v1",
+  "description": "Legacy weighted-cohort continuation curriculum. Panic is explicitly disabled because individual panic/herding cannot be represented by cohort agents.",
+  "stages": [
+    {
+      "stage_id": "C1",
+      "label": "target_scale_hazard_dynamics_robustification",
+      "episodes_per_city": 4,
+      "variants": [
+        {
+          "variant_id": "slow_spread",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 50000,
+            "pedestrianGroupSize": 20,
+            "panicRate": 0.0,
+            "hazardVol": 2,
+            "hazardSpreadRate": [0, 1]
+          }
+        },
+        {
+          "variant_id": "fast_spread",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 50000,
+            "pedestrianGroupSize": 20,
+            "panicRate": 0.0,
+            "hazardVol": 2,
+            "hazardSpreadRate": [4, 2]
+          }
+        },
+        {
+          "variant_id": "high_casualty",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 50000,
+            "pedestrianGroupSize": 20,
+            "panicRate": 0.0,
+            "hazardVol": 2,
+            "hazardCasualtyRate": [18, 9]
+          }
+        },
+        {
+          "variant_id": "severe_mobility_reduction",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 50000,
+            "pedestrianGroupSize": 20,
+            "panicRate": 0.0,
+            "hazardVol": 2,
+            "hazardSpeedReduct": [25, 9]
+          }
+        }
+      ]
+    },
+    {
+      "stage_id": "C2",
+      "label": "target_scale_stationary_nominal_consolidation",
+      "episodes_per_city": 16,
+      "variants": [
+        {
+          "variant_id": "nominal",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 50000,
+            "pedestrianGroupSize": 20,
+            "panicRate": 0.0,
+            "hazardVol": 2,
+            "shelterCanVol": 20,
+            "initShelterVol": 2
+          }
+        }
+      ]
+    }
+  ]
+}

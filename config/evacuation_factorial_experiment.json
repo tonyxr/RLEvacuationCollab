@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "experiment_id": "five_city_population_hazard_panic_full_factorial_v1",
+  "population_levels": [5000, 10000, 15000, 20000, 25000],
+  "hazard_count_levels": [1, 2, 3, 4, 5],
+  "panic_levels": [0.1, 0.3, 0.5, 0.7, 0.9],
+  "strategies": [
+    "rl",
+    "initial_only",
+    "risk_reduction",
+    "heuristic",
+    "random",
+    "hazard_weighted",
+    "accessibility_deficit"
+  ],
+  "scenario_replications_per_factor_cell": 10,
+  "individual_pedestrian_required": true,
+  "panic_definition": {
+    "eligible_cell_danger_levels": [3, 4, 5],
+    "onset_trial": "one Bernoulli susceptibility trial per active pedestrian at first exposure to danger level 3 or above",
+    "persistence": "permanent after onset",
+    "node_choice": {
+      "herd_probability": 0.5,
+      "herd_edge": "incident physical road edge with the greatest frozen active occupancy",
+      "random_probability": 0.5,
+      "random_edge": "uniform over incident physical road edges"
+    }
+  },
+  "coverage_metrics": {
+    "safe_completion_coverage_rate": "(arrival + shelter_evacuated) / initial_population",
+    "shelter_service_coverage_rate": "shelter_evacuated / initial_population"
+  },
+  "latency_metric": "RL versus each dynamic heuristic: observation construction + policy selection + common facility-level execution and rerouting"
+}

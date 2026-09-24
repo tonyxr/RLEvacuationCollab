@@ -11,19 +11,25 @@ from Edge import Edge
 from Node import Node
 from Route import Route
 
-import os
-import osmnx as OSM
-import random
-import csv
+from ShelterTypes import canonical_shelter_site_type
 import math
 import numpy as np
-import geopandas as gpd
 
 from collections import defaultdict
+from NetworkOptimization import routing_tree_to_target
 
 
 class MapDS:
-    def __init__(self, nodeList, edgeList, address, locationDrive):
+    def __init__(
+        self,
+        nodeList,
+        edgeList,
+        address,
+        locationDrive,
+        *,
+        effective_walkway_width_m=3.0,
+        jam_density_ped_per_m2=5.4,
+    ):
         # House the node list directly extracted from OpenStreetMap
         self.rawNodeList = nodeList
         # House the edge list directly extracted from OpenStreetMap
@@ -61,11 +67,21 @@ class MapDS:
         self.nodeCapSum = 0
         
         self.locationDrive = locationDrive
+
+        self.effectiveWalkwayWidthM = float(effective_walkway_width_m)
+        self.jamDensityPedPerM2 = float(jam_density_ped_per_m2)
+        if not math.isfinite(self.effectiveWalkwayWidthM) or self.effectiveWalkwayWidthM <= 0.0:
+            raise ValueError("effective_walkway_width_m must be finite and positive")
+        if not math.isfinite(self.jamDensityPedPerM2) or self.jamDensityPedPerM2 <= 0.0:
+            raise ValueError("jam_density_ped_per_m2 must be finite and positive")
         
         self.idx_uv_to_edges = defaultdict(list)
         self.idx_uv_best = {}
+        self.incident_edges_by_osmid = defaultdict(list)
         self._node_pool = np.array([], dtype = object)
         self._shortest_path_osmid_cache = {}
+        self._distance_to_target_cache = {}
+        self._routing_tree_to_target_cache = {}
         
     """Getter functions"""
     
@@ -161,8 +177,6 @@ class MapDS:
         """
         
         """Need to print out the set of all building types to see if any other types should be added"""
-        shelterCanType = ["hospital", "school", "public", "civic", "community_centre", "stadium", "place_of_worship", "library", "fire_station", "police", "social_facility", "shelter"]
-        
         if self.convertUnitX is None or self.convertUnitY is None:
             self.computeConvertUnit()
         if not self.boundCoord:
@@ -178,14 +192,10 @@ class MapDS:
             nodeYCoord = float(node[1]["y"])
             x_m, y_m = self.coordToMeters(nodeXCoord, nodeYCoord)
             
-            streetCount = int(node[1].get("street_count", 0))
             buildingType = node[1].get('building_type', None)
             amenityType = node[1].get('amenity_type', None)
             
-            if buildingType is not None:
-                buildingType = str(buildingType).lower()
-            if amenityType is not None:
-                amenityType = str(amenityType).lower()
+            siteType = canonical_shelter_site_type(buildingType, amenityType)
             
             # Step 2: assign unique local ID (+1 after declare each node)
             localID = localNodeID 
@@ -196,20 +206,19 @@ class MapDS:
             cellID = cellTracker.locateCell(x_m, y_m)
             
             # Step 3: Set Capacity by calling computeNodeCapacity
-            nodeCap = self.computeNodeCapacity(buildingType)
+            nodeCap = self.computeNodeCapacity(siteType)
             
             # Step 4: Declare Node entity
-            newNode = Node(localID, osmid, x_m, y_m, nodeCap, nodeFlow, cellID, buildingType)
+            newNode = Node(localID, osmid, x_m, y_m, nodeCap, nodeFlow, cellID, siteType)
 
             self.nodeListByOSMID[osmid]  = newNode
             self.nodeListByLocalID[localID] = newNode
             
-            # Step 5: conditionally put the node in GuidanceList
-            if streetCount >= min_street:
-                self.guidanceCanList[localID] = newNode
-            
-            # Step 6: conditionally put the node in ShelterList
-            if (buildingType in shelterCanType) or (amenityType in shelterCanType):
+            # Guidance is deliberately deprecated.  Intersections remain part
+            # of the road topology, but they are never exposed as candidates.
+
+            # Step 5: conditionally put the node in ShelterList
+            if siteType is not None:
                 self.shelterCanList[localID] = newNode
          
         self._node_pool = np.array(list(self.nodeListByLocalID.values()), dtype = object)
@@ -235,17 +244,22 @@ class MapDS:
             if startNode is None or endNode is None:
                 continue
             
-            raw_osmid = edge[2].get("osmid", 0)
+            raw_osmid = edge[2].get("osmid")
             if isinstance(raw_osmid, list) and raw_osmid:
-                OSMID = int(edge[2]["osmid"][0])
-            else:
-                OSMID = int(edge[2]["osmid"])
+                raw_osmid = raw_osmid[0]
+            try:
+                OSMID = int(raw_osmid)
+            except (TypeError, ValueError):
+                # OSMnx may create short connector edges while rebuilding a
+                # consolidated intersection. They have no source way id, so a
+                # stable negative local id is used only as an internal key.
+                OSMID = -(localEdgeID + 1)
             
             edgeLength = float(edge[2].get("length", 0.0))
             
-            """edge length is currently not considered due to complication"""
-            
-            edgeCap = 100
+            # Storage capacity is the modeled jam occupancy of the physical
+            # walkway area. It replaces the former constant placeholder 100.
+            edgeCap = self.computeEdgeCapacity(edgeLength)
             
             # Step 2: Set flow = 0 and local edge ID, set capacity by calling computeEdgeCapacity
             edgeFlow = 0
@@ -305,14 +319,12 @@ class MapDS:
             return 100
         return buildingCapacityKey.get(str(buildingType), 100)
 
-    # edge width is not available, use edge length only
-    
-    # cap = 1/ped_density * ped_velocity * (width based on roadtype)
-    def computeEdgeCapacity(self, edgeLen, ped_occup_m2 = 1.2, width_m = 3.0 , speedMPMin = 80.0, pedFlowCap = 1.6):
-        
-        qspec = (1.0 / float(ped_occup_m2)) * float(speedMPMin)
-        qspec = min(qspec, float(pedFlowCap))
-        return qspec * float(width_m)
+    def computeEdgeCapacity(self, edgeLen):
+        """Return physical-link storage at the configured jam density."""
+        length = max(0.0, float(edgeLen))
+        return float(
+            length * self.effectiveWalkwayWidthM * self.jamDensityPedPerM2
+        )
             
     def computeNodeCapSum(self):
         self.nodeCapSum = 0
@@ -336,30 +348,98 @@ class MapDS:
         # Step 2: Assign specific node through np.random.choice
         if self._node_pool.size == 0:
             self._node_pool = np.array(list(self.nodeListByLocalID.values()), dtype = object)
-        chosenNode = np.random.choice(self._node_pool)
-
-        # Step 3: Check so the pedestrian's generation node is not the same as selected termination node
-        if chosenNode == startNode:
-            while chosenNode == startNode:
-                chosenNode = np.random.choice(self._node_pool)
+        eligible = np.asarray(
+            [node for node in self._node_pool if node is not startNode],
+            dtype=object,
+        )
+        if eligible.size == 0:
+            raise RuntimeError("A termination node requires at least two distinct network nodes")
+        chosenNode = np.random.choice(eligible)
         
         #print("termination node is: ", chosenNode)
         return chosenNode
+
+    def networkDistanceToTarget(self, startNode, terminationNode):
+        """Return exact OSM-network distance using one reverse search per target.
+
+        Shelter comparison repeatedly asks many pedestrian origins about the
+        same small set of shelter destinations. Running a separate Dijkstra
+        search for every origin is mathematically redundant. On a directed
+        graph, one search from the destination on the reversed graph gives the
+        same origin-to-destination distances for every origin.
+        """
+        if startNode is None or terminationNode is None:
+            return float("inf")
+        src = int(startNode.OSMID)
+        dst = int(terminationNode.OSMID)
+        if src == dst:
+            return 0.0
+        distances, _ = self._routing_tree(dst)
+        return float(distances.get(src, float("inf")))
+
+    def _routing_tree(self, target_osmid: int) -> tuple[dict, dict]:
+        """Cache one exact reverse-search tree for every shelter destination."""
+        dst = int(target_osmid)
+        cached = self._routing_tree_to_target_cache.get(dst)
+        if cached is None:
+            if dst not in self.locationDrive:
+                return {}, {}
+            cached = routing_tree_to_target(
+                self.locationDrive,
+                dst,
+                weight="length",
+            )
+            self._routing_tree_to_target_cache[dst] = cached
+            self._distance_to_target_cache[dst] = cached[0]
+        return cached
     
     """Helper function to look up edges based on node pairs (start, end)"""
     def buildEdgeIndices(self):
         self.idx_uv_to_edges.clear()
         self.idx_uv_best.clear()
+        self.incident_edges_by_osmid.clear()
         
         for edge in self.edgeListByLocalID.values():
             u = int(edge.startNode.OSMID)
             v = int(edge.endNode.OSMID)
             
             self.idx_uv_to_edges[(u, v)].append(edge)
+            self.incident_edges_by_osmid[u].append(edge)
+            if v != u:
+                self.incident_edges_by_osmid[v].append(edge)
             
             best = self.idx_uv_best.get((u, v))
             if (best is None) or (float(edge.edgeLen) < float(best.edgeLen)):
                 self.idx_uv_best[(u, v)] = edge
+
+        for osmid, edges in self.incident_edges_by_osmid.items():
+            edges.sort(
+                key=lambda edge: (
+                    int(
+                        edge.endNode.OSMID
+                        if int(edge.startNode.OSMID) == int(osmid)
+                        else edge.startNode.OSMID
+                    ),
+                    float(edge.edgeLen),
+                    int(edge.edgeID),
+                )
+            )
+
+    def incidentEdges(self, node):
+        """Return deterministic incident road-edge choices for one node."""
+        if node is None:
+            return ()
+        if not self.incident_edges_by_osmid:
+            self.buildEdgeIndices()
+        unique = []
+        seen = set()
+        for edge in self.incident_edges_by_osmid.get(int(node.OSMID), ()):
+            low, high = sorted((int(edge.startNode.OSMID), int(edge.endNode.OSMID)))
+            key = (low, high, str(edge.OSMID))
+            if key not in seen:
+                seen.add(key)
+                unique.append(edge)
+        return tuple(unique)
         
     """Still working and need check"""
     def shortestPath(self, startNode, terminationNode):
@@ -368,38 +448,31 @@ class MapDS:
         and the Edges connecting those Nodes, form a Route object and assign to the Ped Agent.
         """
         
-        weight = "length"
-        retry = True
-        
         if startNode is None or terminationNode is None:
             return None
-        
-        startNode = startNode
-        terminationNode = terminationNode
         
         src = int(startNode.OSMID)
         dst = int(terminationNode.OSMID)
         key = (src, dst)
         pathContainer = self._shortest_path_osmid_cache.get(key)
         if pathContainer is None:
-            # Step 1: Generate the shortest path with OSM.routing.shortest_path
-            pathContainer = OSM.routing.shortest_path(self.locationDrive, src, dst, weight = "length")
+            _, next_hop = self._routing_tree(dst)
+            path = [src]
+            visited = {src}
+            while path[-1] != dst:
+                successor = next_hop.get(path[-1])
+                if successor is None or successor in visited:
+                    path = []
+                    break
+                path.append(successor)
+                visited.add(successor)
+            pathContainer = tuple(path)
             if pathContainer:
-                self._shortest_path_osmid_cache[key] = tuple(pathContainer)
-        # Step 2: Map the result route into a list of node and edge entities through OSM IDs, create route obj
+                self._shortest_path_osmid_cache[key] = pathContainer
         if not pathContainer:
-            startNode = self.assignGenerationNode()
-            terminationNode = self.assignTerminationNode(startNode)
-            src = int(startNode.OSMID)
-            dst = int(terminationNode.OSMID)
-            key = (src, dst)
-            pathContainer = self._shortest_path_osmid_cache.get(key)
-            if pathContainer is None:
-                pathContainer = OSM.routing.shortest_path(self.locationDrive, src, dst, weight = "length")
-                if pathContainer:
-                    self._shortest_path_osmid_cache[key] = tuple(pathContainer)
-        if not pathContainer:
-            return None  # still no path
+            # A route request must never silently substitute a different origin
+            # or destination. Callers may explicitly sample a new pair if desired.
+            return None
 
         routeNodes = []
         
@@ -424,10 +497,8 @@ class MapDS:
             if edge_obj is None:
                 edge_obj = self.idx_uv_best.get((v, u))
             
-            # if could not find the edge object by either direction in the extracted edge list, 
-            # find the (start, end) nodes in the map and create an edge
-            
-            
+            if edge_obj is None:
+                return None
             routeEdges.append(edge_obj)
         
         # Step 5: Declare new route object and return
@@ -439,12 +510,10 @@ class MapDS:
             edgeRemained = routeEdges
         )
         return newRoute
-    
+
     def assignEvacuationRoute(self, guidance, assignedShelter):
         
         startPoint = guidance.nodeMapped
         destination = assignedShelter.nodeMapped
         
         return self.shortestPath(startPoint, destination)
-        
-    

@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "curriculum_id": "state_college_3000_nmcc_hybrid_v21_smoke",
+  "description": "Eight-episode engineering smoke for the complete State College Hybrid-NMCC learner contract. This configuration verifies execution and integration only; it is not a convergence or policy-performance experiment.",
+  "stages": [
+    {
+      "stage_id": "N1S",
+      "label": "hybrid_nmcc_state_college_system_smoke",
+      "episodes_per_city": 8,
+      "variants": [
+        {
+          "variant_id": "state_college_3000_calibrated_hazard_smoke",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 3000,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "maxAdditionalShelters": 5,
+            "shelterCapacityToken": 500,
+            "nmccEnabled": true,
+            "nmccCounterfactualHorizon": 10,
+            "nmccCounterfactualWeight": 1.0,
+            "nmccInterventionCost": 0.0,
+            "nmccEnsembleSize": 3,
+            "nmccNaturalLossCoefficient": 0.5,
+            "nmccCausalLossCoefficient": 1.0,
+            "nmccDuelingLossCoefficient": 0.25,
+            "nmccTeacherCoefficient": 0.2,
+            "nmccTeacherDecayUpdates": 64,
+            "nmccGuidanceMaximum": 0.5,
+            "nmccGuidanceWarmupUpdates": 8,
+            "nmccGuidanceRampUpdates": 16,
+            "nmccUncertaintyPenalty": 0.5,
+            "entropyCoefficientEnd": 0.001,
+            "explorationDecayUpdates": 128,
+            "actionTemperatureStart": 1.35,
+            "actionTemperatureEnd": 1.0
+          }
+        }
+      ]
+    }
+  ]
+}

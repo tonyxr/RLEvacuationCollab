@@ -1,0 +1,91 @@
+{
+  "schema_version": 2,
+  "selection_basis": "Five fixed urban study areas ordered by 2020 decennial municipal population. The Southern California fire study area is a Santa Monica Bay regional network anchored on Malibu and expanded to include north and west Los Angeles; it is not mislabeled as the San Francisco Bay Area.",
+  "common_experiment": {
+    "cellX": 8,
+    "cellY": 8,
+    "stopTime": 61,
+    "pedVol": 5000,
+    "pedestrianGroupSize": 1,
+    "hazardVol": 3,
+    "shelterCanVol": 20,
+    "initShelterVol": 2,
+    "maxAdditionalShelters": 5,
+    "shelterCapacityToken": 500,
+    "shelterActionInterval": 10,
+    "maximumShelterForecastDanger": 0.6,
+    "timeStepMinutes": 1.0,
+    "congestionEnabled": true,
+    "congestionEffectiveWidthM": 3.0,
+    "congestionJamDensityPedPerM2": 5.4,
+    "congestionShape": 1.913,
+    "congestionMinimumSpeedRatio": 0.05,
+    "congestionSubstepSeconds": 10.0,
+    "socialForceEnabled": true,
+    "socialForceSelfCoefficient": 0.05,
+    "socialForceImpactCoefficient": 0.5,
+    "intersectionConsolidationEnabled": true,
+    "intersectionConsolidationToleranceM": 5.0,
+    "panicRate": 0.5,
+    "panicHerdProbability": 0.5,
+    "panicDangerThreshold": 3,
+    "hazardCasualtyReferenceMinutes": 60.0
+  },
+  "cities": [
+    {
+      "city_id": "malibu_ca",
+      "display_name": "Malibu–Santa Monica Bay / North & West Los Angeles, California",
+      "address": "Malibu, CA, USA",
+      "scale_rank": 1,
+      "census_2020_population": 10654,
+      "center_lat": 33.98,
+      "center_lon": -118.6,
+      "radius_m": 35000,
+      "census_source": "https://www.census.gov/quickfacts/fact/table/malibucitycalifornia/PST045225"
+    },
+    {
+      "city_id": "state_college_pa",
+      "display_name": "State College, Pennsylvania",
+      "address": "State College, PA, USA",
+      "scale_rank": 2,
+      "census_2020_population": 40501,
+      "center_lat": 40.7934,
+      "center_lon": -77.86,
+      "radius_m": 3000,
+      "census_source": "https://www.census.gov/quickfacts/fact/table/statecollegeboroughpennsylvania/PST040225"
+    },
+    {
+      "city_id": "spokane_wa",
+      "display_name": "Spokane, Washington",
+      "address": "Spokane, WA, USA",
+      "scale_rank": 3,
+      "census_2020_population": 228989,
+      "center_lat": 47.6588,
+      "center_lon": -117.426,
+      "radius_m": 4000,
+      "census_source": "https://www.census.gov/quickfacts/fact/table/spokanecitywashington/PST040223"
+    },
+    {
+      "city_id": "seattle_wa",
+      "display_name": "Seattle, Washington",
+      "address": "Seattle, WA, USA",
+      "scale_rank": 4,
+      "census_2020_population": 737015,
+      "center_lat": 47.6062,
+      "center_lon": -122.3321,
+      "radius_m": 5000,
+      "census_source": "https://www.census.gov/quickfacts/fact/table/seattlecitywashington/HSG445223"
+    },
+    {
+      "city_id": "chicago_il",
+      "display_name": "Chicago, Illinois",
+      "address": "Chicago, IL, USA",
+      "scale_rank": 5,
+      "census_2020_population": 2746388,
+      "center_lat": 41.8781,
+      "center_lon": -87.6298,
+      "radius_m": 6000,
+      "census_source": "https://www.census.gov/quickfacts/fact/table/chicagocityillinois/POP815222"
+    }
+  ]
+}

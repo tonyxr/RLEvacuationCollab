@@ -36,6 +36,25 @@ class Pedestrian:
         
         self.group_id = 0
         self.group_size = 1
+
+        # Panic is permanent once triggered. Panicked pedestrians abandon
+        # their shelter route and make a new local edge choice at every node.
+        self.panicked = False
+        self.panic_onset_time = None
+        # ``panicRate`` is a population susceptibility fraction. Each person
+        # receives exactly one Bernoulli trial on first entering danger >= the
+        # configured threshold, preventing a nominal 10% level from compounding
+        # toward 100% over repeated timesteps.
+        self.panic_eligibility_evaluated = False
+        self.panic_decision_count = 0
+        self.panic_next_edge = None
+
+        # Persist the paper's recurrent social-force velocity separately from
+        # the realized congestion-limited speed observed after movement.
+        self.social_force_speed = float(currSpeed)
+        self.social_self_force = 0.0
+        self.social_impact_force = 0.0
+        self.distance_travelled_m = 0.0
         
         """Binary statuses"""
         # Whether the agent is affected by any hazard
@@ -105,4 +124,3 @@ class Pedestrian:
         
     def setNewY(self, newY):
         self.lastY = newY
-    

@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "curriculum_id": "single_policy_five_city_5000_h3_p50_stationary_v2",
+  "description": "Train one pooled city-agnostic policy under one stationary nominal distribution: 5,000 individual evacuees, exactly three hazard instances, and 50% first-exposure panic susceptibility. Population, hazard-count, and panic variation are reserved for held-out evaluation.",
+  "stages": [
+    {
+      "stage_id": "S1",
+      "label": "stationary_nominal_5000_h3_p50",
+      "episodes_per_city": 120,
+      "variants": [
+        {
+          "variant_id": "nominal",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 5000,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "panicRate": 0.5
+          }
+        }
+      ]
+    }
+  ]
+}

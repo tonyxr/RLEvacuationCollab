@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-@author: Xiaoru Shi
+"""Network-constrained social-force speed dynamics.
 
-8/7: Constructed the skeletons
+This implements the paper's Equations 19--22: safe-cell self propulsion,
+normalized heat/smoke impact, and the OSM network as the environmental
+collision constraint.  Pedestrian congestion remains a separate synchronized
+physical-link interaction and is applied after this free-speed update.
 """
 
 import math
@@ -22,7 +24,9 @@ class ForceProcessor:
                  smoke_range: Tuple[float, float] = (0.0, 300.0),
                  heat_weight: float = 0.6,
                  smoke_weight: float = 0.4,
-                 self_state_threshold: int = 1):
+                 self_state_threshold: int = 1,
+                 self_coefficient: float = 0.05,
+                 impact_coefficient: float = 0.50):
         
         self.currSelfForce: float = 0.0
         self.currImpactForce: float = 0.0
@@ -38,6 +42,12 @@ class ForceProcessor:
             self.smoke_w /= wsum
         
         self.self_state_threshold = int(self_state_threshold)
+        self.self_coefficient = self._bounded_coefficient(
+            "self_coefficient", self_coefficient
+        )
+        self.impact_coefficient = self._bounded_coefficient(
+            "impact_coefficient", impact_coefficient
+        )
         
         self.cellTracker = None
     
@@ -53,6 +63,27 @@ class ForceProcessor:
     @staticmethod
     def _clamp01(x: float) -> float:
         return 0.0 if x < 0.0 else (1.0 if x > 1.0 else x)
+
+    @staticmethod
+    def _bounded_coefficient(name: str, value: float) -> float:
+        result = float(value)
+        if not math.isfinite(result) or not 0.0 <= result <= 1.0:
+            raise ValueError(f"{name} must be finite and in [0, 1]")
+        return result
+
+    def contract(self) -> dict:
+        return {
+            "model": "network_constrained_social_force_v1",
+            "paper_equations": [19, 20, 21, 22],
+            "heat_range": [self.heat_min, self.heat_max],
+            "smoke_range": [self.smoke_min, self.smoke_max],
+            "heat_weight": self.heat_w,
+            "smoke_weight": self.smoke_w,
+            "safe_cell_maximum_level": self.self_state_threshold,
+            "self_coefficient": self.self_coefficient,
+            "impact_coefficient": self.impact_coefficient,
+            "collision_constraint": "openstreetmap_walk_network",
+        }
     
     def setupCellTracker(self, cellTracker: Any) -> None:
         self.cellTracker = cellTracker
@@ -60,8 +91,8 @@ class ForceProcessor:
     def computeSpeed(self, 
                      baseSpeed: float,
                      cell: Any = None, 
-                     k_self: float = 0.05, 
-                     k_impact: float = 0.50, 
+                     k_self: Optional[float] = None,
+                     k_impact: Optional[float] = None,
                      min_speed: float= 0.0,
                      max_speed: Optional[float] = None) -> float:
         
@@ -69,8 +100,16 @@ class ForceProcessor:
         self.impactForceUpdate(cell)
         
         v = 0.0 if self.noneFound(baseSpeed) else float(baseSpeed)
-        v *= (1.0 + float(k_self) * float(self.currSelfForce))
-        v *= max(0.0, 1.0 - float(k_impact) * float(self.currImpactForce))
+        self_gain = self.self_coefficient if k_self is None else self._bounded_coefficient(
+            "k_self", k_self
+        )
+        impact_gain = (
+            self.impact_coefficient
+            if k_impact is None
+            else self._bounded_coefficient("k_impact", k_impact)
+        )
+        v *= (1.0 + self_gain * float(self.currSelfForce))
+        v *= max(0.0, 1.0 - impact_gain * float(self.currImpactForce))
         
         v = max(float(min_speed), v)
         if max_speed is not None and math.isfinite(float(max_speed)):
@@ -152,9 +191,11 @@ class ForceProcessor:
         
     """Primary functions"""
     def selfForceUpdate(self, cell):
-        # Step 1: Based on the given cell's impact level, conditionally assign and return self-force as 0 or 1
+        # Equation 19: self propulsion is active only in Level 0--1 cells.
         state, _, _ = self.extractCellInfo(cell)
-        self.currSelfForce = 1.0 if (state is not None and state >= self.self_state_threshold) else 0.0
+        self.currSelfForce = 1.0 if (
+            state is not None and 0 <= state <= self.self_state_threshold
+        ) else 0.0
         return self.currSelfForce
             
     def impactForceUpdate(self, cell):
@@ -173,10 +214,10 @@ class ForceProcessor:
     def compute(self, 
                 baseSpeed,
                 cell,
-                k_self,
-                k_impact,
-                min_speed,
-                max_speed) -> Tuple[float, float, float]:
+                k_self=None,
+                k_impact=None,
+                min_speed=0.0,
+                max_speed=None) -> Tuple[float, float, float]:
         
         v = self.computeSpeed(
             baseSpeed = baseSpeed,
