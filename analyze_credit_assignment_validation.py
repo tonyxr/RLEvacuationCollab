@@ -207,7 +207,12 @@ def _training_analysis(rows: list[dict[str, str]], *, draws: int, seed: int) -> 
 def _critic_analysis(run_dir: Path) -> dict:
     policy_results = []
     for policy in (1, 2, 3):
-        path = run_dir / "policies" / f"policy_{policy:03d}" / "ppo_diagnostics.csv"
+        path = (
+            run_dir
+            / "policies"
+            / f"policy_{policy:03d}"
+            / "learner_diagnostics.csv"
+        )
         rows = _read_csv(path)
         updates = [row for row in rows if _number(row, "optimizer_updated") == 1.0]
         if len(updates) != 4:

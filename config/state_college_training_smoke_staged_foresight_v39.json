@@ -1,0 +1,117 @@
+{
+  "schema_version": 2,
+  "curriculum_id": "state_college_smoke_staged_foresight_v40_12",
+  "description": "Twelve-episode executable smoke test of the v40 E-A-F stage contract using 500 pedestrians and the production observation, NMCC, continuation-replay, schedule, capacity, and evaluation wiring.",
+  "learner_overrides": {
+    "cellPartitionMode": "population_density_adaptive",
+    "cellPartitionMinWidthFraction": 0.0001,
+    "stopTime": 181,
+    "shelterActionInterval": 15,
+    "requirePopulationMatchedShelterCapacity": true,
+    "shelterCapacitySurplus": 200,
+    "ppoRolloutEpisodes": 4,
+    "nmccPolicyImprovement": true,
+    "nmccCounterfactualHorizon": 0,
+    "nmccPiEpsilon": 0.25,
+    "nmccPiEtaMin": 0.02,
+    "nmccPiTapes": 2,
+    "nmccPiExhaustiveDecisions": 0,
+    "nmccPiMaxBranches": 2,
+    "nmccPiWorkers": 4,
+    "nmccPiBranchHorizon": 15,
+    "nmccPiContinuationEnabled": true,
+    "nmccPiContinuationLossCoefficient": 1.0,
+    "nmccPiActorEpochs": 96,
+    "nmccPiFitTolerance": 0.015,
+    "nmccPiReplayMaxEpisodes": 32,
+    "nmccPiReplayEpochs": 12,
+    "nmccPiValidationFraction": 0.2,
+    "nmccNaturalLossCoefficient": 1.0,
+    "actorPrior": "none",
+    "actorPriorScale": 0.0,
+    "representationMode": "staged_transfer",
+    "actorLearningRate": 0.001,
+    "criticLearningRate": 0.001,
+    "actorPpoEpochs": 4,
+    "criticPpoEpochs": 8,
+    "learningRewardScale": 10.0,
+    "learningRateSchedule": "cosine",
+    "learningRateWarmupUpdates": 0,
+    "learningRateDecayUpdates": 1,
+    "actorLearningRateMinimumFraction": 0.1,
+    "criticLearningRateMinimumFraction": 0.1,
+    "entropyCoefficientStart": 0.01,
+    "entropyCoefficientEnd": 0.001,
+    "explorationDecayUpdates": 1,
+    "explorationSchedule": "exponential_half_life",
+    "explorationRateStart": 0.3,
+    "explorationRateEnd": 0.02,
+    "actionTemperatureStart": 1.25,
+    "actionTemperatureEnd": 0.8
+  },
+  "stages": [
+    {
+      "stage_id": "E",
+      "label": "environment_dynamics_pretraining",
+      "episodes_per_city": 4,
+      "variants": [
+        {
+          "variant_id": "state_college_smoke_environment",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 500,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "initShelterVol": 2,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 70
+          }
+        }
+      ]
+    },
+    {
+      "stage_id": "A",
+      "label": "decision_interval_action_learning",
+      "episodes_per_city": 4,
+      "variants": [
+        {
+          "variant_id": "state_college_smoke_action",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 500,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "initShelterVol": 2,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 70
+          }
+        }
+      ]
+    },
+    {
+      "stage_id": "F",
+      "label": "continuation_foresight_learning",
+      "episodes_per_city": 4,
+      "variants": [
+        {
+          "variant_id": "state_college_smoke_foresight",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 500,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "initShelterVol": 2,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 70
+          }
+        }
+      ]
+    }
+  ]
+}

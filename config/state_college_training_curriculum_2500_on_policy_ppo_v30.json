@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "curriculum_id": "state_college_2500_on_policy_ppo_v30",
+  "description": "Version-30 direct recurrent PPO with exact NMCC credit. The neural policy samples and executes every shelter-cell action itself. Complete signed returns train its critic, while the actor uses the same sampled action's common-noise action-minus-WAIT effect as a variance-reduced PPO advantage. Categorical exploration and actor/critic learning rates start high and decay across the complete training campaign. NMCC never proposes, masks, gates, corrects, or replaces an action. There is no heuristic prior, fitted correction, fallback controller, staged pretraining, teacher, benefit filter, or hazard-proxy action censor. The action mask contains only structural executability: an available positive-capacity site and a remaining deployment token.",
+  "stages": [
+    {
+      "stage_id": "S1",
+      "label": "direct_recurrent_ppo_exact_nmcc_credit",
+      "episodes_per_city": 104,
+      "variants": [
+        {
+          "variant_id": "state_college_2500_long_horizon_direct_rl_nmcc",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 2500,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "stopTime": 121,
+            "shelterActionInterval": 15,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 350,
+            "ppoRolloutEpisodes": 8,
+            "nmccEnabled": true,
+            "nmccCounterfactualHorizon": 15,
+            "nmccCounterfactualWeight": 1.0,
+            "nmccJointCounterfactualWeight": 1.0,
+            "nmccInterventionCost": 0.0,
+            "nmccNaturalLossCoefficient": 0.0,
+            "nmccCausalLossCoefficient": 0.0,
+            "nmccDuelingLossCoefficient": 0.0,
+            "nmccGuidanceMaximum": 0.0,
+            "nmccTeacherCoefficient": 0.0,
+            "nmccNaturalPretrainRollouts": 0,
+            "nmccCausalPretrainRollouts": 0,
+            "nmccControllerWarmupRollouts": 0,
+            "actorPrior": "none",
+            "actorPriorScale": 0.0,
+            "representationMode": "actor_owned",
+            "actorLearningRate": 0.001,
+            "criticLearningRate": 0.001,
+            "actorPpoEpochs": 4,
+            "criticPpoEpochs": 4,
+            "learningRateSchedule": "cosine",
+            "learningRateWarmupUpdates": 0,
+            "learningRateDecayUpdates": 12,
+            "actorLearningRateMinimumFraction": 0.1,
+            "criticLearningRateMinimumFraction": 0.1,
+            "entropyCoefficientStart": 0.01,
+            "entropyCoefficientEnd": 0.0005,
+            "explorationDecayUpdates": 12,
+            "actionTemperatureStart": 1.5,
+            "actionTemperatureEnd": 0.35
+          }
+        }
+      ]
+    }
+  ]
+}

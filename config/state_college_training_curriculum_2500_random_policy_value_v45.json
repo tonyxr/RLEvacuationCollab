@@ -1,0 +1,111 @@
+{
+  "schema_version": 2,
+  "curriculum_id": "state_college_n2500_random_policy_value_v45_96",
+  "description": "State College 4x4 full curriculum for the v45 fixed uniform-random reference reward. Stage E samples the reference policy and learns its complete cost-to-go; Stage A learns signed common-noise action improvement over that frozen reference; Stage F combines the same reference value with backward policy-savings continuation. The actor is trained by dense counterfactual PPO without a heuristic target, safety gate, or fallback controller.",
+  "learner_overrides": {
+    "cellX": 4,
+    "cellY": 4,
+    "cellPartitionMode": "population_density_adaptive",
+    "cellPartitionMinWidthFraction": 0.0001,
+    "stopTime": 181,
+    "shelterActionInterval": 15,
+    "requirePopulationMatchedShelterCapacity": true,
+    "shelterCapacitySurplus": 200,
+    "ppoRolloutEpisodes": 1,
+    "nmccPolicyImprovement": true,
+    "nmccCounterfactualHorizon": 0,
+    "nmccPiEpsilon": 0.25,
+    "nmccPiEtaMin": 0.02,
+    "nmccPiTapes": 2,
+    "nmccPiExhaustiveDecisions": 0,
+    "nmccPiMaxBranches": 4,
+    "nmccPiWorkers": 4,
+    "nmccPiBranchHorizon": 15,
+    "nmccPiContinuationEnabled": true,
+    "nmccPiContinuationLossCoefficient": 1.0,
+    "nmccPiReplayMaxEpisodes": 32,
+    "nmccPiReplayEpochs": 16,
+    "nmccPiValidationFraction": 0.2,
+    "nmccNaturalLossCoefficient": 1.0,
+    "actorPrior": "none",
+    "actorPriorScale": 0.0,
+    "representationMode": "staged_transfer",
+    "actorLearningRate": 0.0005,
+    "criticLearningRate": 0.0005,
+    "actorPpoEpochs": 24,
+    "criticPpoEpochs": 8,
+    "learningRewardScale": 10.0,
+    "learningRateSchedule": "cosine",
+    "learningRateWarmupUpdates": 0,
+    "learningRateDecayUpdates": 20,
+    "actorLearningRateMinimumFraction": 0.1,
+    "criticLearningRateMinimumFraction": 0.1,
+    "entropyCoefficientStart": 0.01,
+    "entropyCoefficientEnd": 0.001,
+    "explorationDecayUpdates": 4,
+    "explorationSchedule": "exponential_half_life",
+    "explorationRateStart": 0.35,
+    "explorationRateEnd": 0.02,
+    "actionTemperatureStart": 1.25,
+    "actionTemperatureEnd": 0.8
+  },
+  "stages": [
+    {
+      "stage_id": "E",
+      "label": "uniform_reference_value_learning",
+      "episodes_per_city": 16,
+      "variants": [{
+        "variant_id": "state_college_n2500_uniform_reference_v45",
+        "weight": 1,
+        "overrides": {
+          "pedVol": 2500,
+          "pedestrianGroupSize": 1,
+          "hazardVol": 3,
+          "hazardCasualtyRate": [40, 9],
+          "panicRate": 0.5,
+          "initShelterVol": 2,
+          "maxAdditionalShelters": 8,
+          "shelterCapacityToken": 270
+        }
+      }]
+    },
+    {
+      "stage_id": "A",
+      "label": "random_relative_action_learning",
+      "episodes_per_city": 32,
+      "variants": [{
+        "variant_id": "state_college_n2500_random_relative_action_v45",
+        "weight": 1,
+        "overrides": {
+          "pedVol": 2500,
+          "pedestrianGroupSize": 1,
+          "hazardVol": 3,
+          "hazardCasualtyRate": [40, 9],
+          "panicRate": 0.5,
+          "initShelterVol": 2,
+          "maxAdditionalShelters": 8,
+          "shelterCapacityToken": 270
+        }
+      }]
+    },
+    {
+      "stage_id": "F",
+      "label": "random_relative_foresight_learning",
+      "episodes_per_city": 48,
+      "variants": [{
+        "variant_id": "state_college_n2500_random_relative_foresight_v45",
+        "weight": 1,
+        "overrides": {
+          "pedVol": 2500,
+          "pedestrianGroupSize": 1,
+          "hazardVol": 3,
+          "hazardCasualtyRate": [40, 9],
+          "panicRate": 0.5,
+          "initShelterVol": 2,
+          "maxAdditionalShelters": 8,
+          "shelterCapacityToken": 270
+        }
+      }]
+    }
+  ]
+}

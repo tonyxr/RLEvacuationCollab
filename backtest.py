@@ -3,13 +3,14 @@
 
 RL and every dynamic benchmark use the same regional observation contract,
 exact-candidate action mask, deployment schedule, and budget. The primary
-confirmatory contrast remains RL versus the active-population heuristic; the
-additional policies are predeclared diagnostic benchmarks.
+contrast is RL versus complete-ledger objective-greedy; simpler policies have
+explicit floor, practice-rule, feedback, or appendix-diagnostic roles.
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
 import csv
 import importlib.metadata
 import itertools
@@ -30,7 +31,7 @@ from DecisionInterface import (
     CELL_FEATURE_NAMES,
     GLOBAL_FEATURE_NAMES,
 )
-from GNN import HEURISTIC_PRIOR_SCALE, RESIDUAL_LOGIT_BOUND
+from GNN import HEURISTIC_PRIOR_SCALE
 from RLBridge import (
     DEFAULT_ENTROPY_COEF,
     DEFAULT_ROLLOUT_EPISODES,
@@ -42,23 +43,26 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 RUNS_ROOT = os.path.join(PROJECT_ROOT, "runs")
 DYNAMIC_STRATEGIES = (
     "rl",
+    "objective_greedy",
     "risk_reduction",
     "route_saving",
     "heuristic",
     "hazard_weighted",
     "accessibility_deficit",
     "random",
+    "initial_only",
 )
-STATIC_STRATEGIES = ("initial_only", "static_greedy", "rl_precommit")
+STATIC_STRATEGIES = ("static_greedy", "rl_precommit")
 LEARNED_STRATEGIES = ("rl", "rl_precommit")
+PRIMARY_BENCHMARK_STRATEGY = "objective_greedy"
 
 EVALUATION_METRICS = {
-    "episode_return": "higher",
+    "objective_normalized_cost": "lower",
     "safe_completed": "higher",
+    "expected_casualties": "lower",
     "casualty": "lower",
     "unfinished": "lower",
     "restricted_mean_time_to_safety": "lower",
-    "normalized_risk_weighted_person_time": "lower",
 }
 
 
@@ -105,16 +109,18 @@ def _write_csv(path: str, rows: list[dict]) -> None:
         "scenario_seed",
         "policy_seed",
         "episode_return",
+        "objective_normalized_cost",
+        "objective_episode_score",
         "safe_completed",
         "shelter_evacuated",
         "arrival",
+        "expected_casualties",
         "casualty",
         "unfinished",
         "restricted_mean_time_to_safety",
         "mean_safe_completion_time",
         "mean_evacuation_time",
-        "normalized_risk_weighted_person_time",
-        "risk_weighted_person_time",
+        "remaining_risk_time_reduction",
         "decisions",
         "deployments_made",
         "maximum_dynamic_deployments",
@@ -157,7 +163,19 @@ def _git_metadata() -> dict:
 
 def _dependency_versions() -> dict:
     versions = {}
-    for package in ("numpy", "pandas", "matplotlib", "torch", "osmnx", "geopandas", "shapely"):
+    for package in (
+        "numpy",
+        "pandas",
+        "scipy",
+        "matplotlib",
+        "torch",
+        "osmnx",
+        "networkx",
+        "geopandas",
+        "shapely",
+        "scikit-learn",
+        "tqdm",
+    ):
         try:
             versions[package] = importlib.metadata.version(package)
         except importlib.metadata.PackageNotFoundError:
@@ -224,6 +242,61 @@ def _run_episode(
     )
     if core.episode_summary is None:
         raise RuntimeError("Core completed without an episode summary")
+    installed_shelters = int(len(core.shelterDS.shelterList))
+    expected_shelters = int(core.targetActiveShelters)
+    if installed_shelters != expected_shelters:
+        raise RuntimeError(
+            f"Benchmark shelter-budget mismatch for {strategy}: installed "
+            f"{installed_shelters}, expected {expected_shelters}"
+        )
+    if bool(core.requirePopulationMatchedShelterCapacity):
+        required_shelters = int(core.initShelterVol + core.maxAdditionalShelters)
+        if expected_shelters != required_shelters:
+            raise RuntimeError(
+                f"Matched-capacity run targeted {expected_shelters} shelters, "
+                f"expected the complete {required_shelters}-shelter budget"
+            )
+        installed_capacity = int(
+            sum(
+                int(getattr(shelter, "shelterCap", 0))
+                for shelter in core.shelterDS.shelterList.values()
+            )
+        )
+        required_capacity = int(core.pedVol + core.shelterCapacitySurplus)
+        if installed_capacity != required_capacity:
+            raise RuntimeError(
+                f"Matched-capacity run installed {installed_capacity} places, "
+                f"expected {required_capacity}"
+            )
+        unassigned = core.finalInstallationUnassignedRationalPopulation
+        if unassigned is None or int(unassigned) != 0:
+            raise RuntimeError(
+                "Final shelter installation did not verify zero unassigned "
+                f"rational population: {unassigned}"
+            )
+    if strategy == "initial_only":
+        expected_additions = int(core.targetActiveShelters) - int(
+            core.initShelterVol
+        )
+        if int(core.rl.maximum_deployments) != expected_additions:
+            raise RuntimeError(
+                "initial_only must start with the common initial shelters and "
+                "retain the complete sequential installation budget"
+            )
+        if len(core.rl.static_precommit_schedule) != expected_additions:
+            raise RuntimeError(
+                "initial_only must commit every scheduled site at time zero"
+            )
+        expected_times = tuple(
+            int(core.shelterActionInterval) * index
+            for index in range(1, expected_additions + 1)
+        )
+        if tuple(core.rl.deployment_times) != expected_times:
+            raise RuntimeError(
+                "initial_only did not execute its precommitted sites on the "
+                f"common schedule: expected {expected_times}, observed "
+                f"{tuple(core.rl.deployment_times)}"
+            )
     result = dict(core.episode_summary)
     result["episode_wall_time_s"] = float(time.perf_counter() - wall_start)
     result["episode_cpu_time_s"] = float(time.process_time() - cpu_start)
@@ -267,33 +340,15 @@ def _paired_randomization_pvalue(values: np.ndarray, rng: np.random.Generator, d
 
 
 def _evaluation_metric(row: dict, metric: str) -> float:
-    """Return the action-count-invariant value used for policy evaluation."""
-    if metric == "episode_return":
-        objective = row.get("objective_episode_return")
-        if objective is not None and str(objective).strip():
-            return float(objective)
-    if metric == "normalized_risk_weighted_person_time":
-        objective = row.get("objective_risk_weighted_person_time")
-        population = row.get("initial_population")
-        horizon = row.get("horizon_transitions")
-        if all(
-            value is not None and str(value).strip()
-            for value in (objective, population, horizon)
-        ):
-            denominator = float(population) * float(horizon)
-            if denominator <= 0.0:
-                raise ValueError(
-                    "initial_population and horizon_transitions must be positive"
-                )
-            return float(objective) / denominator
+    """Return one explicitly named physical evaluation metric."""
     return float(row[metric])
 
 
 def _paired_analysis(rows: list[dict], launch_seed: int, draws: int) -> list[dict]:
-    heuristic_by_scenario = {
+    benchmark_by_scenario = {
         int(row["replication"]): row
         for row in rows
-        if str(row["deployment_strategy"]) == "heuristic"
+        if str(row["deployment_strategy"]) == PRIMARY_BENCHMARK_STRATEGY
     }
     rl_by_key = {
         (int(row.get("policy_replication", 1)), int(row["replication"])): row
@@ -301,9 +356,11 @@ def _paired_analysis(rows: list[dict], launch_seed: int, draws: int) -> list[dic
         if str(row["deployment_strategy"]) == "rl"
     }
     policy_replications = sorted({key[0] for key in rl_by_key})
-    replications = sorted(heuristic_by_scenario)
+    replications = sorted(benchmark_by_scenario)
     if not policy_replications or not replications:
-        raise RuntimeError("No paired RL/heuristic replications were found")
+        raise RuntimeError(
+            "No paired RL/objective-greedy replications were found"
+        )
     missing = [
         (policy_replication, replication)
         for policy_replication in policy_replications
@@ -315,7 +372,13 @@ def _paired_analysis(rows: list[dict], launch_seed: int, draws: int) -> list[dic
 
     # Positive improvement always means RL is better.
     output = []
-    inferentially_eligible = len(policy_replications) >= 2 and len(replications) >= 2
+    fixed_policy_inference = len(policy_replications) == 1
+    inferentially_eligible = len(replications) >= 2
+    inference_scope = (
+        "conditional_on_one_fixed_trained_policy"
+        if fixed_policy_inference
+        else "joint_over_policy_and_scenario_seeds"
+    )
     for metric_index, (metric, direction) in enumerate(EVALUATION_METRICS.items()):
         rl_values = np.asarray(
             [
@@ -329,14 +392,14 @@ def _paired_analysis(rows: list[dict], launch_seed: int, draws: int) -> list[dic
             ],
             dtype=float,
         )
-        heuristic_values = np.asarray(
+        benchmark_values = np.asarray(
             [
-                _evaluation_metric(heuristic_by_scenario[replication], metric)
+                _evaluation_metric(benchmark_by_scenario[replication], metric)
                 for replication in replications
             ],
             dtype=float,
         )
-        raw_difference = rl_values - heuristic_values[None, :]
+        raw_difference = rl_values - benchmark_values[None, :]
         improvement = raw_difference if direction == "higher" else -raw_difference
         rng = np.random.default_rng(_seed(launch_seed, 91, metric_index))
         policy_indices = rng.integers(
@@ -359,13 +422,25 @@ def _paired_analysis(rows: list[dict], launch_seed: int, draws: int) -> list[dic
             float(np.quantile(bootstrap_means, 0.975)),
         )
         policy_mean_improvements = improvement.mean(axis=1)
-        p_value = _paired_randomization_pvalue(policy_mean_improvements, rng, draws)
+        p_value = (
+            None
+            if fixed_policy_inference
+            else _paired_randomization_pvalue(
+                policy_mean_improvements,
+                rng,
+                draws,
+            )
+        )
         standard_deviation = (
             float(policy_mean_improvements.std(ddof=1))
             if len(policy_replications) > 1
             else 0.0
         )
-        standard_error = standard_deviation / math.sqrt(len(policy_replications))
+        standard_error = (
+            float(bootstrap_means.std(ddof=1))
+            if fixed_policy_inference and len(bootstrap_means) > 1
+            else standard_deviation / math.sqrt(len(policy_replications))
+        )
         output.append(
             {
                 "metric": metric,
@@ -373,9 +448,11 @@ def _paired_analysis(rows: list[dict], launch_seed: int, draws: int) -> list[dic
                 "policy_replications": len(policy_replications),
                 "scenario_replications": len(replications),
                 "inferentially_eligible": inferentially_eligible,
+                "inference_scope": inference_scope,
                 "paired_replications": int(improvement.size),
+                "benchmark_strategy": PRIMARY_BENCHMARK_STRATEGY,
                 "rl_mean": float(rl_values.mean()),
-                "heuristic_mean": float(heuristic_values.mean()),
+                "benchmark_mean": float(benchmark_values.mean()),
                 "mean_rl_improvement": float(improvement.mean()),
                 "bootstrap_95_ci_low": ci_low,
                 "bootstrap_95_ci_high": ci_high,
@@ -550,11 +627,10 @@ def _benchmark_analysis(
             )
             output.append(
                 {
-                    "comparison_role": (
-                        "primary"
-                        if benchmark_strategy == "heuristic"
-                        else "secondary_diagnostic"
-                    ),
+                    "comparison_role": BENCHMARK_POLICY_CONTRACTS.get(
+                        benchmark_strategy,
+                        {},
+                    ).get("role", "timing_diagnostic"),
                     "benchmark_strategy": benchmark_strategy,
                     "metric": metric,
                     "preferred_direction": direction,
@@ -602,16 +678,30 @@ def _training_convergence(
     for row in rows:
         by_policy.setdefault(int(row.get("policy_replication", 1)), []).append(row)
     policies = []
-    required_fields = (
-        "episode_return",
-        "entropy",
-        "approximate_kl",
-        "gradient_norm",
-        "policy_loss",
-        "value_loss",
-    )
     for policy_replication, policy_rows in sorted(by_policy.items()):
         policy_rows.sort(key=lambda row: int(row["replication"]))
+        rollout_pi = any(
+            float(row.get("rollout_pi_actor_enabled", 0.0)) > 0.5
+            for row in policy_rows
+        )
+        required_fields = (
+            (
+                "episode_return",
+                "behavior_policy_entropy",
+                "rollout_pi_actor_kl",
+                "actor_gradient_norm",
+                "policy_loss",
+            )
+            if rollout_pi
+            else (
+                "episode_return",
+                "behavior_policy_entropy",
+                "approximate_kl",
+                "gradient_norm",
+                "policy_loss",
+                "value_loss",
+            )
+        )
         numeric = {
             field: np.asarray([float(row[field]) for row in policy_rows], dtype=float)
             for field in required_fields
@@ -646,7 +736,13 @@ def _training_convergence(
             tail_rows = policy_rows[-window:]
             update_kl = np.asarray(
                 [
-                    float(row["approximate_kl"])
+                    float(
+                        row[
+                            "rollout_pi_actor_kl"
+                            if rollout_pi
+                            else "approximate_kl"
+                        ]
+                    )
                     for row in tail_rows
                     if float(row.get("optimizer_updated", 1.0)) > 0.5
                 ],
@@ -666,32 +762,62 @@ def _training_convergence(
             float(row.get("optimizer_updated", 1.0)) > 0.5
             for row in policy_rows
         )
-        fitted_pi = any("nmcc_pi_replay_episodes" in row for row in policy_rows)
-        validation_rows = [
-            row for row in policy_rows
-            if np.isfinite(float(row.get("nmcc_pi_validation_gain_lower", float("nan"))))
+        actor_fit_rows = [
+            row
+            for row in policy_rows
+            if float(row.get("optimizer_updated", 0.0)) > 0.5
+            and float(row.get("rollout_pi_actor_enabled", 0.0)) > 0.5
         ]
-        heldout_gain_lower = (
-            float(validation_rows[-1]["nmcc_pi_validation_gain_lower"])
-            if validation_rows else float("nan")
+
+        actor_fit_finite = bool(
+            actor_fit_rows
+            and all(
+                np.isfinite(float(row["rollout_pi_target_kl_before"]))
+                and np.isfinite(float(row["rollout_pi_target_kl_after"]))
+                and np.isfinite(
+                    float(row["actor_policy_entropy_after"])
+                )
+                for row in actor_fit_rows
+            )
         )
-        heldout_states = (
-            int(float(validation_rows[-1].get("nmcc_pi_validation_states", 0)))
-            if validation_rows else 0
+        actor_fit_improvement_fraction = (
+            float(
+                np.mean(
+                    [
+                        float(row["rollout_pi_target_kl_after"])
+                        <= float(row["rollout_pi_target_kl_before"])
+                        for row in actor_fit_rows
+                    ]
+                )
+            )
+            if actor_fit_rows
+            else float("nan")
         )
-        heldout_gate = bool(
-            validation_rows
-            and float(validation_rows[-1].get("nmcc_pi_gate_passed", 0.0)) > 0.5
-            and heldout_gain_lower > 0.0
+        branch_target_coverage = (
+            float(
+                np.mean(
+                    [
+                        float(row["rollout_pi_target_coverage"])
+                        for row in actor_fit_rows
+                    ]
+                )
+            )
+            if actor_fit_rows
+            else float("nan")
         )
 
-        if fitted_pi:
-            # Fitted policy improvement is selected by exact held-out paired
-            # gain, not by stationarity of noisy, unpaired training returns or
-            # PPO's unrelated 0.015 KL cap.
+        if rollout_pi:
+            # Rollout policy iteration has no KL/controller gate. Convergence is
+            # the ordinary stationarity audit plus evidence that its complete
+            # simulator-graded categorical actor fits were numerically valid.
+            # Entropy and retained-policy KL remain descriptive diagnostics.
             converged = bool(
                 enough and finite and rollout_complete
-                and optimization_events > 0 and heldout_states > 0 and heldout_gate
+                and optimization_events > 0
+                and actor_fit_finite
+                and branch_target_coverage >= 1.0 - 1e-9
+                and trend_span_sd <= float(trend_threshold)
+                and window_shift_sd <= float(shift_threshold)
             )
         else:
             converged = bool(
@@ -717,13 +843,17 @@ def _training_convergence(
                 "adjacent_window_shift_standard_deviations": window_shift_sd,
                 "tail_kl_violation_rate": kl_violation_rate,
                 "convergence_mode": (
-                    "episode_heldout_paired_gain" if fitted_pi else "ppo_tail_stationarity"
+                    "rollout_policy_iteration_tail_stationarity"
+                    if rollout_pi
+                    else "ppo_tail_stationarity"
                 ),
-                "heldout_paired_gain_lower_bound": heldout_gain_lower,
-                "heldout_validation_states": heldout_states,
-                "heldout_controller_gate_passed": heldout_gate,
+                "rollout_pi_fit_diagnostics_finite": actor_fit_finite,
+                "rollout_pi_target_kl_improvement_fraction": (
+                    actor_fit_improvement_fraction
+                ),
+                "mean_rollout_pi_target_coverage": branch_target_coverage,
                 "tail_entropy_mean": (
-                    float(numeric["entropy"][-window:].mean())
+                    float(numeric["behavior_policy_entropy"][-window:].mean())
                     if finite and window >= 2
                     else float("nan")
                 ),
@@ -732,9 +862,10 @@ def _training_convergence(
         )
     return {
         "definition": (
-            "PPO policies require tail stationarity and KL compliance. Fitted NMCC-PI "
-            "policies instead require finite complete training and a positive exact "
-            "episode-heldout paired-gain lower bound that opens the controller gate."
+            "PPO policies require tail stationarity and KL compliance. Simulator-graded "
+            "rollout-policy-iteration policies require tail stationarity, complete branch "
+            "targets and finite categorical actor fits; retained-policy KL is descriptive and no controller "
+            "gate accepts or rejects an actor update."
         ),
         "thresholds": {
             "minimum_episodes": int(minimum_episodes),
@@ -754,9 +885,10 @@ def _performance_assessment(
     *,
     allow_fixed_policy: bool = False,
 ) -> dict:
-    primary = next((row for row in analysis if row["metric"] == "episode_return"), None)
+    primary_metric = "objective_normalized_cost"
+    primary = next((row for row in analysis if row["metric"] == primary_metric), None)
     if primary is None:
-        return {"status": "unavailable", "primary_metric": "episode_return"}
+        return {"status": "unavailable", "primary_metric": primary_metric}
     policy_replications = int(primary.get("policy_replications", 0))
     scenario_replications = int(primary.get("scenario_replications", 0))
     scenarios_per_city = int(
@@ -778,7 +910,7 @@ def _performance_assessment(
         status = "inconclusive"
     return {
         "status": status,
-        "primary_metric": "episode_return",
+        "primary_metric": primary_metric,
         "mean_rl_improvement": float(primary["mean_rl_improvement"]),
         "bootstrap_95_ci": [lower, upper],
         "policy_replications": policy_replications,
@@ -808,28 +940,48 @@ def _performance_assessment(
 
 
 def _verify_matched_interface(rows: list[dict], strategies: tuple[str, ...]) -> dict:
+    def provenance_mapping(value):
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str) and value.strip():
+            try:
+                parsed = ast.literal_eval(value)
+            except (SyntaxError, ValueError):
+                return None
+            return parsed if isinstance(parsed, dict) else None
+        return None
+
     dynamic = tuple(strategy for strategy in strategies if strategy in DYNAMIC_STRATEGIES)
-    benchmark_by_replication = {
+    reference_by_replication = {
         int(row["replication"]): row
         for row in rows
-        if row["deployment_strategy"] == "heuristic"
+        if row["deployment_strategy"] == PRIMARY_BENCHMARK_STRATEGY
     }
     mismatches = []
     compared = 0
     for row in rows:
         strategy = row["deployment_strategy"]
-        if strategy not in dynamic or strategy == "heuristic":
+        if strategy not in dynamic or strategy == PRIMARY_BENCHMARK_STRATEGY:
             continue
         replication = int(row["replication"])
-        reference = benchmark_by_replication.get(replication)
+        reference = reference_by_replication.get(replication)
         if reference is None:
-            mismatches.append({"replication": replication, "reason": "missing heuristic"})
+            mismatches.append(
+                {
+                    "replication": replication,
+                    "reason": "missing objective_greedy reference",
+                }
+            )
             continue
         compared += 1
+        row_random_streams = provenance_mapping(row.get("random_stream_seeds"))
+        reference_random_streams = provenance_mapping(
+            reference.get("random_stream_seeds")
+        )
         required_provenance_present = all(
             (
-                isinstance(row.get("random_stream_seeds"), dict),
-                isinstance(reference.get("random_stream_seeds"), dict),
+                row_random_streams is not None,
+                reference_random_streams is not None,
                 bool(row.get("hazard_trajectory_digest")),
                 bool(reference.get("hazard_trajectory_digest")),
             )
@@ -857,7 +1009,7 @@ def _verify_matched_interface(rows: list[dict], strategies: tuple[str, ...]) -> 
                         atol=1e-9,
                     )
                 ),
-                row.get("random_stream_seeds") != reference.get("random_stream_seeds"),
+                row_random_streams != reference_random_streams,
                 row.get("hazard_trajectory_digest")
                 != reference.get("hazard_trajectory_digest"),
                 row.get("city_id") != reference.get("city_id"),
@@ -880,7 +1032,8 @@ def _verify_matched_interface(rows: list[dict], strategies: tuple[str, ...]) -> 
         raise RuntimeError(f"Matched-interface verification failed: {mismatches[:3]}")
     return {
         "verified": True,
-        "scenario_replications": len(benchmark_by_replication),
+        "scenario_replications": len(reference_by_replication),
+        "reference_strategy": PRIMARY_BENCHMARK_STRATEGY,
         "policy_scenario_comparisons": compared,
         "strategies": list(dynamic),
         "checks": [
@@ -926,19 +1079,19 @@ def _write_paper_table(path: str, analysis: list[dict]) -> None:
         )
     )
     lines = [
-        "# Paired RL versus active-population heuristic",
+        "# Paired RL versus complete-ledger objective-greedy",
         "",
         interpretation,
         "`episode_return` denotes the action-count-invariant full-episode policy objective.",
         "",
-        "| Metric | RL mean | Heuristic mean | RL improvement | 95% CI | p |",
+        "| Metric | RL mean | Objective-greedy mean | RL improvement | 95% CI | p |",
         "|---|---:|---:|---:|---:|---:|",
     ]
     for row in analysis:
         p_value = row.get("two_sided_randomization_p")
         p_text = "NA" if p_value is None else f"{float(p_value):.4g}"
         lines.append(
-            "| {metric} | {rl_mean:.5g} | {heuristic_mean:.5g} | {mean_rl_improvement:.5g} | "
+            "| {metric} | {rl_mean:.5g} | {benchmark_mean:.5g} | {mean_rl_improvement:.5g} | "
             "[{bootstrap_95_ci_low:.5g}, {bootstrap_95_ci_high:.5g}] | {p_text} |".format(
                 **row,
                 p_text=p_text,
@@ -954,11 +1107,12 @@ def _write_benchmark_table(path: str, analysis: list[dict]) -> None:
     )
     interpretation = (
         "Intervals separately resample policy seeds and matched scenarios. The "
-        "maximum-active-population contrast is primary; all others are secondary."
+        "complete-ledger objective-greedy contrast is primary; every other "
+        "benchmark keeps its registered diagnostic role."
         if inferentially_eligible
         else "This engineering backtest is descriptive because it lacks at least two "
-        "independent policy seeds and two held-out scenarios. The maximum-active-"
-        "population contrast remains primary; all others are secondary."
+        "independent policy seeds and two held-out scenarios. Complete-ledger "
+        "objective-greedy remains primary; all others keep diagnostic roles."
     )
     lines = [
         "# Paired RL versus registered benchmark policies",
@@ -1039,7 +1193,11 @@ def _plot_outputs(
                 else aligned_episodes
             )
             ax.plot(moving_x, moving, color="black", linewidth=2.4, label=f"cross-seed moving mean ({window})")
-        ax.set(xlabel="Training episode", ylabel="Undiscounted return", title="RL training convergence")
+        ax.set(
+            xlabel="Training episode",
+            ylabel="Return (savings versus uniform random)",
+            title="RL training convergence",
+        )
         ax.grid(alpha=0.25)
         ax.legend()
         fig.tight_layout()
@@ -1048,18 +1206,25 @@ def _plot_outputs(
         plt.close(fig)
         outputs.append(path)
 
-        # Decompose the simple reward and show the diagnostics that can reveal
-        # apparent reward stationarity caused by policy collapse or oversized
-        # PPO updates.  Lines are cross-policy means when episode indices align.
+        # Plot the signed uniform-random-relative return and report casualties
+        # separately. Capacity arrival, natural evacuation progress, and
+        # casualties are outcomes rather than separate reward components.
         fields = (
-            ("safe_completion_reward", "Safe-completion term"),
-            ("casualty_penalty", "Casualty term"),
-            ("risk_time_penalty", "Risk-time term"),
+            (
+                "episode_return",
+                "Savings versus uniform-random siting",
+            ),
         )
-        fig, axes = plt.subplots(2, 2, figsize=(10, 7.5), sharex=True)
+        fig, axes = plt.subplots(2, 3, figsize=(14, 7.5), sharex=True)
+        axes = axes.reshape(-1)
         series_by_field = {field: [] for field, _ in fields}
-        entropy_series = []
+        casualty_series = []
+        safe_series = []
+        unfinished_series = []
+        behavior_entropy_series = []
+        actor_entropy_series = []
         kl_series = []
+        rollout_pi_training = False
         common_episodes = None
         for policy_rows in by_policy.values():
             policy_rows.sort(key=lambda row: int(row["replication"]))
@@ -1070,13 +1235,60 @@ def _plot_outputs(
                 continue
             for field, _ in fields:
                 series_by_field[field].append(
-                    np.asarray([float(row[field]) for row in policy_rows])
+                    np.asarray(
+                        [
+                            float(
+                                row.get(
+                                    field,
+                                    row.get("episode_return", 0.0),
+                                )
+                            )
+                            for row in policy_rows
+                        ]
+                    )
                 )
-            entropy_series.append(np.asarray([float(row["entropy"]) for row in policy_rows]))
+            casualty_series.append(
+                np.asarray([float(row.get("casualty", 0.0)) for row in policy_rows])
+            )
+            safe_series.append(
+                np.asarray(
+                    [float(row.get("safe_completed", 0.0)) for row in policy_rows]
+                )
+            )
+            unfinished_series.append(
+                np.asarray(
+                    [float(row.get("unfinished", 0.0)) for row in policy_rows]
+                )
+            )
+            behavior_entropy_series.append(
+                np.asarray(
+                    [float(row["behavior_policy_entropy"]) for row in policy_rows]
+                )
+            )
+            actor_entropy_series.append(
+                np.asarray(
+                    [
+                        float(row.get("actor_policy_entropy_after", float("nan")))
+                        if float(row.get("optimizer_updated", 0.0)) > 0.5
+                        else float("nan")
+                        for row in policy_rows
+                    ]
+                )
+            )
+            rollout_pi_training = rollout_pi_training or any(
+                float(row.get("rollout_pi_actor_enabled", 0.0)) > 0.5
+                for row in policy_rows
+            )
             kl_series.append(
                 np.asarray(
                     [
-                        float(row["approximate_kl"])
+                        float(
+                            row[
+                                "rollout_pi_actor_kl"
+                                if rollout_pi_training
+                                else "approximate_kl"
+                            ]
+                        )
                         if float(row.get("optimizer_updated", 1.0)) > 0.5
                         else np.nan
                         for row in policy_rows
@@ -1091,22 +1303,60 @@ def _plot_outputs(
             kernel = np.ones(window, dtype=float) / float(window)
             return common_episodes[window - 1:], np.convolve(values, kernel, mode="valid")
 
-        reward_ax = axes[0, 0]
+        reward_ax = axes[0]
         for field, label in fields:
             if series_by_field[field]:
                 values = np.stack(series_by_field[field]).mean(axis=0)
                 x_values, y_values = moving_mean(values)
                 reward_ax.plot(x_values, y_values, label=label)
-        reward_ax.set(title="Reward decomposition", ylabel="Normalized reward")
+        reward_ax.set(
+            title="Uniform-random-relative policy return",
+            ylabel="Normalized signed return",
+        )
         reward_ax.legend(fontsize=8)
 
-        entropy_ax = axes[0, 1]
-        if entropy_series:
-            x_values, y_values = moving_mean(np.stack(entropy_series).mean(axis=0))
-            entropy_ax.plot(x_values, y_values, color="tab:purple")
-        entropy_ax.set(title="Policy entropy", ylabel="Entropy")
+        casualty_ax = axes[1]
+        if casualty_series:
+            x_values, y_values = moving_mean(
+                np.stack(casualty_series).mean(axis=0)
+            )
+            casualty_ax.plot(x_values, y_values, color="tab:red")
+        casualty_ax.set(
+            title="Casualty trend (reported only)",
+            ylabel="Moving-mean casualties per episode",
+        )
 
-        kl_ax = axes[1, 0]
+        entropy_ax = axes[2]
+        if behavior_entropy_series:
+            x_values, y_values = moving_mean(
+                np.stack(behavior_entropy_series).mean(axis=0)
+            )
+            entropy_ax.plot(
+                x_values,
+                y_values,
+                color="tab:purple",
+                label="sampled behavior policy",
+            )
+        if actor_entropy_series:
+            stacked_actor_entropy = np.stack(actor_entropy_series)
+            valid = np.isfinite(stacked_actor_entropy).any(axis=0)
+            actor_values = np.full(stacked_actor_entropy.shape[1], np.nan, dtype=float)
+            actor_values[valid] = np.nanmean(stacked_actor_entropy[:, valid], axis=0)
+            entropy_ax.plot(
+                common_episodes[valid],
+                actor_values[valid],
+                color="tab:blue",
+                marker="o",
+                markersize=3,
+                label="raw actor after fit",
+            )
+        entropy_ax.set(
+            title="Behavior and trainable-actor concentration",
+            ylabel="Normalized feasible-action entropy [0, 1]",
+        )
+        entropy_ax.legend(fontsize=8)
+
+        kl_ax = axes[3]
         if kl_series:
             stacked_kl = np.stack(kl_series)
             valid = np.isfinite(stacked_kl).any(axis=0)
@@ -1119,17 +1369,28 @@ def _plot_outputs(
                 marker="o",
                 markersize=3,
             )
-        kl_ax.axhline(
-            DEFAULT_TARGET_KL,
-            color="black",
-            linestyle="--",
-            linewidth=1.0,
-            label="target KL",
-        )
-        kl_ax.set(title="PPO update size", xlabel="Training episode", ylabel="Approximate KL")
-        kl_ax.legend(fontsize=8)
+        if rollout_pi_training:
+            kl_ax.set(
+                title="Residual-actor movement (descriptive)",
+                xlabel="Training episode",
+                ylabel="KL(new actor || iteration prior)",
+            )
+        else:
+            kl_ax.axhline(
+                DEFAULT_TARGET_KL,
+                color="black",
+                linestyle="--",
+                linewidth=1.0,
+                label="target KL",
+            )
+            kl_ax.set(
+                title="PPO update size",
+                xlabel="Training episode",
+                ylabel="Approximate KL",
+            )
+            kl_ax.legend(fontsize=8)
 
-        agreement_ax = axes[1, 1]
+        agreement_ax = axes[4]
         agreement_series = [
             np.asarray([float(row["heuristic_agreement_rate"]) for row in rows])
             for rows in by_policy.values()
@@ -1144,7 +1405,25 @@ def _plot_outputs(
             ylabel="Action agreement rate",
             ylim=(-0.02, 1.02),
         )
-        for diagnostic_ax in axes.flat:
+
+        outcome_ax = axes[5]
+        if safe_series:
+            x_values, y_values = moving_mean(
+                np.stack(safe_series).mean(axis=0)
+            )
+            outcome_ax.plot(x_values, y_values, label="Safely completed")
+        if unfinished_series:
+            x_values, y_values = moving_mean(
+                np.stack(unfinished_series).mean(axis=0)
+            )
+            outcome_ax.plot(x_values, y_values, label="Unfinished")
+        outcome_ax.set(
+            title="Terminal evacuation outcomes",
+            xlabel="Training episode",
+            ylabel="Pedestrians",
+        )
+        outcome_ax.legend(fontsize=8)
+        for diagnostic_ax in axes:
             diagnostic_ax.grid(alpha=0.25)
         fig.tight_layout()
         diagnostic_path = os.path.join(launch_dir, "training_diagnostics.png")
@@ -1164,7 +1443,10 @@ def _plot_outputs(
     ax.errorbar(estimates, y, xerr=np.vstack((estimates - lower, upper - estimates)), fmt="o")
     ax.axvline(0.0, color="black", linewidth=1.0)
     ax.set_yticks(y, labels=labels)
-    ax.set(xlabel="Mean paired improvement (positive favors RL)", title="RL versus heuristic: paired 95% intervals")
+    ax.set(
+        xlabel="Mean paired improvement (positive favors RL)",
+        title="RL versus complete-ledger objective-greedy: paired 95% intervals",
+    )
     ax.grid(axis="x", alpha=0.25)
     fig.tight_layout()
     path = os.path.join(launch_dir, "paired_policy_comparison.png")
@@ -1177,6 +1459,7 @@ def _plot_outputs(
         benchmark_order = [
             strategy
             for strategy in (
+                "objective_greedy",
                 "risk_reduction",
                 "route_saving",
                 "heuristic",
@@ -1193,7 +1476,8 @@ def _plot_outputs(
             )
         ]
         benchmark_labels = {
-            "risk_reduction": "Future risk-time reduction",
+            "objective_greedy": "Objective-matched greedy",
+            "risk_reduction": "Future HWTTS reduction",
             "route_saving": "Demand-weighted route saving",
             "heuristic": "Max active demand",
             "hazard_weighted": "Hazard-weighted demand",
@@ -1201,15 +1485,15 @@ def _plot_outputs(
             "random": "Random feasible candidate",
             "static_greedy": "Static demand greedy",
             "rl_precommit": "RL precommit",
-            "initial_only": "Static initial-only",
+            "initial_only": "Static precommitted schedule",
         }
         metric_labels = {
-            "episode_return": "Full-episode objective",
+            "objective_normalized_cost": "Normalized objective-cost reduction",
             "safe_completed": "Safe completions",
+            "expected_casualties": "Expected-casualty reduction",
             "casualty": "Casualty reduction",
             "unfinished": "Unfinished reduction",
             "restricted_mean_time_to_safety": "Time-to-safety reduction",
-            "normalized_risk_weighted_person_time": "Risk-time reduction",
         }
         lookup = {
             (row["benchmark_strategy"], row["metric"]): row
@@ -1282,7 +1566,7 @@ def _parse_args(argv=None):
     parser.add_argument("--convergence-shift-threshold", type=float, default=0.50)
     parser.add_argument(
         "--strategies",
-        default="rl,risk_reduction,heuristic,hazard_weighted,accessibility_deficit,random",
+        default="rl,objective_greedy,heuristic,random,initial_only",
     )
     parser.add_argument("--hazard-mode", choices=("stochastic", "deterministic"), default="stochastic")
     parser.add_argument(
@@ -1293,7 +1577,7 @@ def _parse_args(argv=None):
     )
     parser.add_argument(
         "--visualization-strategies",
-        default="rl,heuristic",
+        default="rl,objective_greedy",
         help="Comma-separated evaluated strategies to render.",
     )
     parser.add_argument(
@@ -1340,8 +1624,14 @@ def _parse_args(argv=None):
     invalid = sorted(set(strategies).difference(allowed))
     if invalid:
         parser.error(f"unsupported strategies: {invalid}")
-    if not args.train_only and not {"rl", "heuristic"}.issubset(strategies):
-        parser.error("evaluation must include both rl and heuristic for the primary paired test")
+    if not args.train_only and not {
+        "rl",
+        PRIMARY_BENCHMARK_STRATEGY,
+    }.issubset(strategies):
+        parser.error(
+            "evaluation must include both rl and objective_greedy for the "
+            "primary paired test"
+        )
     args.strategies = strategies
     visualization_strategies = tuple(
         item.strip().lower()
@@ -1383,7 +1673,7 @@ def main(argv=None) -> int:
             launch_dir,
             "policies",
             f"policy_{policy_replication:03d}",
-            "ppo_diagnostics.csv",
+            "learner_diagnostics.csv",
         )
         for policy_replication in range(1, args.policy_replicates + 1)
     }
@@ -1437,27 +1727,44 @@ def main(argv=None) -> int:
         },
         "overrides": overrides,
         "reward_equation": (
-            "r_k=(Delta safe_k-3 Delta casualty_k)/P"
-            "-active_person_time_k/(P H)"
-            "-hazard_exposure_person_time_k/(P H)"
+            "r_k=(mean_{a in feasible} J_k(a)-J_k(chosen))/(P H_minutes)"
         ),
         "evaluation_objective_equation": (
-            "R=(safe_completed-3 casualty)/P"
-            "-full_episode_active_person_time/(P H)"
-            "-full_episode_hazard_exposure_person_time/(P H)"
+            "cost=[plain_time+hazard_exposure_time+expected_casualty_"
+            "person_time+clearance_tail_person_time+terminal_residual]/"
+            "(P H_minutes); lower_is_better; display_score=1/(1+cost)"
         ),
-        "ppo_design": {
-            "rollout_episodes": int(DEFAULT_ROLLOUT_EPISODES),
-            "advantage_normalization": "across the complete multi-episode on-policy rollout",
+        "unavailable_shelter_time": "full_episode_horizon_120_minutes",
+        "terminal_residual_in_learning_reward": False,
+        "casualty_role": (
+            "expected_casualty_intensity_is_priced_in_the_objective;_"
+            "realized_casualties_are_a_secondary_stochastic_outcome"
+        ),
+        "learner_design": {
+            "learner_batch_episodes": int(
+                overrides.get("ppoRolloutEpisodes", DEFAULT_ROLLOUT_EPISODES)
+            ),
+            "optimizer_family": (
+                "simulator_graded_rollout_policy_iteration_when_enabled; "
+                "otherwise_direct_ppo"
+            ),
             "policy_architecture": (
-                "bounded active-population-prior residual exact-candidate scorer "
+                "unbounded linear prior-residual exact-candidate scorer "
                 "with pedestrian, hazard, infrastructure, spatial, and route context"
             ),
             "heuristic_prior_logit_scale": float(HEURISTIC_PRIOR_SCALE),
-            "residual_logit_bound": float(RESIDUAL_LOGIT_BOUND),
-            "entropy_coefficient": float(DEFAULT_ENTROPY_COEF),
+            "residual_correction": "unbounded_linear_actor_readout",
+            "entropy_coefficient_start": float(
+                overrides.get("entropyCoefficientStart", DEFAULT_ENTROPY_COEF)
+            ),
+            "entropy_coefficient_end": float(
+                overrides.get("entropyCoefficientEnd", DEFAULT_ENTROPY_COEF)
+            ),
             "entropy_normalization": "log_feasible_action_count",
-            "kl_control": "full_rollout_epoch_stop_and_adaptive_learning_rate",
+            "rollout_policy_iteration_kl_role": (
+                "descriptive_exact_KL_of_raw_actor_to_iteration_prior; no gate or rollback"
+            ),
+            "direct_ppo_kl_role": "trust_region_diagnostic",
         },
         "randomization_design": {
             "matched_scenario_seed": True,
@@ -1510,6 +1817,22 @@ def main(argv=None) -> int:
                 episode_overrides = dict(overrides)
                 episode_overrides["finalizePpoRollout"] = bool(
                     episode == args.train_episodes
+                )
+                rollout_size = int(
+                    episode_overrides.get(
+                        "ppoRolloutEpisodes", DEFAULT_ROLLOUT_EPISODES
+                    )
+                )
+                episode_overrides.update(
+                    {
+                        "trainingStageId": "joint",
+                        "trainingStageUpdateIndex": int(
+                            (episode - 1) // rollout_size
+                        ),
+                        "trainingStageTotalUpdates": int(
+                            math.ceil(args.train_episodes / rollout_size)
+                        ),
+                    }
                 )
                 row = _run_episode(
                     replication=episode,
@@ -1670,7 +1993,7 @@ def main(argv=None) -> int:
             "performance_assessment": performance_assessment,
             "artifacts": {
                 "training_summary": training_summary_path,
-                "ppo_diagnostics": diagnostics_paths,
+                "learner_diagnostics": diagnostics_paths,
                 "training_convergence": convergence_path,
                 "evaluation_summary": evaluation_summary_path,
                 "paired_comparison": os.path.join(launch_dir, "paired_comparison.csv"),

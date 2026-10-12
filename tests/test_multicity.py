@@ -11,6 +11,7 @@ from OSMProcessor import OSMProcessor
 from ShelterTypes import canonical_shelter_site_type
 from multicity_backtest import (
     DYNAMIC_STRATEGIES,
+    POLICY_DYNAMICS_SOURCES,
     _city_overrides,
     _curriculum_is_monotone_extension,
     _equal_city_training_blocks,
@@ -32,6 +33,7 @@ class CityProfileTests(unittest.TestCase):
     def test_all_dynamic_benchmarks_are_registered(self):
         self.assertTrue(
             {
+                "objective_greedy",
                 "risk_reduction",
                 "heuristic",
                 "hazard_weighted",
@@ -108,6 +110,19 @@ class CityProfileTests(unittest.TestCase):
             self.assertGreaterEqual(rollout, 8)
             self.assertEqual(rollout % city_count, 0)
 
+    def test_policy_fingerprint_covers_capacity_and_value_dynamics(self):
+        self.assertTrue(
+            {
+                "CounterfactualBranch.py",
+                "NMCCPIConfig.py",
+                "NMCCPolicyImprovement.py",
+                "Pedestrian.py",
+                "Shelter.py",
+                "ShelterDatabase.py",
+                "ShelterTypes.py",
+            }.issubset(POLICY_DYNAMICS_SOURCES)
+        )
+
     def test_pooled_learning_rate_is_frozen_and_validated(self):
         self.assertEqual(_parse_args(["--train-only"]).learning_rate, 3e-4)
         with self.assertRaises(SystemExit):
@@ -134,10 +149,13 @@ class CityProfileTests(unittest.TestCase):
                 "replication": episode,
                 "policy_replication": 1,
                 "episode_return": 0.01 * episode,
-                "safe_completion_reward": 0.5,
-                "casualty_penalty": -0.01,
+                "evacuation_time_penalty": -0.15,
+                "hazard_exposure_penalty": -0.05,
                 "risk_time_penalty": -0.2,
-                "entropy": 0.9,
+                "casualty": episode % 2,
+                "safe_completed": 80 + episode,
+                "unfinished": 20 - episode,
+                "behavior_policy_entropy": 0.9,
                 "approximate_kl": 0.01 if episode == 5 else 0.0,
                 "optimizer_updated": 1.0 if episode == 5 else 0.0,
                 "heuristic_agreement_rate": 0.4,
@@ -292,7 +310,7 @@ class CityProfileTests(unittest.TestCase):
                     "policy_replication": 1,
                     "city_id": city.city_id,
                     "episode_return": baseline + 0.5,
-                    "entropy": 1.0,
+                    "behavior_policy_entropy": 1.0,
                     "optimizer_updated": float(replication % 2 == 0),
                     "approximate_kl": 0.01,
                     "gradient_norm": 0.1,
@@ -441,12 +459,12 @@ class StratifiedAnalysisTests(unittest.TestCase):
             "replication": global_replication,
             "policy_replication": policy,
             "deployment_strategy": strategy,
-            "episode_return": 1.0 + (delta if is_rl else 0.0),
+            "objective_normalized_cost": 1.0 - (delta if is_rl else 0.0),
             "safe_completed": 50.0 + (10.0 * delta if is_rl else 0.0),
+            "expected_casualties": 5.0 - (10.0 * delta if is_rl else 0.0),
             "casualty": 5.0 - (10.0 * delta if is_rl else 0.0),
             "unfinished": 10.0 - (10.0 * delta if is_rl else 0.0),
             "restricted_mean_time_to_safety": 20.0 - (delta if is_rl else 0.0),
-            "normalized_risk_weighted_person_time": 0.5 - (delta if is_rl else 0.0),
         }
 
     def test_macro_analysis_weights_cities_equally(self):
@@ -456,11 +474,23 @@ class StratifiedAnalysisTests(unittest.TestCase):
         for city, delta in zip(cities, (0.1, 0.3)):
             for scenario in (1, 2):
                 global_replication += 1
-                rows.append(self._row(city.city_id, scenario, global_replication, 0, "heuristic", 0))
+                rows.append(
+                    self._row(
+                        city.city_id,
+                        scenario,
+                        global_replication,
+                        0,
+                        "objective_greedy",
+                        0,
+                    )
+                )
                 for policy in (1, 2):
                     rows.append(self._row(city.city_id, scenario, global_replication, policy, "rl", delta))
         analysis = _stratified_paired_analysis(rows, cities, 73, 200)
-        primary = next(row for row in analysis if row["metric"] == "episode_return")
+        primary = next(
+            row for row in analysis
+            if row["metric"] == "objective_normalized_cost"
+        )
         self.assertAlmostEqual(primary["mean_rl_improvement"], 0.2)
         self.assertAlmostEqual(primary["bootstrap_95_ci_low"], 0.2)
         self.assertAlmostEqual(primary["bootstrap_95_ci_high"], 0.2)
@@ -473,7 +503,7 @@ class StratifiedAnalysisTests(unittest.TestCase):
                 {
                     "scope": "city",
                     "city_id": city.city_id,
-                    "metric": "episode_return",
+                    "metric": "objective_normalized_cost",
                     "mean_rl_improvement": effect,
                 }
             )
@@ -485,13 +515,25 @@ class StratifiedAnalysisTests(unittest.TestCase):
         cities = load_city_suite().cities[:2]
         rows = []
         for global_replication, city in enumerate(cities, start=1):
-            rows.append(self._row(city.city_id, 1, global_replication, 0, "heuristic", 0))
+            rows.append(
+                self._row(
+                    city.city_id,
+                    1,
+                    global_replication,
+                    0,
+                    "objective_greedy",
+                    0,
+                )
+            )
             for policy in (1, 2):
                 rows.append(
                     self._row(city.city_id, 1, global_replication, policy, "rl", 0.2)
                 )
         analysis = _stratified_paired_analysis(rows, cities, 73, 200)
-        primary = next(row for row in analysis if row["metric"] == "episode_return")
+        primary = next(
+            row for row in analysis
+            if row["metric"] == "objective_normalized_cost"
+        )
         self.assertFalse(primary["inferentially_eligible"])
         self.assertFalse(primary["superiority_ci_excludes_zero"])
 
@@ -508,7 +550,7 @@ class StratifiedAnalysisTests(unittest.TestCase):
                         scenario,
                         global_replication,
                         0,
-                        "heuristic",
+                        "objective_greedy",
                         0,
                     )
                 )
@@ -523,7 +565,10 @@ class StratifiedAnalysisTests(unittest.TestCase):
                     )
                 )
         analysis = _stratified_paired_analysis(rows, cities, 73, 200)
-        primary = next(row for row in analysis if row["metric"] == "episode_return")
+        primary = next(
+            row for row in analysis
+            if row["metric"] == "objective_normalized_cost"
+        )
         self.assertTrue(primary["inferentially_eligible"])
         self.assertEqual(
             primary["inference_scope"],
@@ -536,36 +581,36 @@ class StratifiedAnalysisTests(unittest.TestCase):
         analysis = [
             {
                 "scope": "macro_all_cities",
-                "metric": "episode_return",
+                "metric": "objective_normalized_cost",
                 "mean_rl_improvement": 0.1,
             },
             {
                 "scope": "macro_all_cities",
-                "metric": "casualty",
+                "metric": "expected_casualties",
                 "mean_rl_improvement": -0.01,
             },
             {
                 "scope": "city",
                 "city_id": "small",
-                "metric": "episode_return",
+                "metric": "objective_normalized_cost",
                 "mean_rl_improvement": 0.2,
             },
             {
                 "scope": "city",
                 "city_id": "large",
-                "metric": "episode_return",
+                "metric": "objective_normalized_cost",
                 "mean_rl_improvement": -0.1,
             },
             {
                 "scope": "city",
                 "city_id": "small",
-                "metric": "casualty",
+                "metric": "expected_casualties",
                 "mean_rl_improvement": 0.0,
             },
             {
                 "scope": "city",
                 "city_id": "large",
-                "metric": "casualty",
+                "metric": "expected_casualties",
                 "mean_rl_improvement": -0.02,
             },
         ]
@@ -576,8 +621,8 @@ class StratifiedAnalysisTests(unittest.TestCase):
         )
         self.assertEqual(result["status"], "descriptively_promising_not_confirmed")
         self.assertFalse(result["qualifies_as_learning_well_cross_city"])
-        self.assertFalse(result["all_city_return_point_estimates_nonnegative"])
-        self.assertFalse(result["aggregate_casualty_point_estimate_nonworsening"])
+        self.assertFalse(result["all_city_objective_improvements_nonnegative"])
+        self.assertFalse(result["aggregate_expected_casualty_nonworsening"])
 
 
 if __name__ == "__main__":

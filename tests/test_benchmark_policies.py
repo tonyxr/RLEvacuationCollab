@@ -7,6 +7,7 @@ import numpy as np
 from DecisionInterface import (
     AccessibilityDeficitHeuristic,
     HazardWeightedDemandHeuristic,
+    ObjectiveMatchedGreedyHeuristic,
     OutcomeSnapshot,
     RegionalObservation,
     RiskTimeReductionHeuristic,
@@ -44,6 +45,33 @@ def observation(*, active, danger, remaining_capacity, mask):
 
 
 class BenchmarkPolicyTests(unittest.TestCase):
+    def test_objective_greedy_uses_exact_values_and_feasible_mask(self):
+        state = observation(
+            active=(10, 8, 1, 1),
+            danger=(0, 0, 0, 0),
+            remaining_capacity=(0, 0, 0, 0),
+            mask=(True, False, True, True),
+        )
+        decision = ObjectiveMatchedGreedyHeuristic().select(
+            state,
+            candidate_values=(0.2, 100.0, 0.8, -0.1),
+        )
+        self.assertEqual(decision.strategy, "objective_greedy")
+        self.assertEqual(decision.action_index, 2)
+
+    def test_objective_greedy_exact_tie_uses_stable_action_order(self):
+        state = observation(
+            active=(1, 1, 1, 1),
+            danger=(0, 0, 0, 0),
+            remaining_capacity=(0, 0, 0, 0),
+            mask=(False, True, True, False),
+        )
+        decision = ObjectiveMatchedGreedyHeuristic().select(
+            state,
+            candidate_values=(-1.0, 0.5, 0.5, -1.0),
+        )
+        self.assertEqual(decision.action_index, 1)
+
     def test_risk_reduction_score_and_mask(self):
         state = observation(
             active=(10, 8, 1, 1),
@@ -59,7 +87,10 @@ class BenchmarkPolicyTests(unittest.TestCase):
         )
         decision = RiskTimeReductionHeuristic().select(state)
         self.assertEqual(decision.strategy, "risk_reduction")
-        self.assertEqual(decision.action_index, 2)
+        # The benchmark must ignore the privileged route-scan ranking above.
+        # With equal unit candidate capacities, cells 0 and 2 tie on observable
+        # local demand and the stable table order selects cell 0.
+        self.assertEqual(decision.action_index, 0)
 
     def test_hazard_weighted_score_and_mask(self):
         state = observation(
@@ -76,7 +107,7 @@ class BenchmarkPolicyTests(unittest.TestCase):
     def test_hazard_weighted_exact_tie_uses_lowest_cell_id(self):
         state = observation(
             active=(10, 5, 0, 0),
-            danger=(0.0, 1.0, 0.0, 0.0),
+            danger=(0.5, 1.0, 0.0, 0.0),
             remaining_capacity=(0, 0, 0, 0),
             mask=(True, True, True, True),
         )
@@ -153,6 +184,8 @@ class BenchmarkPolicyTests(unittest.TestCase):
                 shelterCanByCell=candidate_grid,
             ),
             cellTracker=SimpleNamespace(
+                cellXNum=2,
+                cellYNum=2,
                 xEdges=np.asarray((0.0, 1.0, 2.0)),
                 yEdges=np.asarray((0.0, 1.0, 2.0)),
             ),
@@ -203,7 +236,20 @@ class BenchmarkPolicyTests(unittest.TestCase):
         )
         risk_decision = risk_bridge._select_action(risk_state)
         self.assertEqual(risk_decision.strategy, "risk_reduction")
-        self.assertEqual(risk_decision.action_index, 2)
+        self.assertEqual(risk_decision.action_index, 1)
+
+        objective_bridge = RLBridge(
+            core,
+            deployment_strategy="objective_greedy",
+            train_mode=False,
+            target_active_shelters=2,
+        )
+        objective_bridge._objective_greedy_values = lambda _: np.asarray(
+            (0.1, 0.2, 0.9, 0.3), dtype=np.float64
+        )
+        objective_decision = objective_bridge._select_action(hazard_state)
+        self.assertEqual(objective_decision.strategy, "objective_greedy")
+        self.assertEqual(objective_decision.action_index, 2)
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@ from typing import Mapping, Sequence
 
 import numpy as np
 
-from NMCCPIConfig import NMCC_PI_CORE_FIELDS
+from NMCCPIConfig import NMCC_PI_ALL_CORE_FIELDS
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -26,35 +26,36 @@ DEFAULT_TRAINING_CURRICULUM_PATH = (
 # contract.
 LEARNER_STAGE_OVERRIDES = frozenset(
     {
+        "cellX",
+        "cellY",
         "nmccEnabled",
         "nmccCounterfactualHorizon",
         "nmccCounterfactualWeight",
         "nmccJointCounterfactualWeight",
         "nmccInterventionCost",
-        "nmccEnsembleSize",
         "nmccNaturalLossCoefficient",
-        "nmccCausalLossCoefficient",
-        "nmccDuelingLossCoefficient",
-        "nmccTeacherCoefficient",
-        "nmccTeacherDecayUpdates",
-        "nmccGuidanceMaximum",
-        "nmccGuidanceWarmupUpdates",
-        "nmccGuidanceRampUpdates",
-        "nmccUncertaintyPenalty",
+        "entropyCoefficientStart",
         "entropyCoefficientEnd",
         "explorationDecayUpdates",
+        "explorationSchedule",
         "actionTemperatureStart",
         "actionTemperatureEnd",
-        "nmccNaturalPretrainRollouts",
-        "nmccCausalPretrainRollouts",
-        "nmccControllerWarmupRollouts",
         "actorLearningRate",
         "criticLearningRate",
         "actorPpoEpochs",
         "criticPpoEpochs",
-        "actorBaselineDecay",
         "advantageScaleFloor",
-        "shelterCapacityToken",
+        "learningRewardScale",
+        "cellPartitionMode",
+        "cellPartitionMinWidthFraction",
+        "stopTime",
+        "shelterActionInterval",
+        "requirePopulationMatchedShelterCapacity",
+        "shelterCapacitySurplus",
+        "casualtyPriorityKappa",
+        "clearanceTailFraction",
+        "clearanceTailExtraWeight",
+        "hazardSpreadSpeedMPerMinute",
         "ppoRolloutEpisodes",
         "requireCandidateOperationalBenefit",
         "minimumCandidateReroutableFraction",
@@ -62,8 +63,10 @@ LEARNER_STAGE_OVERRIDES = frozenset(
         "minimumCandidateHazardSafetyMargin",
         "maximumShelterForecastDanger",
     }
-    | {attribute for attribute, _, _, _ in NMCC_PI_CORE_FIELDS}
+    | {attribute for attribute, _, _, _ in NMCC_PI_ALL_CORE_FIELDS}
 )
+VARIABLE_SCENARIO_OVERRIDES = frozenset({"shelterCapacityToken"})
+COMMON_ONLY_LEARNER_OVERRIDES = frozenset({"cellX", "cellY"})
 ALLOWED_STAGE_OVERRIDES = frozenset(
     {
         "pedVol",
@@ -77,7 +80,7 @@ ALLOWED_STAGE_OVERRIDES = frozenset(
         "hazardSpeedReduct",
         "panicRate",
     }
-) | LEARNER_STAGE_OVERRIDES
+) | LEARNER_STAGE_OVERRIDES | VARIABLE_SCENARIO_OVERRIDES
 
 
 @dataclass(frozen=True)
@@ -121,7 +124,7 @@ class TrainingCurriculum:
         return {
             key: overrides[key]
             for key in sorted(LEARNER_STAGE_OVERRIDES)
-            if key in overrides
+            if key in overrides and key not in VARIABLE_SCENARIO_OVERRIDES
         }
 
     def as_dict(self) -> dict:
@@ -224,7 +227,9 @@ def load_training_curriculum(
         {} if schema_version == 1 else dict(payload["learner_overrides"])
     )
     unknown_learner = sorted(
-        set(common_learner_overrides).difference(LEARNER_STAGE_OVERRIDES)
+        set(common_learner_overrides).difference(
+            LEARNER_STAGE_OVERRIDES | VARIABLE_SCENARIO_OVERRIDES
+        )
     )
     if unknown_learner:
         raise ValueError(
@@ -255,6 +260,14 @@ def load_training_curriculum(
             if weight <= 0:
                 raise ValueError("Curriculum variant weights must be positive")
             variant_overrides = dict(raw_variant["overrides"])
+            common_only = sorted(
+                set(variant_overrides).intersection(COMMON_ONLY_LEARNER_OVERRIDES)
+            )
+            if common_only:
+                raise ValueError(
+                    "Stage variants cannot change protected shared-grid fields; "
+                    f"declare them once in schema-v2 learner_overrides: {common_only}"
+                )
             conflicts = sorted(
                 key for key in variant_overrides
                 if key in common_learner_overrides
@@ -280,7 +293,7 @@ def load_training_curriculum(
             variant_learner_contract = {
                 key: overrides[key]
                 for key in sorted(LEARNER_STAGE_OVERRIDES)
-                if key in overrides
+                if key in overrides and key not in VARIABLE_SCENARIO_OVERRIDES
             }
             if learner_contract is None:
                 learner_contract = variant_learner_contract

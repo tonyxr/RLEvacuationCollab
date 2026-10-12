@@ -67,10 +67,10 @@ class StatisticalAggregationTests(unittest.TestCase):
             "city_id": city,
             "city_scale_rank": rank,
             "episode_return": value,
-            "safe_completion_reward": value + 1.0,
-            "casualty_penalty": -0.1,
-            "risk_time_penalty": -0.9,
-            "entropy": 1.5,
+            "objective_normalized_cost": 2.0 - value / 10.0,
+            "expected_casualties": 2.0,
+            "casualty": 2.0,
+            "behavior_policy_entropy": 0.9,
             "heuristic_agreement_rate": 0.5,
         }
 
@@ -106,7 +106,7 @@ class StatisticalAggregationTests(unittest.TestCase):
                     "casualty": 1,
                     "unfinished": 19,
                     "restricted_mean_time_to_safety": 10,
-                    "normalized_risk_weighted_person_time": 0.2,
+                    "expected_casualties": 1.0,
                 }
                 rows.append(
                     {
@@ -148,30 +148,36 @@ class StatisticalAggregationTests(unittest.TestCase):
             {
                 "policy_replication": 1,
                 "episode": 2,
-                "optimizer_updates": 8,
+                "optimizer_steps": 8,
                 "optimizer_updated": 1,
-                "epochs_completed": 8,
-                "approximate_kl": 0.01,
-                "clip_fraction": 0.1,
-                "explained_variance": 0.2,
+                "policy_iterations_completed": 1,
+                "rollout_pi_actor_kl": 0.01,
+                "rollout_pi_target_kl_before": 0.2,
+                "rollout_pi_target_kl_after": 0.1,
+                "rollout_pi_candidate_grade_fraction": 0.5,
+                "rollout_pi_weighted_pairwise_accuracy_after": 0.7,
+                "rollout_pi_actor_enabled": 1,
                 "policy_loss": -0.01,
-                "value_loss": 0.3,
-                "gradient_norm": 0.4,
-                "update_entropy": 1.5,
+                "actor_gradient_norm": 0.4,
+                "actor_policy_entropy_after": 0.8,
+                "exploration_rate": 0.1,
             },
             {
                 "policy_replication": 1,
                 "episode": 4,
-                "optimizer_updates": 16,
+                "optimizer_steps": 16,
                 "optimizer_updated": 1,
-                "epochs_completed": 8,
-                "approximate_kl": 0.02,
-                "clip_fraction": 0.2,
-                "explained_variance": 0.4,
+                "policy_iterations_completed": 2,
+                "rollout_pi_actor_kl": 0.02,
+                "rollout_pi_target_kl_before": 0.15,
+                "rollout_pi_target_kl_after": 0.08,
+                "rollout_pi_candidate_grade_fraction": 0.6,
+                "rollout_pi_weighted_pairwise_accuracy_after": 0.8,
+                "rollout_pi_actor_enabled": 1,
                 "policy_loss": -0.02,
-                "value_loss": 0.2,
-                "gradient_norm": 0.3,
-                "update_entropy": 1.2,
+                "actor_gradient_norm": 0.3,
+                "actor_policy_entropy_after": 0.7,
+                "exploration_rate": 0.05,
             },
         ]
         updates = training_update_averages(training, diagnostics)
@@ -194,16 +200,21 @@ class StatisticalAggregationTests(unittest.TestCase):
                 {
                     "policy_replication": 1,
                     "episode": source_episode,
-                    "optimizer_updates": 8 if source_episode < 104 else 16,
+                    "optimizer_steps": 8 if source_episode < 104 else 16,
                     "optimizer_updated": int(source_episode in (102, 104)),
-                    "epochs_completed": 8 if source_episode in (102, 104) else 0,
-                    "approximate_kl": 0.01,
-                    "clip_fraction": 0.1,
-                    "explained_variance": 0.2,
+                    "policy_iterations_completed": (
+                        1 if source_episode < 104 else 2
+                    ),
+                    "rollout_pi_actor_kl": 0.01,
+                    "rollout_pi_target_kl_before": 0.2,
+                    "rollout_pi_target_kl_after": 0.1,
+                    "rollout_pi_candidate_grade_fraction": 0.5,
+                    "rollout_pi_weighted_pairwise_accuracy_after": 0.7,
+                    "rollout_pi_actor_enabled": 1,
                     "policy_loss": -0.01,
-                    "value_loss": 0.3,
-                    "gradient_norm": 0.4,
-                    "update_entropy": 1.5,
+                    "actor_gradient_norm": 0.4,
+                    "actor_policy_entropy_after": 0.8,
+                    "exploration_rate": 0.1,
                 }
             )
 
@@ -234,13 +245,13 @@ class FigureRenderingTests(unittest.TestCase):
             "scenario_seed": 10000 * rank + scenario,
             "deployment_strategy": strategy,
             "episode_return": value,
-            "objective_episode_return": value,
+            "objective_normalized_cost": 1.0 - value,
             "initial_population": 100,
             "safe_completed": 70 + int(10 * value),
+            "expected_casualties": max(0.0, 3.0 - 2.0 * value),
             "casualty": max(0, 3 - int(2 * value)),
             "unfinished": 27,
             "restricted_mean_time_to_safety": 12 - value,
-            "normalized_risk_weighted_person_time": 0.5 - value / 10,
         }
 
     def _paired_rows(self, extra=None):
@@ -298,7 +309,7 @@ class FigureRenderingTests(unittest.TestCase):
                                     "candidate_count": candidates,
                                     "action_count": 64 if method == "hierarchical_region" else candidates,
                                     "decision_latency_ms": (1 if method == "hierarchical_region" else 2) * candidates,
-                                    "episode_return": 0.2,
+                                    "objective_normalized_cost": 0.8,
                                 }
                             )
                 paths, _ = _plot_scalability(

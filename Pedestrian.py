@@ -49,11 +49,12 @@ class Pedestrian:
         self.panic_decision_count = 0
         self.panic_next_edge = None
 
-        # Persist the paper's recurrent social-force velocity separately from
-        # the realized congestion-limited speed observed after movement.
+        # Hazard speed is a contemporaneous function of maximum speed and the
+        # current danger level, separate from realized congestion-limited speed.
         self.social_force_speed = float(currSpeed)
         self.social_self_force = 0.0
         self.social_impact_force = 0.0
+        self.speed_danger_level = None
         self.distance_travelled_m = 0.0
         
         """Binary statuses"""

@@ -2,7 +2,9 @@
 
 ## Primary question
 
-Does a trained regional RL policy improve the undiscounted evacuation objective relative to the prespecified active-population heuristic on held-out stochastic hazard scenarios?
+Does a trained regional RL policy improve the complete realized evacuation
+objective relative to the complete-ledger objective-greedy policy on held-out
+stochastic hazard scenarios?
 
 ## Experimental design
 
@@ -10,16 +12,14 @@ This document specifies the single-city matched backtest. The pooled five-city
 extension, fixed-site macro estimand, and scale ordering are specified separately
 in `docs/MULTICITY_EXPERIMENT_PROTOCOL.md`.
 
-The default paper run trains five policies from independent training seeds, each for 320 episodes. The horizon is a multiple of the fixed eight-episode PPO rollout, so no collected experience is discarded. Every trained policy is evaluated on the same 50 held-out scenario seeds. The active-population heuristic is evaluated once on each held-out scenario. Random regional selection is a secondary diagnostic; `initial_only`, when requested, is an anticipative all-capacity-at-time-zero bound and must not be described as an equal online competitor.
+The default paper run trains five policies from independent training seeds, each for 320 episodes. The horizon is a multiple of the fixed eight-episode PPO rollout, so no collected experience is discarded. Every trained policy is evaluated on the same 50 held-out scenario seeds. Complete-ledger objective-greedy is evaluated once on each held-out scenario. Maximum active population is a practice-rule comparison, random regional selection is the floor, and `initial_only` commits its complete site order from the time-zero state and executes it at the same epochs as RL, making it the open-loop schedule comparator.
 
-The RL actor is initialized as a transparent residual policy. Its fixed prior
-ranks exact feasible candidate sites by active population in their host region,
-exactly matching the benchmark for deterministic zero-residual selection. A
-shared candidate scorer learns corrections from the administrator-facing
-regional dashboard, candidate capacity and map position, and incident-level context. Training
+The RL actor has no fixed heuristic prior. A shared candidate scorer learns
+from the administrator-facing regional dashboard, candidate capacity and map
+position, incident-level context, and matched NMCC action contrasts. Training
 remains stochastic; evaluation uses the deterministic masked argmax.
 
-The first held-out RL/heuristic scenario pair is rendered at five evenly
+The first held-out RL/objective-greedy scenario pair is rendered at five evenly
 spaced milestones by default. Only RL policy replicate one is rendered for
 that representative pair; all policy replicates remain in the numerical
 analysis. This prevents figure generation from dominating storage or runtime.
@@ -58,7 +58,9 @@ variance are diagnostics rather than alternative objectives.
 
 ## Statistical analysis
 
-For each trained policy and held-out scenario, compute RL minus heuristic for outcomes where larger is better and heuristic minus RL where smaller is better. Positive values therefore always favor RL.
+For each trained policy and held-out scenario, compute RL minus
+objective-greedy for outcomes where larger is better and objective-greedy
+minus RL where smaller is better. Positive values therefore always favor RL.
 
 Point estimates average the complete policy-seed by scenario matrix. Confidence intervals use a two-way nonparametric bootstrap that independently resamples trained policies and held-out scenarios. The reported randomization p-value applies sign flips to policy-level mean improvements, preserving the training seed as the independent unit for that test. All sign assignments are enumerated exactly when computationally feasible (including the preregistered five-seed design); larger designs use a recorded Monte Carlo approximation. Report effect estimates and intervals even when a p-value crosses 0.05. With five independent policy seeds, the smallest attainable two-sided exact p-value is 0.0625, so estimation and interval width—not a binary 0.05 threshold—must lead interpretation.
 

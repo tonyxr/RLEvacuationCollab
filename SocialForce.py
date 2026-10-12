@@ -82,6 +82,8 @@ class ForceProcessor:
             "safe_cell_maximum_level": self.self_state_threshold,
             "self_coefficient": self.self_coefficient,
             "impact_coefficient": self.impact_coefficient,
+            "speed_baseline": "maximum_speed_on_danger_level_transition",
+            "same_level_compounding": False,
             "collision_constraint": "openstreetmap_walk_network",
         }
     

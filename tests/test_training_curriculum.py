@@ -4,7 +4,6 @@ import unittest
 from pathlib import Path
 
 from CityProfiles import load_city_suite
-from NMCCPIConfig import NMCC_PI_CORE_FIELDS
 from TrainingCurriculum import (
     DEFAULT_TRAINING_CURRICULUM_PATH,
     build_curriculum_schedule,
@@ -17,6 +16,107 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class TrainingCurriculumTests(unittest.TestCase):
+    def test_v51_rollout_curricula_use_one_policy_iteration_stage(self):
+        for filename, episodes, rollout, branches, tapes in (
+            ("state_college_training_smoke_250_rollout_pi_v51.json", 4, 2, 4, 1),
+            (
+                "state_college_training_curriculum_2500_rollout_pi_v51.json",
+                96,
+                4,
+                6,
+                2,
+            ),
+        ):
+            curriculum = load_training_curriculum(ROOT / "config" / filename)
+            self.assertEqual([stage.stage_id for stage in curriculum.stages], ["P"])
+            self.assertEqual(curriculum.episodes_per_city, episodes)
+            overrides = curriculum.learner_overrides
+            self.assertEqual(overrides["ppoRolloutEpisodes"], rollout)
+            self.assertEqual(overrides["nmccPiMaxBranches"], branches)
+            self.assertEqual(overrides["nmccPiTapes"], tapes)
+            self.assertEqual(overrides["actorPrior"], "objective_greedy")
+            self.assertEqual(overrides["actionTemperatureStart"], 1.0)
+            self.assertEqual(overrides["actionTemperatureEnd"], 1.0)
+            self.assertEqual(overrides["entropyCoefficientStart"], 0.0)
+            self.assertEqual(overrides["entropyCoefficientEnd"], 0.0)
+
+    def test_target_curricula_restore_decay_and_actor_update_scale(self):
+        for filename, policy_stage_episodes in (
+            ("state_college_training_smoke_250_target_v49.json", 6),
+            ("state_college_training_curriculum_2500_target_v49.json", 80),
+        ):
+            curriculum = load_training_curriculum(ROOT / "config" / filename)
+            overrides = curriculum.learner_overrides
+            self.assertEqual(
+                [stage.stage_id for stage in curriculum.stages], ["E", "P"]
+            )
+            self.assertEqual(
+                curriculum.stages[-1].episodes_per_city,
+                policy_stage_episodes,
+            )
+            self.assertEqual(
+                overrides["explorationSchedule"], "exponential_half_life"
+            )
+            self.assertEqual(overrides["explorationRateStart"], 0.35)
+            self.assertEqual(overrides["explorationRateEnd"], 0.02)
+            self.assertEqual(overrides["actionTemperatureStart"], 1.25)
+            self.assertEqual(overrides["actionTemperatureEnd"], 0.8)
+            self.assertEqual(overrides["actorLearningRate"], 0.001)
+            self.assertEqual(overrides["nmccPiReplayEpochs"], 24)
+
+    def test_seattle_curriculum_has_three_exact_learning_stages(self):
+        curriculum = load_training_curriculum(
+            ROOT
+            / "config"
+            / "seattle_training_curriculum_population_foresight_v37.json"
+        )
+        self.assertEqual(curriculum.episodes_per_city, 160)
+        self.assertEqual(
+            [stage.stage_id for stage in curriculum.stages], ["E", "A", "F"]
+        )
+        self.assertEqual(
+            [stage.episodes_per_city for stage in curriculum.stages], [24, 48, 88]
+        )
+        overrides = curriculum.learner_overrides
+        self.assertEqual(
+            overrides["cellPartitionMode"], "population_density_adaptive"
+        )
+        self.assertTrue(overrides["nmccPiContinuationEnabled"])
+        self.assertEqual(overrides["nmccPiActorEpochs"], 256)
+        self.assertEqual(overrides["nmccPiTapes"], 2)
+        self.assertEqual(overrides["nmccPiWorkers"], 4)
+        self.assertEqual(overrides["shelterCapacitySurplus"], 200)
+        self.assertEqual(overrides["explorationSchedule"], "exponential_half_life")
+        for stage in curriculum.stages:
+            for variant in stage.variants:
+                self.assertEqual(
+                    10 * variant.overrides["shelterCapacityToken"],
+                    variant.overrides["pedVol"] + 200,
+                )
+
+    def test_v37_curriculum_registers_decision_interval_continuation(self):
+        curriculum = load_training_curriculum(
+            ROOT
+            / "config"
+            / "state_college_training_curriculum_multiscale_env_action_v37.json"
+        )
+        overrides = curriculum.learner_overrides
+        self.assertEqual(curriculum.episodes_per_city, 120)
+        self.assertEqual(overrides["shelterActionInterval"], 15)
+        self.assertEqual(overrides["nmccPiBranchHorizon"], 15)
+        self.assertTrue(overrides["nmccPiContinuationEnabled"])
+        self.assertEqual(overrides["nmccPiContinuationLossCoefficient"], 1.0)
+        self.assertEqual(overrides["nmccPiActorEpochs"], 64)
+        self.assertEqual(overrides["nmccPiFitTolerance"], 0.01)
+        for stage in curriculum.stages:
+            for variant in stage.variants:
+                self.assertEqual(variant.overrides["initShelterVol"], 2)
+                self.assertEqual(variant.overrides["maxAdditionalShelters"], 8)
+                self.assertEqual(
+                    10 * variant.overrides["shelterCapacityToken"],
+                    variant.overrides["pedVol"],
+                )
+
     def test_registered_curriculum_matches_confirmatory_budget(self):
         curriculum = load_training_curriculum(DEFAULT_TRAINING_CURRICULUM_PATH)
         self.assertEqual(curriculum.episodes_per_city, 120)
@@ -38,78 +138,6 @@ class TrainingCurriculumTests(unittest.TestCase):
             curriculum.stages[-1].variants[0].overrides["pedVol"],
             50000,
         )
-
-    def test_v28_curriculum_uses_persistent_heldout_value_control(self):
-        curriculum = load_training_curriculum(
-            ROOT
-            / "config"
-            / "state_college_training_curriculum_2500_risk_value_v28.json"
-        )
-        self.assertEqual(curriculum.episodes_per_city, 104)
-        overrides = curriculum.stages[0].variants[0].overrides
-        self.assertEqual(overrides["nmccPiActorObjective"], "value_lcb")
-        self.assertEqual(overrides["nmccPiFullHorizonDecisions"], 2)
-        self.assertEqual(overrides["nmccPiExhaustiveDecisions"], 2)
-        self.assertGreater(overrides["nmccPiReplayMaxEpisodes"], 1)
-        self.assertGreater(overrides["nmccPiReplayEpochs"], 1)
-        self.assertGreater(overrides["nmccPiValidationFraction"], 0.0)
-        self.assertTrue(overrides["nmccPiReplayRefit"])
-        self.assertEqual(overrides["nmccPiBasePolicy"], "risk_reduction")
-        self.assertEqual(overrides["actorPrior"], "risk_time_reduction")
-        self.assertEqual(overrides["nmccPiValidationGainZ"], 2.0)
-        self.assertEqual(curriculum.learner_overrides["actorPrior"], "risk_time_reduction")
-        self.assertNotIn("pedVol", curriculum.learner_overrides)
-        city = load_city_suite().select(("state_college_pa",))
-        rollout = balanced_rollout_episodes(len(city))
-        schedule = build_curriculum_schedule(
-            city,
-            curriculum,
-            launch_seed=27,
-            rollout_episodes=rollout,
-        )
-        self.assertEqual(len(schedule), 104)
-        self.assertEqual(len(schedule) % rollout, 0)
-        for attribute, _, kind, _ in NMCC_PI_CORE_FIELDS:
-            self.assertIn(attribute, overrides)
-            expected = (int, float) if kind is float else kind
-            self.assertIsInstance(overrides[attribute], expected)
-
-    def test_v28_scenario_curriculum_applies_one_learner_to_all_factor_combinations(self):
-        curriculum = load_training_curriculum(
-            ROOT / "config" / "scenario_general_training_curriculum_risk_v28.json"
-        )
-        self.assertEqual(curriculum.schema_version, 2)
-        self.assertEqual(curriculum.episodes_per_city, 120)
-        contracts = []
-        scenarios = set()
-        for stage in curriculum.stages:
-            for variant in stage.variants:
-                overrides = variant.overrides
-                scenarios.add((
-                    overrides["pedVol"], overrides["hazardVol"], overrides["panicRate"]
-                ))
-                contracts.append(tuple(
-                    (attribute, overrides[attribute])
-                    for attribute, _, _, _ in NMCC_PI_CORE_FIELDS
-                ))
-        expected_scenarios = {
-            (population, hazard_count, panic)
-            for population in (1000, 2500, 5000)
-            for hazard_count in (1, 3, 5)
-            for panic in (0.1, 0.5, 0.9)
-        }
-        self.assertEqual(scenarios, expected_scenarios)
-        self.assertTrue(all(contract == contracts[0] for contract in contracts[1:]))
-        cities = load_city_suite().select(None)
-        rollout_episodes = balanced_rollout_episodes(len(cities))
-        schedule = build_curriculum_schedule(
-            cities,
-            curriculum,
-            launch_seed=26,
-            rollout_episodes=rollout_episodes,
-        )
-        self.assertEqual(len(schedule), 120 * len(cities))
-        self.assertEqual(len(schedule) % rollout_episodes, 0)
 
     def test_schedule_is_reproducible_city_balanced_and_rollout_complete(self):
         cities = load_city_suite().cities

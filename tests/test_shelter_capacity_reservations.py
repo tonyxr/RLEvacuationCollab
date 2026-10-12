@@ -90,7 +90,7 @@ class ReservationLedgerTests(unittest.TestCase):
         self.assertEqual(shelter_store.availableCapacity(second), 0)
         shelter_store.assertCapacityInvariant()
 
-    def test_initial_routing_stops_exactly_at_committed_capacity(self):
+    def test_initial_routing_commits_capacity_and_routes_overflow(self):
         shelter = Shelter(0, node(10, 100), (0, 0), 2, 0, 0)
         pedestrian_store, shelter_store = stores(shelter)
         agents = [pedestrian(index, node(index, index)) for index in range(3)]
@@ -100,7 +100,11 @@ class ReservationLedgerTests(unittest.TestCase):
 
         self.assertEqual(pedestrian_store.route_active_to_nearest_shelter(), 2)
         self.assertEqual(shelter_store.reservedPopulation(shelter), 2)
-        self.assertEqual(sum(agent.routeFollowing is not None for agent in agents), 2)
+        self.assertEqual(sum(agent.routeFollowing is not None for agent in agents), 3)
+        self.assertEqual(
+            sum(shelter_store.reservationFor(agent) == (None, 0) for agent in agents),
+            1,
+        )
         shelter_store.assertCapacityInvariant()
 
     def test_walk_in_cannot_take_a_reserved_slot(self):
@@ -179,7 +183,7 @@ class ReservationLedgerTests(unittest.TestCase):
         self.assertIs(agent.routeFollowing.endNode, alternate.nodeMapped)
         self.assertEqual(shelter_store.reservationFor(agent), (alternate, 1))
 
-    def test_new_shelter_capacity_goes_to_largest_risk_time_reduction(self):
+    def test_new_shelter_rechecks_all_closest_capacity_feasible_destinations(self):
         old = Shelter(0, node(10, 100), (0, 0), 3, 0, 0)
         new = Shelter(1, node(11, 0), (0, 0), 1, 0, 0)
         pedestrian_store, shelter_store = stores(old, new)
@@ -196,10 +200,115 @@ class ReservationLedgerTests(unittest.TestCase):
             agent.agentID: agent for agent in agents
         }
 
-        self.assertEqual(pedestrian_store.reroute_to_new_shelter_if_closer(new), 1)
+        self.assertEqual(pedestrian_store.reroute_active_to_nearest_shelter(), 1)
         self.assertEqual(shelter_store.reservationFor(agents[0]), (new, 1))
         self.assertEqual(shelter_store.reservationFor(agents[1]), (old, 1))
         self.assertEqual(shelter_store.reservationFor(agents[2]), (old, 1))
+        shelter_store.assertCapacityInvariant()
+
+    def test_new_shelter_never_replaces_a_valid_destination_with_a_longer_one(self):
+        old = Shelter(0, node(10, 20), (0, 0), 1, 0, 0)
+        farther = Shelter(1, node(11, 100), (0, 0), 1, 0, 0)
+        pedestrian_store, shelter_store = stores(old, farther)
+        agent = pedestrian(1, node(1, 10))
+        original_route = MapStub.shortestPath(agent.currNode, old.nodeMapped)
+        agent.routeFollowing = original_route
+        shelter_store.reserveShelter(agent, old)
+        pedestrian_store.pedAgentList = {1: agent}
+
+        changed = pedestrian_store.reroute_active_to_nearest_shelter(
+            new_shelter=farther
+        )
+
+        self.assertEqual(changed, 0)
+        self.assertEqual(shelter_store.reservationFor(agent), (old, 1))
+        self.assertIs(agent.routeFollowing, original_route)
+
+    def test_new_shelter_replaces_a_valid_destination_only_when_strictly_shorter(self):
+        old = Shelter(0, node(10, 100), (0, 0), 1, 0, 0)
+        better = Shelter(1, node(11, 20), (0, 0), 1, 0, 0)
+        pedestrian_store, shelter_store = stores(old, better)
+        agent = pedestrian(1, node(1, 10))
+        agent.routeFollowing = MapStub.shortestPath(agent.currNode, old.nodeMapped)
+        shelter_store.reserveShelter(agent, old)
+        pedestrian_store.pedAgentList = {1: agent}
+
+        changed = pedestrian_store.reroute_active_to_nearest_shelter(
+            new_shelter=better
+        )
+
+        self.assertEqual(changed, 1)
+        self.assertEqual(shelter_store.reservationFor(agent), (better, 1))
+        self.assertIs(agent.routeFollowing.endNode, better.nodeMapped)
+
+    def test_equal_distance_does_not_churn_a_valid_route(self):
+        old = Shelter(0, node(10, 0), (0, 0), 1, 0, 0)
+        equal = Shelter(1, node(11, 20), (0, 0), 1, 0, 0)
+        pedestrian_store, shelter_store = stores(old, equal)
+        agent = pedestrian(1, node(1, 10))
+        original_route = MapStub.shortestPath(agent.currNode, old.nodeMapped)
+        agent.routeFollowing = original_route
+        shelter_store.reserveShelter(agent, old)
+        pedestrian_store.pedAgentList = {1: agent}
+
+        changed = pedestrian_store.reroute_active_to_nearest_shelter(
+            new_shelter=equal
+        )
+
+        self.assertEqual(changed, 0)
+        self.assertEqual(shelter_store.reservationFor(agent), (old, 1))
+        self.assertIs(agent.routeFollowing, original_route)
+
+    def test_installation_assigns_previously_stationary_pedestrian_to_existing_capacity(self):
+        existing = Shelter(0, node(10, 0), (0, 0), 1, 0, 0)
+        new = Shelter(1, node(11, 100), (0, 0), 1, 0, 0)
+        pedestrian_store, shelter_store = stores(existing, new)
+        near_existing = pedestrian(1, node(1, 10))
+        near_new = pedestrian(2, node(2, 90))
+        near_new.routeFollowing = MapStub.shortestPath(
+            near_new.currNode, existing.nodeMapped
+        )
+        shelter_store.reserveShelter(near_new, existing)
+        pedestrian_store.pedAgentList = {1: near_existing, 2: near_new}
+
+        self.assertEqual(pedestrian_store.reroute_active_to_nearest_shelter(), 2)
+        self.assertEqual(
+            shelter_store.reservationFor(near_existing), (existing, 1)
+        )
+        self.assertEqual(shelter_store.reservationFor(near_new), (new, 1))
+        self.assertIs(near_existing.routeFollowing.endNode, existing.nodeMapped)
+        self.assertIs(near_new.routeFollowing.endNode, new.nodeMapped)
+        shelter_store.assertCapacityInvariant()
+
+    def test_no_operational_shelter_leaves_active_pedestrian_unassigned(self):
+        unavailable = Shelter(0, node(10, 100), (0, 0), 1, 0, 0)
+        pedestrian_store, shelter_store = stores(unavailable)
+        agent = pedestrian(1, node(1, 10))
+        provisional_route = MapStub.shortestPath(
+            agent.currNode, unavailable.nodeMapped
+        )
+        agent.routeFollowing = provisional_route
+        pedestrian_store.pedAgentList = {1: agent}
+        self.assertEqual(shelter_store.reserveShelter(agent, unavailable), 1)
+        unavailable.status = 2
+
+        changed = pedestrian_store.reroute_active_to_nearest_shelter()
+
+        self.assertEqual(changed, 0)
+        self.assertEqual(shelter_store.reservationFor(agent), (None, 0))
+        self.assertIs(agent.routeFollowing, provisional_route)
+        self.assertFalse(agent.terminated)
+        shelter_store.assertCapacityInvariant()
+
+    def test_initial_routing_allows_an_empty_shelter_set(self):
+        pedestrian_store, shelter_store = stores()
+        agent = pedestrian(1, node(1, 10))
+        pedestrian_store.pedAgentList = {1: agent}
+
+        self.assertEqual(pedestrian_store.route_active_to_nearest_shelter(), 0)
+        self.assertEqual(shelter_store.reservationFor(agent), (None, 0))
+        self.assertIsNone(agent.routeFollowing)
+        self.assertFalse(agent.terminated)
         shelter_store.assertCapacityInvariant()
 
 
@@ -262,7 +371,7 @@ class ReservationIntegrationTests(unittest.TestCase):
                     {"cell": divmod(cell, core.cellY)}, core.cellTracker
                 )
                 shelter = core.shelterDS.shelterList[shelter_id]
-                core.pedDS.reroute_to_new_shelter_if_closer(shelter)
+                core.pedDS.reroute_active_to_nearest_shelter()
             CB.advance_one_timestep(core)
             core.shelterDS.assertCapacityInvariant()
             for shelter in core.shelterDS.shelterList.values():

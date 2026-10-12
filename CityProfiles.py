@@ -132,6 +132,7 @@ def _validate_common_experiment(value: Mapping) -> dict:
         "cellX", "cellY", "stopTime", "pedVol", "hazardVol",
         "shelterCanVol", "initShelterVol", "maxAdditionalShelters",
         "shelterActionInterval", "shelterCapacityToken",
+        "shelterCapacitySurplus",
         "panicDangerThreshold",
         "pedestrianGroupSize",
     }
@@ -179,6 +180,8 @@ def _validate_common_experiment(value: Mapping) -> dict:
         raise ValueError("maxAdditionalShelters must be non-negative")
     if result.get("shelterCapacityToken", 0) < 0:
         raise ValueError("shelterCapacityToken must be non-negative")
+    if result.get("shelterCapacitySurplus", 0) < 0:
+        raise ValueError("shelterCapacitySurplus must be non-negative")
     safety_threshold = result.get("maximumShelterForecastDanger", 0.6)
     if not 0.0 <= safety_threshold <= 1.0:
         raise ValueError("maximumShelterForecastDanger must lie in [0, 1]")

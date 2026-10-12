@@ -23,7 +23,7 @@ import math
 import networkx as nx
 import numpy as np
 
-from CAProcessor import CellTracker
+from CAProcessor import CellTracker, authoritative_grid_shape
 from HazardDatabase import HazardDS
 from MapDatabase import MapDS
 from NetworkCongestion import PedestrianCongestionModel
@@ -219,8 +219,9 @@ class TestbedCore:
         x_length = float(abs(bounds[1] - bounds[0])) if len(bounds) >= 2 else 1000.0
         y_length = float(abs(bounds[3] - bounds[2])) if len(bounds) >= 4 else 1000.0
         self.cellTracker.initialCut(x_length, y_length)
+        authoritative_grid_shape(self)
 
-        total_cells = int(self.cellX * self.cellY)
+        total_cells = int(self.cellTracker.number_of_cells)
         for name in CELL_VECTORS:
             if getattr(self.cellTracker, name, None) is None:
                 setattr(self.cellTracker, name, np.zeros(total_cells, dtype=float))
@@ -235,7 +236,7 @@ class TestbedCore:
         self.shelterDS.shelterCanList = self.mapDS.shelterCanList
         if not self.shelterDS.shelterCanList:
             raise RuntimeError("Synthetic map produced no shelter candidates")
-        self.shelterDS.shelterPerCell(self.cellTracker, self.cellX, self.cellY)
+        self.shelterDS.shelterPerCell(self.cellTracker)
         self.shelterDS.initShelter()
 
         self.hazardDS.setCellTracker(self.cellTracker)
@@ -259,6 +260,11 @@ class TestbedCore:
             evacuationHorizonTimesteps=self.stopTime,
         )
         self.pedDS.route_active_to_nearest_shelter()
+        self.cellTracker.cellUpdate(
+            pedDS=self.pedDS,
+            forceTracker=self.forceTracker,
+        )
+        authoritative_grid_shape(self)
 
     # -- convenience --------------------------------------------------------
 

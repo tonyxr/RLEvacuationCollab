@@ -60,15 +60,46 @@ def load_policy(path: str | Path) -> tuple[EvacPolicy, Mapping]:
         raise ValueError("checkpoint global features do not match the current decision interface")
     if tuple(signature.get("candidate_features", ())) != tuple(CANDIDATE_FEATURE_NAMES):
         raise ValueError("checkpoint candidate features do not match the current decision interface")
+    actor_prior = signature.get("actor_prior", {})
+    saved_parameters = payload["policy_state_dict"]
+    embed_dim = int(saved_parameters["ped_encoder.net.0.weight"].shape[0])
+    temporal_dim = int(saved_parameters["temporal.weight_hh"].shape[1])
+    temporal_input_dim = int(saved_parameters["temporal.weight_ih"].shape[1])
+    momentum_dim = temporal_input_dim - (
+        6 * embed_dim + len(GLOBAL_FEATURE_NAMES)
+    )
+    if momentum_dim < 0:
+        raise ValueError("checkpoint temporal input has an invalid feature width")
+    auxiliary_models_enabled = any(
+        name.startswith(
+            (
+                "natural_outcome_head.",
+                "causal_outcome_heads.",
+                "improvement_value_heads.",
+            )
+        )
+        for name in saved_parameters
+    )
     policy = EvacPolicy(
         d_ped=len(PED_FEATURE_NAMES),
         d_hazard=len(HAZARD_FEATURE_NAMES),
         d_infra=len(INFRA_FEATURE_NAMES),
         d_global=len(GLOBAL_FEATURE_NAMES),
         d_candidate=len(CANDIDATE_FEATURE_NAMES),
+        embed_dim=embed_dim,
+        d_momentum=momentum_dim,
+        temporal_dim=temporal_dim,
         verbose=False,
+        actor_prior=str(actor_prior.get("kind", "none")),
+        actor_prior_scale=float(actor_prior.get("scale", 0.0)),
+        actor_prior_feature_index=(
+            CANDIDATE_FEATURE_NAMES.index("exact_assignment_gain_fraction")
+            if str(actor_prior.get("kind", "none")) == "objective_greedy"
+            else 0
+        ),
+        auxiliary_models_enabled=auxiliary_models_enabled,
     )
-    policy.load_state_dict(payload["policy_state_dict"], strict=True)
+    policy.load_state_dict(saved_parameters, strict=True)
     policy.eval()
     return policy, signature
 
@@ -101,20 +132,30 @@ def _policy_outputs(
     with torch.no_grad():
         logits, _ = policy(graph)
     logits_np = logits.squeeze(0).cpu().numpy().astype(np.float64)
-    active = cells[:, 0].astype(np.float64)
-    active_max = float(np.max(active))
-    prior = (
-        np.zeros_like(active)
-        if active_max <= 0.0
-        else float(policy.HEURISTIC_PRIOR_SCALE) * active / active_max
-    )
+    prior = np.zeros_like(logits_np)
+    if policy.actor_prior == "active_population":
+        active = cells[:, 0].astype(np.float64)
+        active_max = float(np.max(active))
+        if active_max > 0.0:
+            prior = float(policy.actor_prior_scale) * active / active_max
+    elif policy.actor_prior in {"risk_time_reduction", "route_time_saving"}:
+        saving = candidate_features[:, policy.actor_prior_feature_index]
+        saving_max = float(np.max(saving))
+        if saving_max > 0.0:
+            prior = float(policy.actor_prior_scale) * saving / saving_max
+    elif policy.actor_prior == "objective_greedy":
+        gain = candidate_features[:, policy.actor_prior_feature_index]
+        centered = gain - float(np.mean(gain))
+        rms = float(np.sqrt(np.mean(np.square(centered))))
+        if rms > np.finfo(np.float64).eps:
+            prior = float(policy.actor_prior_scale) * centered / rms
     return logits_np, logits_np - prior
 
 
 def _canonical_inputs(num_cells: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     cells = np.full((num_cells, len(CELL_FEATURE_NAMES)), 0.5, dtype=np.float64)
     cells[:, CELL_FEATURE_NAMES.index("active_population_fraction")] = 0.4
-    cells[:, CELL_FEATURE_NAMES.index("mobility_delay_fraction")] = 0.25
+    cells[:, CELL_FEATURE_NAMES.index("congestion_delay_fraction")] = 0.25
     cells[:, CELL_FEATURE_NAMES.index("danger")] = 0.1
     cells[:, CELL_FEATURE_NAMES.index("remaining_shelter_capacity_fraction")] = 0.4
     global_features = np.full(len(GLOBAL_FEATURE_NAMES), 0.5, dtype=np.float64)

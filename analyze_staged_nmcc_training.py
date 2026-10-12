@@ -429,7 +429,7 @@ def _plot_convergence(
 def analyze(launch_dir: Path, *, bootstrap_draws: int) -> dict:
     launch_dir = launch_dir.expanduser().resolve()
     training_path = launch_dir / "training_episode_summary.csv"
-    diagnostics_path = launch_dir / "policies" / "policy_001" / "ppo_diagnostics.csv"
+    diagnostics_path = launch_dir / "policies" / "policy_001" / "learner_diagnostics.csv"
     convergence_path = launch_dir / "training_convergence_diagnostics.json"
     manifest_path = launch_dir / "experiment_manifest.json"
     for path in (training_path, diagnostics_path, convergence_path, manifest_path):

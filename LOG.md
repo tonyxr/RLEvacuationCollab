@@ -1,5 +1,438 @@
 # Engineering Review Log
 
+## 2026-10-02 — Model v38 scalable sampled NMCC
+
+### Diagnosis
+
+- The corrected v37 pipeline was no longer hung, but its exact target still
+  simulated `(20 feasible sites + WAIT) x 2 futures x 15 timesteps` at every
+  decision. With eight installations, one episode executed up to 336 physical
+  counterfactual branches. A real 5,000-person State College decision took
+  157.3 seconds; PPO and continuation inference were not the bottleneck.
+
+### Implementation
+
+- Replaced the exhaustive action table with an exact sampled MPO E-step. The
+  executed action is always included; the remaining branch budget combines
+  policy-relevant and uniform-coverage actions. The production v38 curriculum
+  uses two actions per state. Only physically evaluated actions are
+  reweighted, while unobserved action probability remains exactly equal to the
+  behavior policy. No heuristic score, learned fill, correction gate, or
+  fallback action is used.
+- Both branches now install equal-capacity shelters. One installed action is
+  the common comparator, so its physical result replaces the separate WAIT
+  branch. Each contrast still uses identical state, hazard/panic/casualty
+  random tape, complete congestion and pedestrian dynamics, the full
+  15-timestep decision interval, and the dedicated learned continuation value.
+- Activated the existing `nmccPiExhaustiveDecisions` and
+  `nmccPiMaxBranches` controls in the live collector, set the scalable defaults
+  to zero exhaustive decisions and two sampled actions, updated model and run
+  contracts to v38, and retained backward continuation learning across all
+  eight factual installations.
+
+### Measured result and verification
+
+- On the identical 5,000-person State College first decision, physical NMCC
+  time fell from 157.3 to 22.0 seconds (7.1x faster, 86.0% reduction) with two
+  futures and four workers; continuation inference took 0.013 seconds.
+- A complete 2,500-person, eight-installation action-stage episode finished in
+  157.6 seconds including fresh process/map initialization; the simulator loop
+  itself finished in 122 seconds and the population accounting invariant
+  passed (`1,941 evacuated + 559 unfinished = 2,500`).
+- Added an exact regression proving installed-site direct contrasts reproduce
+  the corresponding action differences from a full WAIT-based table. The
+  focused counterfactual, learner, curriculum, and GNN suite passes 137 tests;
+  the complete repository suite passes 274 tests. A fresh v38 checkpoint is
+  required because the actor-learning contract changed intentionally.
+
+## 2026-10-01 — State College 2,500-person precursor launch
+
+- Registered
+  `config/state_college_training_curriculum_2500_random_centered_foresight_v37.json`
+  with the same 24/48/88 E/A/F update budget, random-centred reward, two-tape
+  decision-interval NMCC, stage-local schedules, density-adaptive cells, and
+  `2,500 + 200` capacity contract as the current production design.
+- Launched a fresh one-policy run at
+  `runs/state_college_n2500_random_centered_foresight_v37_20261001/`. The
+  launcher will train for 160 episodes, then deterministically evaluate RL and
+  all ten comparator policies on eight matched held-out State College
+  scenarios. Convergence is reported but does not block the requested full
+  evaluation.
+- Preflight confirmed the E/A/F totals, 270-person equal shelter tokens, and
+  2,700 total capacity. Stage E completed all 24 episodes with its exploration
+  and learning-rate endpoints reached exactly; stage A began with both
+  schedules reset. The run was still active when this entry was written.
+
+## 2026-10-01 — Random-site credit, surplus capacity, and stage-local schedules
+
+### Design
+
+- Replaced the learning reward's install-nothing baseline with the arithmetic
+  mean over every feasible equal-capacity installation. The signed reward is
+  `(mean feasible-site cost - chosen-site cost) / (population * horizon)`;
+  common capacity value therefore cancels and a worse-than-random location is
+  allowed to produce negative learning credit.
+- Kept policy evaluation independent of that variance-reducing baseline.
+  Frozen policies are compared using negative realised hazard-weighted time to
+  safety: active/panicked person-time, danger-weighted exposure person-time,
+  and capacity-valid terminal remaining-time debt. Casualty has no standalone
+  coefficient, but does not disappear from time-to-safety accounting.
+- Preserved NMCC's one-decision-interval physical branches and dedicated
+  continuation value. Candidate advantages are now centred on the uniform
+  feasible-site mean. WAIT remains only a shared common-noise control variate;
+  heuristic actions and heuristic agreement do not enter a training target.
+
+### Implementation
+
+- Added `shelterCapacitySurplus` to configuration validation and set Seattle's
+  ten equal tokens to 270/520/770/1,020 for populations
+  2,500/5,000/7,500/10,000. The executor verifies zero unassigned rational
+  population after the eighth dynamic installation; complete t=0 comparators
+  are checked after initial routing.
+- Population-matched runs now reject a detected candidate pool smaller than
+  the complete ten-shelter budget and use the absolute `15,30,...,120`
+  timetable. A missing candidate or a missed timestamp is a model-contract
+  error rather than a silent delay, so all `population + 200` capacity is
+  installed by `t = 120` or the run fails visibly.
+- Added explicit stage coordinates to each curriculum episode. Exploration,
+  entropy, temperature, and actor/critic cosine schedules reset inside every
+  stage and reach their configured endpoints. Removed the NMCC M-step's hidden
+  restoration of the unscheduled base actor learning rate.
+- Added realised-objective accumulation and terminal residual reporting to
+  `RLBridge`. Training CSVs retain the signed random-site reward trajectory;
+  paired evaluation reads the separate action-count-invariant objective.
+- Moved terminal objective evaluation ahead of Core's administrative
+  `Unfinished` classification so live survivors contribute their true route or
+  no-shelter residual instead of disappearing before the calculation.
+- Final evaluation now cycles the variants from the curriculum's final stage,
+  uses the same scenario and policy seeds for all strategies, and evaluates
+  RL by deterministic masked argmax. Default comparison includes all registered
+  dynamic and static heuristic arms.
+- Confirmed the pedestrian hazard-speed path already recomputes from
+  `maxSpeed` only when danger level changes; added an explicit regression test
+  proving recovery from level 4 to level 1 without multiplicative carry-over.
+
+### Compatibility and verification
+
+- The reward, continuation-centering, capacity, and evaluation signatures are
+  intentionally incompatible with the interrupted checkpoint. The next run
+  must start from a fresh checkpoint; no fallback loading path was added.
+- Python compilation and `git diff --check` pass. The focused model suite
+  passes 187 tests, and the full repository suite passes 270 tests. New
+  coverage includes signed random-site credit, stage start/end/reset values,
+  Seattle `population + 200` capacity, the absolute decision timetable,
+  safer-region speed recovery, and the realised evaluation objective.
+
+## 2026-09-30 — Model v37 decision-interval NMCC and ten-shelter parity
+
+### Design
+
+- Replaced zero-step NMCC policy-improvement labels with paired physical
+  branches that run from the decision state to the next installation epoch.
+  Candidate and WAIT twins retain identical starting state and random hazard
+  tape. Their score adds the difference of a dedicated learned continuation
+  value at the two endpoints.
+- Kept the approved environmental reward unchanged: it is still the exact
+  zero-horizon installation-induced reduction in ordinary plus
+  hazard-exposure remaining time. The longer NMCC branch is a learning target,
+  not a reward redefinition.
+- Defined the continuation target by a backward semi-Markov sweep over the
+  complete sequence of eight realized installation rewards. This separates
+  NMCC foresight from the ordinary PPO critic and from heuristic continuation.
+
+### Implementation
+
+- `CounterfactualBranch` accepts an endpoint-value callback and records the
+  result without coupling the simulator brancher to Torch. `GNN.EvacPolicy`
+  has a separately owned, zero-initialized NMCC continuation head.
+- `RLBridge` evaluates branch endpoints with the same GNN/LSTM and a pure
+  previous-to-endpoint momentum calculation, trains the continuation head in
+  the action stage, and reports its loss, explained variance, target
+  dispersion, and contribution to candidate contrasts.
+- NMCC actor fitting now targets the masked actor distribution itself rather
+  than the actor/uniform-exploration mixture. It uses the configured base actor
+  learning rate, does not clip NMCC gradients, permits 64 fitting passes, and
+  converges only at absolute `KL(q || pi) <= 0.01` with exact top-1 agreement.
+- Replaced nine redundant momentum inputs with clearance, congestion relief,
+  route-time relief, forecast-exposure relief, hazard-front growth, and
+  hazardous-congestion relief. Added the physical congestion speed loss as a
+  separate pedestrian cell feature.
+- `initial_only` now predeploys the full common shelter target. Dynamic policies
+  continue scheduled installation after early network clearance, and the
+  backtest rejects any final shelter-count mismatch. Thus the registered setup
+  is two initial plus eight sequential shelters for dynamic arms and all ten
+  at `t = 0` for initial-only.
+- Registered
+  `config/state_college_training_curriculum_multiscale_env_action_v37.json`
+  and documented the equations and diagnostics in
+  `docs/DECISION_INTERVAL_NMCC_V37.md`.
+
+### Compatibility and verification
+
+- Incremented the checkpoint model signature to v37 because the pedestrian
+  and momentum feature dimensions and auxiliary head changed. V36 checkpoints
+  are intentionally incompatible; v37 training must start fresh.
+- Python compilation and JSON validation pass for the changed model modules
+  and v37 curriculum. The 112-test focused NMCC/branching/RL suite passes,
+  including new tests for decision-interval continuation training, separate
+  zero-horizon reward and decision-interval learning branchers, rejection of a
+  mismatched horizon, exact eight-decision backward targets, six momentum-rate
+  signs/dimensions, and initial-only t=0 budget selection. The complete suite
+  passes 260 tests. The lightweight RL fixture was upgraded with an explicit
+  routing contract rather than introducing a production fallback.
+
+## 2026-09-30 — Objective-matched greedy benchmark and frozen-policy audit
+
+### Design
+
+- Added `objective_greedy`, a deliberately myopic comparator that minimizes
+  the same quantity as the current actor target: remaining ordinary travel
+  time plus forecast-danger-weighted remaining travel time for all active
+  pedestrians. Every feasible candidate is compared from the identical live
+  state with the same capacity, reservation, rerouting, route-cost, masking,
+  and normalization rules used by the RL reward.
+- The benchmark receives no physical future rollout, LSTM state, momentum
+  history, learned continuation value, or later-action information. It tests
+  whether RL adds useful foresight/context beyond direct one-step computation
+  of its own objective; it is not an oracle for the full episode.
+
+### Implementation
+
+- Registered the policy in `DecisionInterface.py`, `RLBridge.py`, both
+  backtest drivers, figure/report generators, and the benchmark protocol.
+  `RLBridge` evaluates the full feasible action set through the existing exact
+  zero-horizon counterfactual evaluator and asserts that scoring leaves the
+  simulator state unchanged.
+- Extended `evaluate_frozen_policy_postfix.py` with explicit strategy and
+  output-stem arguments while preserving its historical default strategy set.
+  Added a deterministic one-worker path for restricted environments.
+- Added `analyze_objective_greedy_benchmark.py` to validate matched scenario
+  identities, join frozen RL and greedy episodes, calculate paired effects and
+  bootstrap intervals, compare action sequences, and generate the diagnostic
+  figure and machine-readable tables.
+
+### Results
+
+- Sixteen matched held-out State College scenarios were evaluated: four seeds
+  at each of 2,500, 5,000, 7,500, and 10,000 pedestrians. Mean full-sequence
+  action agreement was 0.2031.
+- Pooled RL-minus-greedy episode return was -0.10819 (bootstrap 95% interval
+  [-0.15827, -0.05660]); RL won 2/16 scenarios. RL restricted mean
+  time-to-safety was 3.40 minutes worse (advantage -3.3958, interval
+  [-6.7519, -0.0276]); RL won 6/16.
+- At 10,000 pedestrians, RL had 1.87 minutes lower mean RMTTS and won 3/4
+  scenarios despite lower immediate-objective return and low action agreement.
+  This is a useful hypothesis about congestion-aware continuation value, but
+  its four-seed interval crosses zero and it does not identify a causal feature.
+- Therefore frozen v36 does not generally beat or keep up with the direct
+  myopic calculation of its own objective. Before claiming that it understands
+  self-evolution, retained-state forward-ordering tests, more held-out seeds,
+  and retrained temporal/forecast ablations are required.
+
+### Compatibility and verification
+
+- No reward, simulator, trained checkpoint, or RL action-selection behavior
+  changed. Historical evaluation defaults remain unchanged.
+- Unit coverage checks masked selection, exact ties, strategy dispatch, exact
+  evaluator integration, and simulator non-mutation. A complete synthetic
+  episode also finished with all deployments and no unfinished pedestrians.
+- The first two-worker launch failed before any episode because the sandbox
+  denied process-semaphore creation; its failed manifest is preserved. The
+  sequential rerun completed all 16 episodes. Results and figure are under
+  `runs/state_college_v36_complete_multiscale_nmcc_20260927/objective_greedy_analysis_20260930/`.
+
+## 2026-09-29 — Independent review of the frozen v36 policy (analysis only)
+
+Mode: `analysis`. No model, simulator, configuration or run artifact was changed.
+Artifacts: `runs/state_college_v36_complete_multiscale_nmcc_20260927/independent_review_20260929/`
+(`INDEPENDENT_REVIEW.md`, figures R01-R11, `v36_independent_review.py`, which needs only numpy, pandas and matplotlib).
+
+### Verified
+
+- The source fingerprint on disk equals training for all 32 dynamics files.
+- Evaluation is argmax-deterministic.
+- Training and evaluation seeds and initial digests are disjoint.
+- The CRN initial digest is shared by all 7 strategies in every scenario.
+- The `EXPERIMENT_REPORT.md` reward and unfinished figures reproduce exactly.
+
+### Findings
+
+- Learning is concentrated in action updates 1-12:
+  - reward +0.0173 per update (SE 0.0049);
+  - RMTTS -0.84 min per update (SE 0.27).
+- Updates 13-24 are flat:
+  - reward +0.0023 per update (SE 0.0055);
+  - RMTTS +0.10 min per update (SE 0.26).
+- Top-1 agreement with the zero-horizon label best reaches about 0.35-0.45 (chance 0.07).
+- Held-out results, pooled over 16 scenarios, primary endpoint RMTTS:
+
+  | RL vs | RMTTS difference | Exact p | Holm p (5 benchmarks) |
+  |---|---|---|---|
+  | risk-reduction | -6.0 min | 0.006 | 0.025 |
+  | random | -7.7 min | 0.002 | 0.012 |
+  | hazard-weighted | -4.0 min | 0.066 | 0.16 |
+  | max-active | -4.2 min | 0.053 | 0.16 |
+
+  - No reward difference against an engineered benchmark is distinguishable from zero.
+  - No population-by-policy trend is significant (permutation p 0.13-0.87).
+- Reward is a within-scenario proxy for RMTTS (Spearman -0.76).
+  - It is weak for unfinished share at 2,500 (+0.02).
+  - It is unrelated to casualties (+0.08).
+- Correction: `congestion_person_minutes` is the congestion model's person-minute denominator (r = 0.991 with RMTTS), not congested minutes.
+  - Congested minutes = denominator x `congested_person_minute_share`.
+  - The earlier r ~= 0.79 reproduces (0.793); on true congested minutes it is 0.72.
+- The actor's NMCC target is purely myopic (horizon 0, no continuation value). The next measurement should be held-out target attainment (label regret) of the frozen policy.
+- Accessibility-deficit duplicates max-active-population (15/16 identical sequences).
+- Reproducibility: the v36 code is uncommitted. The manifest `policy_design` and `learning_assessment.json` are stale relative to the checkpoint signature.
+
+## 2026-09-28 — Session record: v36 objective, learning redesign, multiscale result, and next cycle
+
+### User-directed model contract established during the session
+
+- The shelter policy's primary objective was reduced to one interpretable
+  principle: decrease the total expected future hazard-weighted time-to-safety
+  of pedestrians still active in the network. The corresponding decision
+  reward is the positive reduction in remaining ordinary travel time plus
+  hazard exposure produced by installing a shelter relative to the same-state
+  `WAIT` condition, normalized by initial population and episode horizon.
+- Standalone casualty reward, panic reward, and terminal-residual reward were
+  removed from the optimized objective. Casualty and panic remain required
+  evaluation and graph outputs. An active pedestrian without a valid shelter
+  receives the configured horizon-valued remaining-time cost; an assigned
+  pedestrian changes destination only when the new valid reservation is
+  strictly better.
+- Routing and motion semantics were clarified: after every installation all
+  active non-panicked pedestrians recheck whether the new shelter is a better
+  valid destination; otherwise they retain the current shelter and shortest
+  route. Danger-level speed reduction is relative to maximum speed and changes
+  with danger level rather than compounding every timestep.
+- The user rejected the earlier correction gate, fallback/base-placement
+  selector, safeguard-heavy controller, and engineered-prior behavior. The
+  accepted learning structure is environment-dynamics pretraining followed by
+  reinforcement/action learning and NMCC policy improvement, with ordinary
+  positive and negative action evidence, scheduled stochastic exploration in
+  training, deterministic ranking in evaluation, and no post-policy action
+  replacement. Physical feasibility and hazard safety remain MDP constraints,
+  not policy fallbacks.
+- Actor learning rate and exploration were changed to smooth decaying
+  schedules with materially larger early values. Exploration samples from the
+  feasible categorical policy during training and approaches a low plateau;
+  evaluation selects the highest feasible learned score.
+- The experiment contract was fixed across RL and dynamic benchmarks: two
+  initial shelters, eight sequential installations at minutes 15, 30, 45, 60,
+  75, 90, 105, and 120, a 180-minute horizon, and a 60-minute post-installation
+  tail. Every shelter has capacity `N/10`, giving total capacity `N`, for
+  populations 2,500, 5,000, 7,500, and 10,000. The initial-only comparator is
+  the documented exception with two shelters and no sequential deployment.
+
+### v36 implementation and learning evidence reviewed in this session
+
+- The active representation is a relational regional GNN with spatial and
+  current assignment-flow edges, population-magnitude-preserving route
+  aggregation, candidate-conditioned attention over the whole graph, global
+  load/scenario features, and episode LSTM/momentum context. Added operational
+  features include assigned/unassigned population, outgoing/incoming
+  assignment flow, mean route time, long-route share, shelter capacity and
+  utilization, hazard forecast and source proximity, population/network load,
+  and deployment progress.
+- The registered v36 experiment is
+  `runs/state_college_v36_complete_multiscale_nmcc_20260927/`. It contains 120
+  balanced training episodes: 24 environment-dynamics episodes and 96 action-
+  learning episodes, 30 total episodes at each population. Each four-episode
+  action rollout contains one episode from every population; optimizer
+  diagnostics are written on the fourth (10,000-person) row but the update is
+  not trained on that population alone.
+- Environment prediction loss fell from `0.05511` to `0.01042` (81.1%). All
+  24 action updates were accepted, with no rollback or rejection. Mean action
+  KL was `0.04035`, final KL was `0.04891`, full feasible-action NMCC coverage
+  was 100%, early-to-late selection total-variation distance was `0.2344`, and
+  mean rollout reward moved from `0.5920` to `0.7274`. These measurements show
+  material policy movement; the legacy 0.015-KL convergence flag is not the
+  applicable success criterion for this deliberately larger-update run.
+- Frozen evaluation used four matched seeds at each population for RL,
+  risk-reduction, active-population heuristic, hazard-weighted demand,
+  accessibility deficit, random, and initial-only policies (112 episodes).
+  Overall equal-scenario RL reward was `0.733337`, safe-completion share
+  `0.849983`, and unfinished share `0.146998`. RL beat every dynamic benchmark
+  on reward in 13 of 16 matched population/seed scenarios.
+- Population-specific RL reward versus the best dynamic benchmark was:
+  `0.6666` versus `0.7240` at 2,500; `0.7272` versus `0.7339` at 5,000;
+  `0.7526` versus `0.7164` at 7,500; and `0.7869` versus `0.7059` at 10,000.
+  The corresponding RL advantage therefore crossed from `-0.0574` to
+  `-0.0068`, `+0.0362`, and `+0.0810`. At 10,000, RL reduced unfinished share
+  by 7.9 points versus risk reduction, 10.3 versus hazard weighted, and 10.5
+  versus heuristic/accessibility.
+- The high-demand advantage was not produced by rerouting the most people. At
+  10,000, RL rerouted about 19.5% of the population per decision versus 21.6%
+  for risk reduction, but removed about 90.9 hazard-weighted minutes per
+  rerouted pedestrian versus 69.1. Across the 16 matched scenarios, RL reward
+  advantage over the mean dynamic benchmark was descriptively correlated
+  (`r ~= 0.79`) with congestion-person-time reduction. This is a diagnostic
+  association, not a causal feature attribution.
+
+### Exact information advantage and limitations identified
+
+- RL can condition candidate ranking on regional active/assigned/unassigned
+  population, outgoing/incoming shelter-assignment flow, observed mobility
+  delay, mean route time, long-route share, wellness state, current/forecast
+  hazard, infrastructure/capacity state, global network load, wind/hazard
+  spread, installation budget, momentum, spatial adjacency, route-flow
+  topology, and recurrent history. Every engineered benchmark uses a much
+  smaller fixed local formula and has no learned temporal or graph-wide
+  interaction.
+- This does not mean every available feature caused the observed advantage.
+  No grouped feature ablation or retrained representation ablation has yet
+  established actual policy dependence.
+- The policy does not directly observe the logged link-density diagnostics.
+  Regional `mobility_delay_fraction` combines physical congestion with other
+  speed effects. `network_load_share` is an initial population-to-link-storage
+  descriptor created once, so its nominal reduction-velocity momentum feature
+  is zero. `population_network_density_fraction` is likewise a static scale
+  descriptor.
+- The exact immediate candidate evaluator uses each pedestrian's current speed
+  to convert every hypothetical route distance to time. It therefore gives
+  extra value to shortening the route of a currently slow pedestrian, but it
+  does not recompute candidate-induced future link density, queues, or speed.
+  The learned congestion benefit is consequently an emergent correlation from
+  current slowdown, routes, flows, capacity, subsequent states, and recurrent
+  training—not an exact per-candidate congestion forecast.
+- Four evaluation seeds in one city are sufficient for mechanism diagnosis,
+  not a general superiority or scale law. The 7,500 result includes one clear
+  RL outlier, and its best reward did not imply the best completion share
+  because the optimized quantity is hazard-weighted remaining time rather than
+  terminal completion alone.
+
+### Decision for the next development/training cycle
+
+- Do not launch another unchanged long v36 run. First run a frozen-checkpoint
+  grouped feature-use audit, then minimal retrained ablations for route flow,
+  congestion/load, and temporal/attention context.
+- Make physical congestion separately observable from generic speed using
+  current regional congestion-speed, congested-population, and occupied-link
+  load summaries. Split the existing static scenario-load descriptor from a
+  genuinely dynamic load feature and remove the identically-zero momentum
+  derivative. These are current-state operational observations, not future
+  candidate information.
+- Before changing credit, compare the present zero-horizon candidate ordering
+  with equal-capacity, common-noise physical candidate branches advanced
+  through one 15-minute decision interval. Adopt the congestion-aware target
+  only if it improves held-out action ordering and regret at matched states.
+- After those P0 measurements, run one fresh balanced engineering policy with
+  32 environment episodes and 128 action episodes, followed by at least 12 new
+  matched evaluation seeds per population. Only a passing engineering result
+  should advance to at least three independent policy seeds and 20 untouched
+  matched scenario seeds per population.
+- No correction gate, conservative fallback, actor/base heuristic prior,
+  perfect-information benchmark, standalone casualty reward, or terminal-
+  residual reward is authorized by this plan. Detailed acceptance criteria are
+  recorded in the new active section at the top of `TODO.md`.
+
+### Change and verification boundary
+
+- This entry and the corresponding `TODO.md` section are documentation-only.
+  No simulator, policy, reward, training, configuration, or test code was
+  changed, and no new training process was started.
+
 ## 2026-09-22 — Model v26 persistent fitted NMCC and wide-and-deep GNN control
 
 ### Root-cause fixes
@@ -1878,3 +2311,736 @@ About a quarter of the available within-state gain is captured per update on
 held-out states. With 8 updates in 64 episodes, compounding is the binding
 limit. The number of episodes per update is set by `multicity_backtest.py`
 (`balanced_rollout_episodes`), not by the curriculum.
+
+## 2026-09-27 — Identifiability of the siting differential, and the branch-budget allocation
+
+Mode: `experiment` + `analysis`. No model code was changed.
+
+Question, as raised: every installation adds the same equal-capacity token, so
+every action improves evacuation progress; can the reduction speed of
+hazard-weighted exposure time still separate an optimal from a sub-optimal
+siting?
+
+### Design
+
+Four measurements, all on the calibrated testbed, all composing with the
+existing v25 signal audit:
+
+- `exposure_signal_decomposition.py` — two-way ANOVA per decision state
+  separating the state level, the cell effect, the tape effect and the pairing
+  residual, at +10/+20/+30 and the horizon.
+- `exposure_label_estimators.py` — which one-tape label ranks cells best at
+  equal simulation cost, with a leakage-free held-out tape as truth.
+- `exposure_budget_allocation.py` — `corr(a_window, a_full)` estimated from
+  tape-disjoint cross-products (so residuals cannot inflate it), and the
+  resulting cells x tapes x horizon allocation frontier.
+- `exposure_component_signal.py` — new collection: the same 16 episodes and
+  tape keys at the first decision, recording the four signed reward components
+  separately. Its summed components reproduce the audit's scalar values to
+  9.99e-16, which the script asserts as a cross-check.
+
+### Findings
+
+- The capacity effect is real and large — installing anywhere rather than
+  deferring one interval is worth +0.2316 against a within-state cell spread of
+  0.0677, a 3.4x ratio — but a CRN-paired within-state contrast removes it
+  identically, because both arms install one identical token from the same
+  snapshot under the same tape. The binding constraint is the pairing residual:
+  0.0659 against a cell effect of 0.0620 at the first decision, SNR 0.94.
+- The differential is not concentrated in hazard-weighted exposure. Shares of
+  the total cell-effect variance: safe_completion 0.18, evacuation_time 0.13,
+  hazard_exposure 0.03, casualty 0.02, and 0.64 in the covariance between
+  components. Only evacuation_time has SNR above one (1.14). Ranking on
+  hazard_exposure gives Spearman 0.398 against the scalar return's 0.432; a
+  least-squares re-weighting of all four reaches 0.453 with a lower top-1 rate.
+  The component-selection lever is measured and negative.
+- Early between-cell differences are transient: the safe-completion
+  differential peaks at +20 at 1.74x its terminal magnitude and erodes to 1.0.
+  So a noiseless +20 contrast correlates only 0.598 with the full-horizon cell
+  effect at the first decision (0.752 pooled over all decisions); +30 reaches
+  0.813; the full-horizon self-check is 0.997/0.999. Truncation reorders cells
+  rather than merely shrinking the signal, and
+  `DEFAULT_NMCC_PI_BRANCH_HORIZON = 20` with a bare truncation in
+  `BranchValuer._continue` caps the label at Spearman ~0.55 at any tape count.
+- Budget should buy horizon first, then tapes: at equal cost +30 x 2 (0.632)
+  beats +20 x 3 (0.531), and the full-horizon row is the frontier above 59
+  steps per branch (full x 2 0.751, x 3 0.805, x 5 0.863).
+- The v25 prior correlates 0.338 with the terminal cell effect; the true best
+  cell is in its top 6 only 44% of the time and its top 8 56%, so
+  `nmccPiMaxBranches = 6` caps top-1 at 0.44 whatever the label.
+- Exhaustive single-tape branching is dominated. v26's first decision (17 cells
+  x 1 tape x full, 1003 steps) gives top-1 0.359 and regret 0.551 cell-effect
+  SD; 9 cells x 2 tapes x full (1062 steps) gives 0.429 and 0.416 — a 25%
+  regret reduction at constant cost, with the interior optimum at 9-12 cells.
+
+### Consequence for convergence
+
+With one tape at the full horizon the label's rank agreement with the quantity
+it represents is 0.731 pooled and 0.636 at the first decision. The information
+is lost in the label, upstream of the network and of every credit-assignment
+mechanism that consumes it; a deployment gate scored against that label inherits
+its 0.64 discrimination regardless of `z` or the number of consecutive updates.
+
+### Verification
+
+- The tape-disjoint covariance estimator is validated by its own
+  full-versus-full self-check (0.997 first decision, 0.999 all decisions).
+- The component collection is validated against the v25 audit's stored scalar
+  values (16 states, largest absolute difference 9.99e-16).
+- The correlation-to-Spearman and correlation-to-top-1 conversions use a
+  Gaussian surrogate over exchangeable cells and are indicative; the induced
+  orderings are robust because the underlying correlations differ by far more
+  than the surrogate's error.
+- 16 episodes and 17 feasible cells on average at the first decision, so
+  intervals are wide; no claim here is about State College.
+
+Artifacts: `docs/SITING_SIGNAL_IDENTIFIABILITY_20260927.md`,
+`runs/exposure_signal_decomposition_20260927.json`,
+`runs/exposure_label_estimators_20260927.json`,
+`runs/exposure_budget_allocation_first_20260927.json`,
+`runs/exposure_budget_allocation_all_20260927.json`,
+`runs/exposure_component_signal_20260927.json`,
+`runs/exposure_component_states_20260927.pkl`.
+
+## 2026-09-30 — Seattle population-adaptive three-stage training launch
+
+Mode: `implementation` + `validation` + `experiment`.
+
+- Added `population_density_adaptive` partitioning. A dedicated scenario RNG
+  stream now draws the exact pedestrian origins before the grid is cut; each
+  road node is weighted by the represented people who will actually begin
+  there. Weighted marginal quantiles make dense-origin regions narrower while
+  the outer boundaries cover the complete network and the 8x8 tensor/action
+  contract remains unchanged. The same sampled origins are then consumed by
+  `PedDS`, so partition mass and initialized population cannot disagree.
+- Registered
+  `config/seattle_training_curriculum_population_foresight_v37.json`: 160
+  Seattle episodes across 2,500/5,000/7,500/10,000 people. Stage E is 24
+  episodes (six environment-only rollout updates), stage A is 48 episodes
+  (twelve decision-interval action updates with the zero-initialized
+  continuation head frozen), and stage F is 88 episodes (twenty-two joint
+  updates with backward continuation-value learning across eight sequential
+  installations). The NMCC M-step ceiling is 256 epochs with exact top-1 and
+  absolute-KL stopping; no action prior, gate, fallback, or reward change was
+  added.
+- Seattle map preflight passed on the cached 5 km walk network: 22,278
+  consolidated nodes, 79,174 edges, and 3,834 recognized shelter sites. A real
+  simulator smoke conserved 100/100 people and installed 10/10 shelters.
+  In the first full 2,500-person episode, population mass was exactly 2,500,
+  cell area ranged from 0.542 to 6.005 km², and log area versus realized
+  population-density correlation was -0.541.
+- Verification: all 266 tests pass. The long run is live at
+  `runs/seattle_population_foresight_long_20260930`; episode summaries and PPO/
+  NMCC diagnostics are written incrementally.
+
+## 2026-10-01 — NMCC-only causal actor and exact branch acceleration
+
+Mode: `implementation` + `validation`.
+
+- Stopped the unfinished training run and preserved its partial artifacts. No
+  `multicity_backtest` or training process remains active.
+- Exact NMCC now evaluates all candidates across all future tapes as one
+  physical batch. Action-independent hazard evolution is computed once per
+  tape and replayed exactly; four isolated simulator-only workers execute the
+  candidate pedestrian, routing, congestion, reservation, and exposure
+  dynamics without cloning or importing the neural learner.
+- The continuation network evaluates every returned branch endpoint in one
+  neural batch. Serial and parallel candidate tables are bitwise identical,
+  including endpoint observations and live-state restoration.
+- Exact NMCC is now the actor's sole objective when policy improvement is
+  enabled. PPO still trains the critic, but its sampled-return actor gradient
+  no longer competes with the common-noise full-action target. Missing NMCC
+  targets raise an error; PPO is not a fallback.
+- Continuation values are learned by backward realized returns after the
+  environment-only phase, including action warmup. M-step convergence is now
+  defined by the optimized `KL(q || pi)` residual; top-1 remains descriptive.
+- On the 2,500-person branch benchmark (18 candidates, two tapes, 15 steps),
+  four-worker exact evaluation took 35.326 s versus 120.469 s serial (3.41x).
+  The full counterfactual and v37 curriculum suites pass (32 tests total), as
+  does the focused NMCC convergence contract in the configured PyTorch runtime.
+
+## 2026-10-02 — Clean three-stage ownership and v40 validation
+
+Mode: `implementation` + `validation` + `experiment`.
+
+- Corrected the staged-transfer ownership error. The shared pedestrian,
+  hazard, infrastructure, relational-message, pooling, and LSTM representation
+  is now learned in Stage E from six observable one-interval physical rates.
+  The candidate encoder, candidate-conditioned graph attention, global and
+  temporal actor adapters, and actor readout belong to the actor optimizer, so
+  Stage A/F can learn a nonlinear siting policy after the environment
+  representation is frozen.
+- The Stage E dynamics head no longer depends on the actor embedding. It reads
+  the candidate's regional embedding, six transparent candidate descriptors,
+  the full graph/global context, and recurrent history. Stage A receives the
+  current pedestrian distribution, assignment flow, mobility/congestion,
+  routes, danger and one-interval forecast, capacity/infrastructure, spatial
+  and route edges, wind, and deployment state. Stage F adds the learned
+  post-interval continuation differential to the same common-noise physical
+  contrast; the actor then distills that forward-looking target.
+- Preserved one coherent actor objective: in policy-improvement runs NMCC's
+  signed sampled installed-site distribution is the actor target, while PPO's
+  complete semi-Markov returns train the value heads and the dedicated
+  backward continuation value. PPO return gradients do not alternate with the
+  NMCC actor fit. Stage A trains but does not consume continuation; Stage F
+  consumes it. No gate, fallback, heuristic target, or model-filled action is
+  present.
+- Corrected single-update stage schedules so a short stage uses its declared
+  high starting exploration and learning rates. Full stages independently
+  decay categorical uniform mixing, temperature, entropy, actor LR, and critic
+  LR from their own first to last update.
+- Extended only the exogenous hazard audit after a physically early terminal,
+  without moving pedestrians or adding reward, so policies with different
+  completion times can still be verified against a byte-identical full hazard
+  trajectory. A controlled prefix comparison confirmed the prior digest
+  mismatch was solely unequal trace length.
+- Removed unused NMCC ensemble, teacher, guidance, uncertainty, correction-
+  gate, alternative actor-objective, heuristic-base, model-fill, and obsolete
+  pretraining controls. Removed the historical v28-v34 curriculum tests that
+  enforced those retired interfaces and migrated the maintained v36/v37
+  configurations.
+- A fresh 12-episode/500-person smoke completed all E/A/F stages and matched
+  evaluation. Dynamics explained variance was 0.390 after E and 0.724 after F;
+  Stage A target top-1 moved 0.219→0.438; Stage F moved 0.406→0.688;
+  continuation supplied 16.2% of the branch-value spread. Interface parity
+  passed. The smoke policy remained inferior to objective-greedy, as expected
+  from one update per stage, so it is mechanics evidence only.
+- Verification: 194 current learning, branch, capacity, routing, partition,
+  population, curriculum, benchmark, and campaign tests pass. The full
+  5,000-person State College v40 run was launched at
+  `runs/state_college_5000_staged_nmcc_v40_20261002` with 24 E, 48 A, and 88 F
+  episodes, followed by 20 matched deterministic evaluation scenarios.
+
+## 2026-10-03 — Coherent counterfactual PPO and forward-risk potential (v41)
+
+Mode: `research` + `implementation` + `validation`.
+
+- Stopped the incomplete v40 campaign. Legacy Anaconda branch/test processes
+  were signaled for termination; macOS reports them as uninterruptible/exiting
+  with zero CPU and memory, while no `multicity_backtest` training process is
+  active. Validation uses the repository `.venv` runtime.
+- Replaced the separate NMCC actor fit with one actor update: matched
+  common-random-number branch contrasts estimate the action advantage, and
+  PPO alone applies that advantage through its clipped surrogate. The ordinary
+  actor-critic value head is also the NMCC branch-end continuation value; the
+  dedicated continuation head was removed.
+- Changed the learning reward to the semi-Markov potential residual
+  `D_ctrl(s_k) - gamma^dt D_ctrl(s_{k+1}) - C_ctrl,k`, normalized by population
+  and horizon. `D_ctrl` is capacity-valid forecast plain-plus-danger-weighted
+  travel debt and `C_ctrl,k` is realized controllable person-time. Panic and
+  casualty still evolve and are reported, but are excluded from actor credit.
+- Aligned dynamic NMCC branches with the same controllable objective. Every
+  compared action uses the same initial state, equal capacity, and common
+  exogenous future, so hazard/panic/self-evolution variation cancels in the
+  within-state action contrast rather than becoming a policy label.
+- Reduced the policy observation to five pedestrian, five hazard, seven
+  infrastructure, eleven global, four momentum, and four candidate features.
+  Removed assigned-flow and mobility duplicates; wind is one signed east/north
+  velocity pair. Hazard foresight is represented by current danger, one-step
+  spread momentum, next-decision expected danger, escalation probability, and
+  forecast uncertainty without consuming simulator random draws.
+- Added the 4x4, 2,500-person v41 E/A/F curriculum. Fixed experiment and run
+  metadata so decision interval, reward, actor optimizer, continuation value,
+  actor prior, and KL role describe the effective configuration.
+- Verification: 155 focused learning, branch, curriculum, metadata, feature,
+  and forecast-contract tests pass. A full 2,500-person training/evaluation
+  run has not yet been used to claim policy superiority.
+
+## 2026-10-03 — v41 2,500-person staged pilot and matched evaluation
+
+Mode: `implementation` + `validation`.
+
+- Completed a 20-episode State College pilot on the 4x4 adaptive partition:
+  4 Stage E, 8 Stage A, and 8 Stage F episodes, followed by four matched
+  deterministic scenarios for RL, objective-greedy, active-population,
+  risk-reduction, random, and initial-only policies. Every sequential policy
+  installed 2 initial plus 8 dynamic shelters at equal 15-minute intervals;
+  total installed capacity was 2,700 for 2,500 pedestrians.
+- Verified the live observation rather than only its schema: all 17 cell, 11
+  global, 4 momentum, and 4 candidate channels were finite; all four momentum
+  channels were nonzero; route-flow edges and feasibility masks were present;
+  and every pending actor transition had matched NMCC branch support.
+- NMCC/PPO action credit was active and signed. Across the four actor updates,
+  NMCC advantage SD ranged from 0.133 to 0.352, actor gradients were nonzero,
+  branch coverage was 100%, and PPO retained nonzero policy movement without
+  clipping or rollback. The environment stage kept actor gradients exactly
+  zero while fitting the shared dynamics representation.
+- The short pilot did not learn a useful continuation value. Stage F
+  continuation validation explained variance ended at 0.0020, continuation
+  supplied only 0.36% of branch-score dispersion, and it changed no top-ranked
+  branch. The actor and immediate matched credit work; long-horizon foresight
+  is not yet established and requires substantially more continuation data.
+- On four matched evaluation scenarios, RL's mean realized hazard-weighted
+  time to safety was 223,615 person-minutes versus 220,733 for
+  objective-greedy (1.3% worse; two wins), 259,145 for active-population
+  (13.7% better; three wins), 286,363 for risk-reduction (21.9% better; three
+  wins), and 290,040 for random (22.9% better; four wins). RL reduced the
+  hazard-exposure component 6.3% below objective-greedy while using 2.6% more
+  plain travel time, indicating a distinct hazard/traffic tradeoff rather than
+  heuristic imitation. Initial-only remained an intentionally privileged
+  lower bound because it installs all ten shelters at time zero.
+- Corrected two audit-only discrepancies exposed by the pilot: a loaded
+  optimizer now immediately adopts the new stage's learning-rate schedule,
+  and nested checkpoint/figure labels now describe matched NMCC actor credit,
+  the shared `Q = V + A` critic, and forward evacuation-debt reward.
+- Verification: 156 focused learning, branch, curriculum, metadata, feature,
+  and campaign tests pass. Artifacts are under
+  `runs/state_college_2500_counterfactual_ppo_v41_pilot20_20261003`.
+# 2026-10-03 — Fair static precommitted `initial_only` benchmark
+
+- Removed the artificial early-capacity advantage from `initial_only`. It now
+  begins with the same two shelters as RL and installs eight equal tokens at
+  the common decision epochs.
+- At time zero, the benchmark greedily commits the exact eight-site order on a
+  frozen planning copy using the immediate plain-plus-exposure evacuation-debt
+  objective. Planned capacity and assignments update between choices, but
+  physical time, traffic, pedestrians, and hazards do not advance.
+- Restored the live simulator and random streams exactly after planning. At
+  runtime the benchmark executes the committed candidate identities without
+  re-ranking, adaptive substitution, a safety gate, or a fallback.
+- Added explicit schedule and realized deployment-time metadata plus backtest
+  assertions for two-initial/eight-sequential capacity and timing parity.
+- Re-evaluated the corrected schedule against the frozen v41 RL checkpoint on
+  the original four held-out State College scenarios at 2,500 pedestrians.
+  Mean realized HWTTS was 223,615 person-minutes for RL versus 280,589 for the
+  corrected static schedule: RL reduced it by 56,974 (20.3%) and won 3/4
+  matched pairs. Restricted mean time to safety improved in all four pairs.
+  Both arms had 10 shelters, 2,700 places, identical hazard digests, and the
+  exact `[15,30,45,60,75,90,105,120]` installation schedule.
+
+## 2026-10-04 — v43 critic-target, reporting, and efficient exact-NMCC repair
+
+Mode: `implementation` + `validation`.
+
+- Corrected the actor-critic identity. The NMCC actor advantage is centered on
+  a uniform feasible shelter and therefore is not `Q_pi - V_pi`; it is no
+  longer subtracted from the factual Monte Carlo return to construct a critic
+  target. The critic now learns the positive complete-episode on-policy
+  return-to-go, and Stage F evaluates each branch as its realized decision-
+  interval effect plus that same critic's endpoint continuation value.
+- Removed the fixed `0.05` advantage scale floor from active PPO
+  normalization. Every nonconstant batch is now centered and normalized by
+  its actual standard deviation; a truly constant batch maps to zero.
+- Separated positive learning and evaluation quantities. Training logs retain
+  the positive potential-progress return. The physical evaluation reports
+  positive normalized cost (lower is better) and
+  `1 / (1 + normalized_cost)` (higher is better). Intermediate simulator rows
+  no longer mislabel partial learning reward as the complete episode
+  objective. Stale metadata describing a negative objective was corrected.
+- Replaced per-decision branch-process startup with a persistent isolated
+  worker pool. Workers are reused through all eight decisions, keep exact
+  snapshot/common-random-number simulator dynamics, and exchange large results
+  through temporary files. Serial/parallel branch outputs remain identical;
+  a local repeated-batch probe fell from about 0.96 seconds including startup
+  to about 0.02 seconds on the reused pool.
+- Changed the 4x4 verification curriculum to one rollout episode per update
+  and 24 actor PPO epochs. The original 8 epochs left retained KL near zero;
+  a rejected 64-epoch probe overshot to KL 0.03--0.09. The final fixed budget
+  reuses existing branch evidence and adds no simulator calls.
+- Added direct policy-improvement diagnostics: expected physically branched
+  NMCC advantage before/after the actor update and its gain. This distinguishes
+  correct movement from entropy, heuristic agreement, or an optional MPO
+  target-fit view.
+- Completed the ten-episode v43 State College smoke (`2 E + 4 A + 4 F`) at 250
+  pedestrians. All learning and evaluation scores were positive; all eight
+  actor updates executed; retained KL ranged from 0.00045 to 0.01297; seven of
+  eight updates increased expected NMCC advantage; entropy moved from 1.000 to
+  0.985; and Stage-F continuation validation explained variance rose from
+  0.406 to 0.659. Exact physical branching averaged 2.92 seconds per decision
+  batch and completed without deadlock or missing branches.
+- Two-scenario matched evaluation is deliberately not a performance claim.
+  The smoke policy scored 0.661 versus 0.737 for objective-greedy and therefore
+  remains undertrained. It verifies coherent learning and policy motion, not
+  convergence or superiority.
+- Verification: all 274 repository tests pass under the pinned repository
+  `.venv`. Final artifacts are under
+  `runs/state_college_250_coherent_nmcc_v43_smoke10_r5_20261004`.
+
+## 2026-10-04 — v44 complete cost ledger and dense NMCC-PPO repair
+
+Mode: `implementation` + `validation`.
+
+- Audited the six screenshot findings against v43 rather than applying them
+  blindly. Four defects still reproduced: panic/casualty deletion from the
+  learning cost, the Stage-F endpoint-debt sign omission, discarding three of
+  four candidate labels in the actor loss, and a sampled KL diagnostic that
+  was not the same categorical distribution used by NMCC. The old report that
+  continuation did not learn and the proposal to replace decision-interval
+  branching with full-episode rollout iteration did not reproduce and were not
+  implemented.
+- Unified factual reward, branch cost, and evaluation around a complete
+  time-to-safety ledger. Active pedestrians remain counted after panic;
+  casualties accrue plain unresolved time; common-random-number differencing
+  removes shared exogenous variation instead of deleting adverse outcomes.
+  The unassigned/panicked debt now uses remaining episode time rather than a
+  new 180-minute cliff at every decision.
+- Corrected the Stage-F paired target to
+  `C_wait-C_action + gamma^dt(D_wait'-D_action') + gamma^dt(V_action-V_wait)`.
+  This is the candidate difference of the same potential-shaped reward used
+  by factual trajectories, so the endpoint debt cancels correctly against the
+  learned continuation value.
+- Replaced the executed-action-only actor surrogate with one dense clipped-PPO
+  surrogate over all exactly branched actions. Advantages are centered by the
+  NMCC E-step under the stored behavior distribution, RMS-scaled without
+  changing within-state baselines, and zero for unbranched actions. The critic
+  remains trained on complete on-policy returns.
+- Replaced NMCC's sampled-action KL report with exact
+  `KL(pi_new || pi_behavior)` over the stored full categorical distribution.
+  This is now directly comparable with entropy, clipping, and the E-step trust
+  region.
+- All 277 repository tests pass. The ten-episode 250-person 4x4 smoke completed
+  all E/A/F stages and two matched evaluation scenarios. Every one of eight
+  actor updates increased expected NMCC advantage (mean +0.00668); exact KL
+  averaged 0.00903; entropy ended at 0.926; continuation validation explained
+  variance ended at 0.778; and continuation changed the branch-best action in
+  25% of the final update's states.
+- The shortcut diagnostic changed materially: training-return Pearson
+  correlation with realized cost fell from +0.755 in the matched v43 smoke to
+  -0.107, and with panic onsets from +0.787 to -0.086. On the two held-out
+  scenarios, RL mean HWTTS was 15,827 person-minutes versus 15,243 for
+  objective-greedy (3.8% worse), but substantially better than the v43 smoke's
+  23,250. This is mechanics evidence, not a convergence or superiority claim.
+  Artifacts are under
+  `runs/state_college_250_complete_ledger_dense_nmcc_v44_smoke10_20261004`.
+
+## 2026-10-04 — Complete-ledger objective-greedy primary benchmark
+
+Mode: `implementation` + `validation`.
+
+- Replaced maximum active population as the primary paired comparator with
+  `objective_greedy`. Maximum active population remains the practice rule,
+  random remains the floor, and the scheduled `initial_only` policy isolates
+  the value of feedback. One-line risk/accessibility scores remain available
+  as appendix diagnostics rather than separate primary claims.
+- Made objective-greedy expose the same positive score used by evaluation:
+  `1 / (1 + post-installation HWTTS cost / (population * horizon))`. Its
+  zero-horizon assignment still enforces exact shelter capacity, current
+  routes/speeds, strict-better rerouting, and the public one-interval danger
+  forecast. The monotone transformation does not change its site ordering.
+- Made the complete person ledger an executable invariant. Rational active,
+  panicked active, casualty, and safe populations must sum to the initialized
+  population. Panicked people and casualties retain unresolved time-to-safety
+  debt; safe people contribute zero. A mismatch fails candidate evaluation.
+- Updated single-city and multicity pairing, parity references, plots,
+  manifests, campaign commands, experiment designs, result generation, and
+  current protocols to name objective-greedy as primary. Default evaluation
+  now runs the concise core set: RL, objective-greedy, max-population practice
+  rule, random floor, and scheduled initial-only feedback control. Other
+  registered strategies remain explicitly selectable.
+- This changes benchmark evaluation/reporting, not PPO/NMCC learning. Existing
+  v44 weights remain meaningful, but a fresh evaluation artifact is required
+  for the new primary-inference schema. Python compilation and all 278
+  repository tests pass.
+
+## 2026-10-04 — v45 uniform-reference reward and full State College validation
+
+Mode: `implementation` + `smoke validation` + `full training/evaluation`.
+
+- Replaced the no-further-installations debt potential with the fixed uniform
+  feasible-site policy value. The factual decision reward is now
+  `V_mu(s_k) - C_k - V_mu(s_{k+1})`, with terminal value zero. Its episode sum
+  is savings relative to uniform-random siting, so scheduled capacity arrival
+  no longer gives random or bad siting an automatic positive return.
+- Added a dedicated random-reference value head and replay target. Stage E uses
+  exact uniform feasible actions and learns this stationary reference value;
+  Stage A learns action quality over one physical decision interval with the
+  reference frozen; Stage F adds a dedicated policy-savings continuation value.
+  NMCC's paired label uses the same decomposition as the factual reward and
+  PPO critic, so actor, critic, and continuation now optimize one Bellman
+  system.
+- Kept the complete person ledger. Panicked and casualty states remain in
+  unresolved time-to-safety cost, while casualties stay a reported outcome
+  rather than a standalone reward term. The reward is signed; below-random
+  actions produce negative labels rather than being clipped or suppressed.
+- Added direct tests for signed good/bad action credit, zero uniform-site mean,
+  telescoping reward, backward random-policy cost-to-go, and the NMCC
+  `V_mu + W_pi` branch decomposition. The complete supported suite passes:
+  282 tests.
+- The corrected 250-person E/A/F smoke completed all stages. After correcting
+  numerical conditioning so `V_mu` learns the unamplified cost scale, Stage-E
+  explained variance reached 0.83--0.92, accounting error was numerical zero,
+  and all actor stages produced mixed positive/negative labels and nonzero
+  gradients. Its eight actor episodes were intentionally too small for a
+  performance claim.
+- Completed the 96-episode, 2,500-person 4x4 curriculum and deterministic
+  20-scenario evaluation at
+  `runs/state_college_2500_random_policy_value_v45_full96_20261004`.
+  Stage E's last-eight uniform-policy mean return was `0.016 +/- 0.042 SE`;
+  Stage A mean return was `+0.065`; Stage F mean return was `+0.083`. Maximum
+  reward accounting error was `1.18e-16`. In the final eight Stage-F episodes,
+  continuation validation explained variance averaged `0.443`, continuation
+  supplied `0.739` of branch-score variation, and it changed the top branch in
+  `29.7%` of decisions.
+- Held-out evaluation confirms the reward-floor claim but not heuristic
+  superiority. RL normalized cost was `0.5760`, significantly below random's
+  `0.6471` (paired saving `0.0710`, 95% bootstrap CI `[0.0166, 0.1305]`, 16/20
+  wins). RL was statistically tied with complete-ledger objective-greedy
+  (`0.5733`; paired difference `-0.0027`, CI `[-0.0510, 0.0580]`) and slightly,
+  nonsignificantly worse than the best one-line heuristics (`0.5592--0.5627`).
+  The corrected scheduled `initial_only` control scored `0.6767`; the much
+  stronger `static_greedy` and `rl_precommit` references deploy at time zero
+  and are not fair online comparators.
+- The run is not a convergence claim. It has only 96 episodes versus the
+  registered 100-episode minimum, and 85% of tail actor updates exceeded the
+  descriptive `0.015` KL target. The return curve is positive and stationary
+  in its tail, but optimization remains noisy. Casualties remain stochastic
+  reporting: RL had 28.15 mean versus objective-greedy's 26.7, with no
+  significant paired difference.
+- Corrected the diagnostic plot's stale evacuation-debt label. It now names
+  the uniform-random-relative return, and the run includes
+  `random_reference_reward_validation.png` for Stage-E calibration,
+  continuation quality/influence, stagewise exploration, and the exact
+  telescoping-accounting check.
+
+## 2026-10-05 — v48 restored exploration and calibrated NMCC actor M-step
+
+Mode: `implementation` + `full test` + `smoke validation`.
+
+- Restored independent Stage-P exponential exploration decay: uniform action
+  mixing now moves from `0.35` to `0.02`, categorical temperature from `1.25`
+  to `0.8`, and the actor learning rate from `0.001` to `0.0001`. Stage E
+  remains exactly uniform by its reference-policy contract and does not train
+  the actor.
+- Replaced raw, small-magnitude branch-advantage regression with the coherent
+  NMCC M-step. Each retained decision stores the complete dual-constrained
+  E-step distribution `q`; the actor minimizes `KL(q || pi_theta)` over all
+  feasible cells for 24 replay passes. Exact branched-pair ordering remains a
+  diagnostic. No KL gate, rollback, gradient clipping, fallback policy, or
+  action correction was added.
+- A first diagnostic using pair-only target log-odds produced large movement
+  but worsened full-distribution target KL because unbranched logits were
+  unconstrained. That run was stopped and the incomplete design was replaced,
+  not retained as a fallback. A direct integration test now requires every
+  actor update to reduce KL to its NMCC target.
+- All 290 tests pass. The completed eight-episode, 250-person smoke and two
+  matched held-out scenarios are at
+  `runs/state_college_250_target_v48_actor_scale_smoke8_r2_20261005`.
+- Across six Stage-P updates, mean policy KL was `0.00829` versus `0.0000271`
+  in v47; final entropy was `0.9464` versus `0.9998`; mean target KL fell from
+  `0.1717` before each M-step to `0.1484` after it; pairwise branch-order
+  accuracy averaged `0.823`; and expected NMCC advantage gain averaged
+  `0.00794` versus `0.000235` in v47.
+- On the same two held-out scenarios, v48 RL normalized cost was `0.3370`,
+  improving on v47 RL's `0.3415`, random's `0.3559`, max-active's `0.3430`,
+  and scheduled initial-only's `0.3686`. Objective-greedy remained stronger at
+  `0.3133`. This smoke validates update direction and scale, not convergence
+  or benchmark superiority.
+
+## 2026-10-06 — v49 coherent NMCC policy iteration
+
+Mode: `implementation` + `full test` + `staged smoke validation`.
+
+- Corrected the NMCC E/M distribution mismatch. The E-step now constructs its
+  target from the raw masked actor distribution that the M-step and
+  deterministic evaluation actually use. Temperature and uniform mixing remain
+  data-collection exploration only.
+- Removed persistent actor-target replay. Every NMCC target is now fitted for
+  24 passes inside the policy iteration that generated it and then discarded;
+  targets tied to older actor priors or older continuation values are never
+  optimized by a later policy.
+- Removed the separate continuation replay learner. Stage P uses the same
+  critic trained on the current on-policy return-to-go for both actor branch
+  continuation and value diagnostics. The fixed uniform-random reference value
+  remains the only persistent replay dataset because its policy never changes.
+- Added regression tests that require the stored NMCC prior to equal the raw
+  actor while the sampled action still follows the exploration distribution,
+  prohibit actor/continuation replay in checkpoints, require every direct
+  actor fit to reduce target KL, and require continuation diagnostics to refer
+  to the shared on-policy critic. All 290 repository tests pass.
+- Completed the 2E + 6P, 250-person staged smoke and two matched evaluation
+  scenarios at
+  `runs/state_college_250_target_v49_smoke8_seed4902_20261006`. Every one of
+  the six Stage-P M-steps reduced target KL; the mean reduction was `0.0320`,
+  every update increased expected NMCC advantage, and normalized entropy moved
+  from `1.0000` to `0.9388` as exploration decayed from `0.35` to `0.02`.
+- This short checkpoint is not yet a good policy. Its held-out normalized cost
+  was `0.3384`, versus `0.3280` for random and `0.2925` for objective-greedy.
+  Six actor iterations validate data flow and update direction, not convergence
+  or benchmark superiority. The continuation critic also remains immature:
+  on-policy explained variance ended at `-0.022` and its branch-score share was
+  only about `0.010`.
+- No new worker was left by the successful v49 run. Twenty-five workers from
+  older interrupted runs remain in macOS `UE` (uninterruptible/exiting) state,
+  parented to PID 1 with 4 KB RSS. Both TERM and KILL were delivered to their
+  exact PIDs; the kernel will not reap them before reboot.
+
+## 2026-10-06 — v50 simulator-graded residual rollout policy iteration
+
+Mode: `implementation` + `full-horizon branch integration` + `smoke training`.
+
+- Replaced the active four-cell, one-interval MPO target and learned endpoint
+  continuation with complete simulator rollouts. Each tested cell starts from
+  the same exact snapshot and keyed future; later installations are selected
+  deterministically by a frozen copy of the current GNN/LSTM actor. No critic,
+  value bootstrap, gate, rollback, or model-filled action grades the actor.
+- Made the actor explicitly residual: the fixed base logit is the normalized
+  exact objective-greedy assignment gain already present in the observation,
+  and the zero-initialized neural actor learns a bounded correction. At
+  initialization deterministic RL therefore selects exactly the myopic base.
+- Replaced fixed-size MPO updates with inverse-variance-weighted regression on
+  every pair of tested cells. Targets are complete cost-to-go differences;
+  weights use the variance of paired common-random-number differences. Actor
+  target replay remains iteration-local, so older exploratory panels do not
+  outvote a new frozen-policy iteration.
+- Replaced four uniformly sampled branches with a bounded coverage panel: the
+  current actor's strongest cells plus two least-evaluated feasible cells.
+  Per-cell counts persist in the checkpoint and rotate neglected feasible
+  cells into later panels. `nmccPiMaxBranches=0` requests exhaustive grading.
+- Preserved the v49 random-policy reward definition and complete ledger. In
+  the single policy-improvement stage, `V_mu` is evaluated directly by a
+  uniform-siting Monte Carlo continuation at each decision rather than by an
+  untrained Stage-E value approximation. Observations, simulator dynamics and
+  the held-out evaluation objective are unchanged.
+- Added unit tests for coverage rotation, exhaustive mode, required executed
+  action inclusion, paired-variance weighting, correct lower-cost ranking,
+  exact zero-residual objective-greedy behavior, isolated worker execution and
+  no critic update in the rollout actor path.
+- Completed a four-episode, 250-person smoke at
+  `runs/state_college_250_rollout_pi_v50_smoke4_seed5001_20261006`. Both actor
+  fits were nonzero; pairwise accuracy was `0.851` then `0.806`, policy KL was
+  `0.0805` then `0.0280`, and measured expected rollout-score gain was
+  `+0.1159` then `+0.0119`. The critic made zero updates by construction.
+  Fifteen of sixteen cells were graded; the remaining cell had no feasible
+  sampled shelter candidate. Average recorded branch time was `5.54 s` then
+  `4.59 s` per decision. Tqdm displayed one misleading long elapsed interval,
+  but logged episode wall times were `70–92 s` for the updated episodes.
+
+## 2026-10-06 — v51 residual and diagnostic coherence review
+
+Mode: `targeted implementation` + `full regression` + `fresh smoke training`.
+
+- Removed the residual actor's `4*tanh(.)` ceiling. The zero-initialized neural
+  correction is now a linear readout added to the fixed, normalized
+  objective-greedy base score, so large simulator-measured corrections retain
+  their scale and gradient instead of saturating.
+- Removed the obsolete categorical improvement target from active transitions
+  and checkpoints. Each frozen-policy iteration fits all of its physically
+  branched pair contrasts for the configured number of passes and then clears
+  them. Only fixed-policy random-reference data can use persistent replay, and
+  the one-stage v51 curriculum does not populate that replay.
+- Split entropy reporting into two explicitly different quantities: episode
+  `entropy` is the normalized distribution actually sampled after one
+  temperature transform and one uniform exploration mixture;
+  `actor_entropy_before/after_update` is the raw temperature-one actor that
+  paired rollout regression fits and deterministic evaluation ranks.
+  Evaluation now applies neither training temperature nor exploration mixing.
+- Replaced stale target-KL diagnostics with actual pairwise regression loss and
+  accuracy before/after fitting, raw residual RMS/max, and exact
+  `KL(new actor || frozen iteration prior)`. KL is descriptive: there is no
+  acceptance gate, rollback, clipping target, or correction controller.
+- Removed the retired held-out controller gate from experiment convergence.
+  Rollout policy iteration is audited using complete branch-target coverage,
+  finite pairwise fits, complete rollout batches, and tail stationarity; its KL
+  cannot block evaluation. Updated training figures distinguish sampled
+  behavior entropy from raw actor entropy and no longer draw a PPO KL limit for
+  the rollout learner.
+- The full repository regression suite passes `299` tests. A fresh four-episode
+  State College smoke completed at
+  `runs/state_college_250_rollout_pi_v51_smoke4_seed5101_20261006`. Both actor
+  fits reduced paired loss (`1.0200 -> 0.8547`, `0.6987 -> 0.5560`) and improved
+  pairwise accuracy (`0.653 -> 0.792`, `0.648 -> 0.690`). Raw residual RMS moved
+  `0 -> 0.581` on the first update and `0.516 -> 0.386` on the second; exact
+  actor KL was `0.0500` and `0.0689`. Behavior entropy was logged separately
+  from raw actor entropy, the actor made `32` optimizer steps, the critic made
+  `0`, pending actor transitions were `0`, and persistent reference replay was
+  `0`. Fifteen of sixteen cells were graded; the ungraded cell was never
+  feasible in the smoke scenarios.
+- This smoke validates wiring and optimizer response only. It does not establish
+  convergence, foresight, or superiority over objective-greedy; those require
+  the 96-episode multi-seed training and matched deterministic evaluation.
+
+## 2026-10-07 — v52 diagnostic and decision-aligned rollout fit
+
+Mode: `full diagnostic` + `targeted learner/runtime correction` + `matched smoke`.
+
+- Confirmed that per-state target normalization erased action consequence, the
+  minimum sampled variance made inverse-variance fitting ill-conditioned, and
+  precision-only regression overvalued immaterial near-ties. The final actor
+  fit keeps one iteration-wide target scale and weights paired regression by
+  measured regret divided by paired standard error.
+- Forced every rollout panel to measure both the executed action and the exact
+  objective-greedy base. Production policy improvement now uses four shared
+  futures; a six-future audit found only 40% two-tape versus 73.3% four-tape
+  top-cell agreement with the six-tape ranking.
+- Added bounded worker protocol reads, transactional cleanup after partial
+  startup or interruption, and a parent-death watchdog. Three repaired smokes
+  added no new orphan workers. Historical macOS `UE` workers remain kernel
+  stuck and require a restart.
+- The final matched smoke update improved cost-aware pair accuracy
+  `0.844 -> 0.858` and expected rollout advantage `0.00206 -> 0.00606`, with
+  KL `0.266` and raw actor entropy `0.836 -> 0.820`. The focused regression
+  suite passes 166 tests.
+- Two deterministic held-out smoke scenarios beat random but trailed
+  objective-greedy. A six-state foresight ablation found no useful momentum or
+  forecast dependence after one update. These are explicit undertraining
+  results; no benchmark-superiority or foresight claim is made.
+- Full evidence and the next-run contract are in
+  `docs/ROLLOUT_PI_V52_DIAGNOSTIC_20261007.md`.
+
+## 2026-10-07 — v54 coherent terminal clearance-tail objective
+
+Mode: `objective extension` + `pipeline regression` + `four-episode smoke`.
+
+- Added one explicit service-level term to the complete person-minute ledger:
+  the slowest 10% of restricted safety-completion times receive unit extra
+  weight. T90, the slow-tail mean, and T100 are reported separately. Safe
+  completion times are retained exactly, unfinished people retain their
+  capacity-valid remaining time, and a casualty can never improve clearance.
+- Applied the same term to immediate objective-greedy scores, full-horizon
+  simulator-graded actor branches, frozen-policy continuation, uniform-random
+  reference continuation, factual reward closure, and deterministic
+  evaluation. The reward remains savings relative to uniform-random siting;
+  no standalone installation, completion, or realized-death bonus was added.
+  Expected casualty loss remains Rao-Blackwellized in the complete ledger, so
+  the return already measures expected casualties avoided relative to random
+  without adding a second noisy Bernoulli term.
+- Added exact weighted completion-time bookkeeping for grouped pedestrians,
+  explicit `clearanceTailFraction` and `clearanceTailExtraWeight` curriculum
+  parameters, v54 smoke/full curricula, logger fields, and regression tests.
+  Older experiment files retain their original objective because the new
+  extra weight defaults to zero.
+- The supported runtime passed 115 RL-framework tests plus 62 focused rollout,
+  benchmark, branch, curriculum, and population tests. The four-episode
+  State College smoke completed at
+  `runs/state_college_250_rollout_pi_v54_tail_smoke4_seed5401_20261007`.
+  Reward accounting error was at most `5.6e-17`; the one actor update reduced
+  paired loss `1.234 -> 0.558` and improved pairwise ranking accuracy
+  `0.840 -> 0.899`. This validates wiring, not policy performance.
+- In the two harsh smoke scenarios at least 10% of the population remained
+  unresolved, so the slow-tail mean reached its declared 360-minute ceiling.
+  This is a useful sensitivity warning: the complete base ledger continues to
+  distinguish policies, while the tail fraction should be reported in a
+  prespecified sensitivity analysis rather than tuned on held-out results.
+
+## 2026-10-08 — v55 constrained categorical rollout policy iteration
+
+Mode: `learner replacement` + `full regression` + `background comparison campaign`.
+
+- Replaced pairwise score regression as the actor's optimizing loss with a
+  listwise categorical M-step, `KL(q || pi_theta)`, over the complete feasible
+  action table. The NMCC E-step computes `q` from full-horizon, common-random-
+  number simulator costs and constrains every iteration to
+  `KL(q || pi_old) <= 0.05`; ungraded actions retain their frozen-policy mass.
+- Preserved the zero-initialized objective-greedy residual architecture. The
+  fixed greedy logit remains present after every update, while the constrained
+  categorical target prevents a single noisy iteration from replacing it.
+  Paired rank accuracy is descriptive only and has no gradient authority.
+- Replaced stale cross-iteration coverage selection with an iteration-local
+  panel containing the executed action, objective-greedy base, strongest
+  remaining base-score contenders, and two uniformly sampled feasible extras.
+  The first two high-impact installations are exhaustive. Four shared futures
+  grade each selected cell to the physical episode horizon, and the paired
+  contrast standard error supplies the categorical temperature floor.
+- Actor targets are discarded after each four-episode policy iteration. No
+  actor replay, branch-label replay, cell-coverage state, critic grade, learned
+  continuation grade, correction gate, rollback, or fallback controller is
+  used. The complete ledger, random-reference reward, simulator, observation,
+  and deterministic evaluation objective were not changed.
+- Updated diagnostics to report categorical target KL before/after fitting,
+  target-to-prior step KL, target temperature, paired contrast uncertainty,
+  eligible/panel coverage, retained-policy KL, entropy, and physical rollout
+  advantage. Updated checkpoint/model signature to v55.
+- The full repository regression suite passes 305 tests. A 12-episode,
+  250-person smoke plus all-benchmark matched evaluation is running first;
+  after it succeeds, the same background job starts the 128-episode,
+  2,500-person training and 20-scenario matched evaluation.

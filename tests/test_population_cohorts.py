@@ -9,6 +9,8 @@ from ShelterDatabase import ShelterDS
 class _MapStub:
     def __init__(self):
         self.node = SimpleNamespace(OSMID=1, nodeX=0.0, nodeY=0.0)
+        self.other_node = SimpleNamespace(OSMID=2, nodeX=1.0, nodeY=1.0)
+        self.nodeListByOSMID = {1: self.node, 2: self.other_node}
 
     def assignGenerationNode(self):
         return self.node
@@ -32,6 +34,33 @@ class PopulationCohortTests(unittest.TestCase):
             [4, 4, 3],
         )
         self.assertEqual(store.remaining_active_count(), 11)
+
+    def test_initialization_consumes_the_exact_population_origin_plan(self):
+        store = PedDS(9, maximum_group_size=4)
+        store.initPedestrianAgent(
+            _MapStub(),
+            _CellStub(),
+            64.0,
+            birth_node_osmids=[2, 1, 2],
+        )
+        self.assertEqual(
+            [agent.currNode.OSMID for agent in store.pedAgentList.values()],
+            [2, 1, 2],
+        )
+        self.assertEqual(
+            [agent.group_size for agent in store.pedAgentList.values()],
+            [4, 4, 1],
+        )
+
+    def test_population_origin_plan_must_match_represented_agent_count(self):
+        store = PedDS(9, maximum_group_size=4)
+        with self.assertRaisesRegex(ValueError, "exactly one node"):
+            store.initPedestrianAgent(
+                _MapStub(),
+                _CellStub(),
+                64.0,
+                birth_node_osmids=[1, 2],
+            )
 
     def test_partial_cohort_casualties_preserve_survivors(self):
         store = PedDS(10, maximum_group_size=10)

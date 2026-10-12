@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "curriculum_id": "state_college_2500_risk_value_v28",
-  "description": "Version-28 conservative policy-improvement curriculum with conserved en-route shelter capacity. The fixed base rule selects the safe site with the largest capacity-capped reduction in active plus hazard-exposure time. Exact common-random-number branches may improve on that rule only after a held-out paired-gain lower bound is positive. Hard masks enforce safety and capacity; the scientific reward remains normalized safe completion, casualty, evacuation person-time, and hazard-exposure person-time.",
+  "description": "Version-28 conservative policy-improvement curriculum with conserved en-route shelter capacity. The fixed base rule selects the safe site with the largest capacity-capped reduction in hazard-exposure time. Exact common-random-number branches may improve on that rule only after a held-out paired-gain lower bound is positive. Hard masks enforce safety and capacity; the scientific reward is normalized safe completion, casualty, and hazard-exposure person-time.",
   "stages": [
     {
       "stage_id": "S1",
@@ -19,7 +19,7 @@
             "panicRate": 0.5,
             "maxAdditionalShelters": 5,
             "shelterCapacityToken": 500,
-            "ppoRolloutEpisodes": 4,
+            "ppoRolloutEpisodes": 8,
             "maximumShelterForecastDanger": 0.6,
             "requireCandidateOperationalBenefit": true,
             "minimumCandidateReroutableFraction": 0.0,

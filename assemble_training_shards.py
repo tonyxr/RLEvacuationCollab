@@ -131,7 +131,7 @@ def validate_training_shards(shard_dirs: Sequence[Path]) -> dict:
         for index in indices:
             policy_dir = resolved / "policies" / f"policy_{index:03d}"
             checkpoint = policy_dir / "regional_policy.pt"
-            diagnostics = policy_dir / "ppo_diagnostics.csv"
+            diagnostics = policy_dir / "learner_diagnostics.csv"
             if not checkpoint.is_file() or not diagnostics.is_file():
                 raise FileNotFoundError(
                     checkpoint if not checkpoint.is_file() else diagnostics
@@ -213,7 +213,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             destination = output_dir / "policies" / f"policy_{policy_index:03d}"
             destination.mkdir(parents=True, exist_ok=True)
             shutil.copy2(paths["checkpoint"], destination / "regional_policy.pt")
-            shutil.copy2(paths["diagnostics"], destination / "ppo_diagnostics.csv")
+            shutil.copy2(paths["diagnostics"], destination / "learner_diagnostics.csv")
     combined_rows.sort(
         key=lambda row: (
             int(float(row.get("policy_replication", 0))),
@@ -269,9 +269,12 @@ def main(argv: Iterable[str] | None = None) -> int:
             "artifacts": {
                 "city_profile_snapshot": str(snapshot_destination),
                 "training_summary": str(training_path),
-                "ppo_diagnostics": {
+                "learner_diagnostics": {
                     str(index): str(
-                        output_dir / "policies" / f"policy_{index:03d}" / "ppo_diagnostics.csv"
+                        output_dir
+                        / "policies"
+                        / f"policy_{index:03d}"
+                        / "learner_diagnostics.csv"
                     )
                     for index in range(1, int(reference_manifest["policy_replicates"]) + 1)
                 },

@@ -103,9 +103,69 @@ class SocialForceTests(unittest.TestCase):
         )
         store.pedAgentList[0] = pedestrian
         store.pedestrianHazardInteraction()
-        self.assertAlmostEqual(pedestrian.currSpeed, 63.0)
+        self.assertAlmostEqual(pedestrian.currSpeed, 100.0)
         self.assertAlmostEqual(pedestrian.social_self_force, 1.0)
         self.assertEqual(store.socialForcePersonSteps, 1.0)
+
+    def test_same_danger_level_does_not_compound_speed_reduction(self):
+        store = PedDS(1)
+        tracker = _CellTracker(state=3, heat=40.0, smoke=150.0)
+        store.cellTracker = tracker
+        store.maxSpeed = 100.0
+        pedestrian = SimpleNamespace(
+            agentID=0,
+            group_size=1,
+            terminated=False,
+            currCell=(0, 0),
+            currSpeed=100.0,
+            social_force_speed=100.0,
+            affected=False,
+            distance_travelled_m=0.0,
+        )
+        store.pedAgentList[0] = pedestrian
+
+        store.pedestrianHazardInteraction()
+        first_speed = pedestrian.currSpeed
+        tracker.cell.heat = 80.0
+        tracker.cell.smoke = 300.0
+        store.pedestrianHazardInteraction()
+
+        self.assertAlmostEqual(first_speed, 75.0)
+        self.assertAlmostEqual(pedestrian.currSpeed, first_speed)
+
+        tracker.cell.impactedLevel = 4
+        store.pedestrianHazardInteraction()
+        self.assertAlmostEqual(pedestrian.currSpeed, 50.0)
+
+    def test_speed_recovers_from_maximum_when_danger_level_decreases(self):
+        store = PedDS(1)
+        tracker = _CellTracker(state=4, heat=80.0, smoke=300.0)
+        store.cellTracker = tracker
+        store.maxSpeed = 100.0
+        pedestrian = SimpleNamespace(
+            agentID=0,
+            group_size=1,
+            terminated=False,
+            currCell=(0, 0),
+            currSpeed=100.0,
+            social_force_speed=100.0,
+            affected=False,
+            distance_travelled_m=0.0,
+        )
+        store.pedAgentList[0] = pedestrian
+
+        store.pedestrianHazardInteraction()
+        self.assertAlmostEqual(pedestrian.currSpeed, 50.0)
+
+        tracker.cell.impactedLevel = 1
+        tracker.cell.heat = 0.0
+        tracker.cell.smoke = 0.0
+        store.pedestrianHazardInteraction()
+
+        # Recovery is computed from maxSpeed, not from the previous 50 m/min,
+        # and the free-flow cap prevents overshoot from the safe self-force.
+        self.assertAlmostEqual(pedestrian.currSpeed, 100.0)
+        self.assertAlmostEqual(pedestrian.social_force_speed, 100.0)
 
 
 class PanicBehaviorTests(unittest.TestCase):
@@ -362,11 +422,11 @@ class ExperimentInfrastructureTests(unittest.TestCase):
         design = load_design()
         plan = execution_plan(5, 8, design)
         self.assertEqual(plan["factor_cells"], 625)
-        self.assertEqual(plan["episodes_per_scenario_replication"], 13)
-        self.assertEqual(plan["total_episodes"], 81250)
+        self.assertEqual(plan["episodes_per_scenario_replication"], 14)
+        self.assertEqual(plan["total_episodes"], 87500)
         fixed_policy_plan = execution_plan(5, 1, design)
-        self.assertEqual(fixed_policy_plan["episodes_per_scenario_replication"], 6)
-        self.assertEqual(fixed_policy_plan["total_episodes"], 37500)
+        self.assertEqual(fixed_policy_plan["episodes_per_scenario_replication"], 7)
+        self.assertEqual(fixed_policy_plan["total_episodes"], 43750)
 
     def test_policy_cache_round_trip_is_content_addressed_and_checksummed(self):
         contract = {"city_profile": "abc", "curriculum": {"episodes": 120}}

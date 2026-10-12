@@ -93,17 +93,18 @@
     "pairing": "Common map, population, candidates, hazard path, pedestrian outcome stream, policy seed, and scenario seed across partition modes",
     "policy_training": "Train a separate policy for every partition mode and grid resolution; never transfer an equal-area checkpoint to an adaptive grid or vice versa",
     "primary_outcomes": [
-      "casualty_fraction",
+      "objective_normalized_cost",
+      "expected_casualties",
       "restricted_mean_time_to_safety"
     ],
     "secondary_outcomes": [
       "safe_completion_fraction",
+      "casualty_fraction",
       "unfinished_fraction",
-      "normalized_risk_weighted_person_time",
       "online_decision_latency_ms"
     ],
     "statistical_model": "Paired mode differences with two-way policy-seed/scenario bootstrap within city and equal-city macro averaging",
-    "multiplicity": "Holm correction across casualty fraction and restricted mean time to safety",
+    "multiplicity": "Holm correction across normalized objective cost, expected casualties, and restricted mean time to safety",
     "noninferiority": "A decision-quality noninferiority margin must be numerically preregistered before held-out evaluation; this file intentionally does not invent one without domain calibration"
   },
   "planned_figures": [

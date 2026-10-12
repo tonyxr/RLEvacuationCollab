@@ -8,8 +8,8 @@
     "train_episodes_per_city": 120,
     "bootstrap_draws": 20000,
     "confidence_level": 0.95,
-    "primary_metric": "objective_episode_return",
-    "primary_comparison": "rl_minus_heuristic",
+    "primary_metric": "objective_normalized_cost",
+    "primary_comparison": "rl_minus_complete_ledger_objective_greedy",
     "city_weighting": "equal_city_macro_average"
   },
   "evaluation_factorial": {
@@ -72,15 +72,15 @@
     },
     "E1": {
       "title": "Primary RL efficacy",
-      "research_question": "Does the learned regional-priority policy improve the simple evacuation objective over the active-population heuristic?",
+      "research_question": "Does the learned regional-priority policy improve the realized evacuation objective over the strongest complete-ledger myopic policy?",
       "design": {
         "policies": [
           "rl",
-          "heuristic"
+          "objective_greedy"
         ],
         "pairing": "common_random_numbers_within_city_factor_cell",
         "training": "balanced_pooled_five_city_ppo",
-        "estimand": "equal_city_macro_mean_rl_minus_heuristic"
+        "estimand": "equal_city_macro_mean_rl_minus_objective_greedy"
       },
       "outputs": [
         "training_summary",
@@ -94,6 +94,7 @@
       "design": {
         "policies": [
           "rl",
+          "objective_greedy",
           "risk_reduction",
           "heuristic",
           "hazard_weighted",
@@ -157,7 +158,7 @@
         "models": [
           "pooled_all_cities",
           "leave_one_city_out",
-          "heuristic"
+          "objective_greedy"
         ],
         "held_out_units": "each_of_five_cities",
         "no_target_city_finetuning": true
@@ -177,7 +178,7 @@
           "shelter_capacity_error",
           "candidate_availability_loss"
         ],
-        "comparison": "rl_minus_heuristic",
+        "comparison": "rl_minus_complete_ledger_objective_greedy",
         "analysis": "paired_effect_by_perturbation_and_level"
       },
       "outputs": [
@@ -233,12 +234,12 @@
         "deployment_strategy",
         "scenario_seed",
         "episode_return",
-        "objective_episode_return",
+        "objective_normalized_cost",
         "safe_completed",
         "casualty",
         "unfinished",
         "restricted_mean_time_to_safety",
-        "normalized_risk_weighted_person_time",
+        "expected_casualties",
         "initial_population"
       ]
     },
@@ -254,7 +255,7 @@
         "deployment_strategy",
         "scenario_seed",
         "episode_return",
-        "objective_episode_return",
+        "objective_normalized_cost",
         "initial_population",
         "safe_completed",
         "casualty"
@@ -275,12 +276,12 @@
         "deployment_strategy",
         "scenario_seed",
         "episode_return",
-        "objective_episode_return",
+        "objective_normalized_cost",
         "safe_completed",
         "casualty",
         "unfinished",
         "restricted_mean_time_to_safety",
-        "normalized_risk_weighted_person_time",
+        "expected_casualties",
         "initial_population"
       ]
     },
@@ -324,7 +325,7 @@
         "scenario_seed",
         "ablation",
         "episode_return",
-        "objective_episode_return",
+        "objective_normalized_cost",
         "safe_completed",
         "casualty",
         "initial_population"
@@ -341,7 +342,7 @@
         "scenario_seed",
         "deployment_strategy",
         "episode_return",
-        "objective_episode_return",
+        "objective_normalized_cost",
         "safe_completed",
         "casualty",
         "initial_population"
@@ -360,7 +361,7 @@
         "level",
         "deployment_strategy",
         "episode_return",
-        "objective_episode_return",
+        "objective_normalized_cost",
         "safe_completed",
         "casualty",
         "initial_population"
@@ -385,12 +386,12 @@
         "stop_time_config",
         "simulation_runtime_s",
         "episode_return",
-        "objective_episode_return",
+        "objective_normalized_cost",
         "safe_completed",
         "casualty",
         "unfinished",
         "restricted_mean_time_to_safety",
-        "normalized_risk_weighted_person_time",
+        "expected_casualties",
         "initial_population"
       ]
     }

@@ -1,0 +1,173 @@
+{
+  "schema_version": 2,
+  "curriculum_id": "state_college_multiscale_env_then_action_v36_120",
+  "description": "Version-36 two-stage training across 2500, 5000, 7500, and 10000 pedestrians. Every active-policy episode starts with two shelters and installs eight equal-capacity shelters at t=15,30,...,120, then evolves through t=180. The first six four-episode rollout updates supervise only the shared GNN/LSTM environment-dynamics representation from the real 15-minute transitions. The remaining updates train the actor with PPO and full-action clean NMCC using the exact immediate pre/post change in remaining hazard-weighted time-to-safety. No candidate is censored by benefit or safety rank, and there is no correction gate, model-filled action value, heuristic continuation, or fallback controller.",
+  "learner_overrides": {
+    "stopTime": 181,
+    "shelterActionInterval": 15,
+    "requirePopulationMatchedShelterCapacity": true,
+    "ppoRolloutEpisodes": 4,
+    "nmccEnabled": false,
+    "nmccPolicyImprovement": true,
+    "nmccCounterfactualHorizon": 0,
+    "nmccCounterfactualWeight": 1.0,
+    "nmccJointCounterfactualWeight": 1.0,
+    "nmccInterventionCost": 0.0,
+    "nmccPiEpsilon": 0.25,
+    "nmccPiEtaMin": 0.02,
+    "nmccPiTapes": 1,
+    "nmccPiBranchHorizon": 0,
+    "nmccPiActorEpochs": 8,
+    "nmccPiFitTolerance": 0.1,
+    "nmccNaturalLossCoefficient": 1.0,
+    "actorPrior": "none",
+    "actorPriorScale": 0.0,
+    "representationMode": "shared_multitask",
+    "actorLearningRate": 0.001,
+    "criticLearningRate": 0.001,
+    "actorPpoEpochs": 4,
+    "criticPpoEpochs": 4,
+    "learningRewardScale": 10.0,
+    "learningRateSchedule": "cosine",
+    "learningRateWarmupUpdates": 0,
+    "learningRateDecayUpdates": 24,
+    "actorLearningRateMinimumFraction": 0.1,
+    "criticLearningRateMinimumFraction": 0.1,
+    "entropyCoefficientStart": 0.01,
+    "entropyCoefficientEnd": 0.001,
+    "explorationDecayUpdates": 6,
+    "explorationSchedule": "exponential_half_life",
+    "explorationRateStart": 0.3,
+    "explorationRateEnd": 0.02,
+    "actionTemperatureStart": 1.25,
+    "actionTemperatureEnd": 0.8
+  },
+  "stages": [
+    {
+      "stage_id": "E",
+      "label": "environment_dynamics_pretraining",
+      "episodes_per_city": 24,
+      "variants": [
+        {
+          "variant_id": "state_college_n2500_environment",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 2500,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "initShelterVol": 2,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 250
+          }
+        },
+        {
+          "variant_id": "state_college_n5000_environment",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 5000,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "initShelterVol": 2,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 500
+          }
+        },
+        {
+          "variant_id": "state_college_n7500_environment",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 7500,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "initShelterVol": 2,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 750
+          }
+        },
+        {
+          "variant_id": "state_college_n10000_environment",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 10000,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "initShelterVol": 2,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 1000
+          }
+        }
+      ]
+    },
+    {
+      "stage_id": "A",
+      "label": "shelter_action_policy_optimization",
+      "episodes_per_city": 96,
+      "variants": [
+        {
+          "variant_id": "state_college_n2500_action",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 2500,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "initShelterVol": 2,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 250
+          }
+        },
+        {
+          "variant_id": "state_college_n5000_action",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 5000,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "initShelterVol": 2,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 500
+          }
+        },
+        {
+          "variant_id": "state_college_n7500_action",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 7500,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "initShelterVol": 2,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 750
+          }
+        },
+        {
+          "variant_id": "state_college_n10000_action",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 10000,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "initShelterVol": 2,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 1000
+          }
+        }
+      ]
+    }
+  ]
+}

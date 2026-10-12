@@ -4,8 +4,8 @@
 This diagnostic does not train or mutate a checkpoint.  It checks three
 properties independently of downstream policy performance:
 
-1. interval reward components telescope exactly to the same post-action
-   objective computed at the terminal boundary;
+1. positive pre/post installation reductions telescope when remaining
+   risk-time decreases monotonically across deployments;
 2. complete duration-aware Monte Carlo return-to-go propagates terminal
    outcomes to every earlier actor decision, is invariant to critic error, and
    preserves factorized branch isolation; and
@@ -72,8 +72,8 @@ def reward_telescoping_audit(*, trials: int, seed: int) -> dict:
         remaining = population
         safe_total = 0
         casualty_total = 0
-        active_time_total = 0.0
-        exposure_time_total = 0.0
+        initial_risk_time = float(rng.uniform(0.5, 1.5) * population * horizon)
+        current_risk_time = initial_risk_time
         component_sum = np.zeros(len(REWARD_COMPONENT_NAMES), dtype=np.float64)
         scalar_sum = 0.0
         before = _snapshot(
@@ -90,10 +90,9 @@ def reward_telescoping_audit(*, trials: int, seed: int) -> dict:
                 terminal_casualty_trials += 1
             safe_total += new_safe
             casualty_total += new_casualties
-            active_time = float(rng.uniform(0.0, population * horizon / interval_count))
-            exposure_time = float(rng.uniform(0.0, active_time))
-            active_time_total += active_time
-            exposure_time_total += exposure_time
+            next_risk_time = float(
+                rng.uniform(0.0, current_risk_time)
+            )
             after = _snapshot(
                 safe=safe_total,
                 casualties=casualty_total,
@@ -102,20 +101,21 @@ def reward_telescoping_audit(*, trials: int, seed: int) -> dict:
             reward = processor.evaluate(
                 before=before,
                 after=after,
-                active_person_time=active_time,
-                hazard_exposure_person_time=exposure_time,
+                remaining_risk_time_before=current_risk_time,
+                remaining_risk_time_after=next_risk_time,
                 initial_population=population,
                 horizon=horizon,
             )
             component_sum += reward.component_vector().astype(np.float64)
             scalar_sum += float(reward.total)
+            current_risk_time = next_risk_time
             before = after
 
         whole = processor.evaluate(
             before=_snapshot(safe=0, casualties=0, population=population),
             after=before,
-            active_person_time=active_time_total,
-            hazard_exposure_person_time=exposure_time_total,
+            remaining_risk_time_before=initial_risk_time,
+            remaining_risk_time_after=current_risk_time,
             initial_population=population,
             horizon=horizon,
         )

@@ -1,0 +1,69 @@
+{
+  "schema_version": 2,
+  "curriculum_id": "state_college_n250_rollout_pi_v55_categorical_smoke12",
+  "description": "Three-update smoke curriculum for KL-constrained categorical rollout policy iteration. Complete simulator rollouts grade a greedy-plus-uniform candidate panel; the actor replays the latest 12 recurrent episodes with current-policy-rebased targets and random-reference reward accounting is unchanged.",
+  "learner_overrides": {
+    "cellX": 4,
+    "cellY": 4,
+    "cellPartitionMode": "population_density_adaptive",
+    "cellPartitionMinWidthFraction": 0.0001,
+    "stopTime": 181,
+    "shelterActionInterval": 15,
+    "requirePopulationMatchedShelterCapacity": true,
+    "shelterCapacitySurplus": 200,
+    "casualtyPriorityKappa": 2.0,
+    "clearanceTailFraction": 0.10,
+    "clearanceTailExtraWeight": 1.0,
+    "hazardSpreadSpeedMPerMinute": 33.333333333333336,
+    "ppoRolloutEpisodes": 4,
+    "nmccPolicyImprovement": true,
+    "nmccPiEpsilon": 0.05,
+    "nmccPiEtaMin": 0.03,
+    "nmccPiTapes": 4,
+    "nmccPiExhaustiveDecisions": 2,
+    "nmccPiMaxBranches": 6,
+    "nmccPiWorkers": 4,
+    "randomReferenceRollouts": 1,
+    "nmccPiReplayMaxEpisodes": 12,
+    "nmccPiReplayEpochs": 12,
+    "nmccPiFitTolerance": 0.01,
+    "actorPrior": "objective_greedy",
+    "actorPriorScale": 1.0,
+    "representationMode": "actor_owned",
+    "actorLearningRate": 0.001,
+    "learningRewardScale": 10.0,
+    "learningRateSchedule": "cosine",
+    "learningRateWarmupUpdates": 0,
+    "learningRateDecayUpdates": 8,
+    "actorLearningRateMinimumFraction": 0.1,
+    "entropyCoefficientStart": 0.0,
+    "entropyCoefficientEnd": 0.0,
+    "explorationDecayUpdates": 2,
+    "explorationSchedule": "exponential_half_life",
+    "explorationRateStart": 0.25,
+    "explorationRateEnd": 0.02,
+    "actionTemperatureStart": 1.0,
+    "actionTemperatureEnd": 1.0
+  },
+  "stages": [
+    {
+      "stage_id": "P",
+      "label": "categorical_rollout_policy_iteration_smoke",
+      "episodes_per_city": 12,
+      "variants": [{
+        "variant_id": "state_college_n250_rollout_pi_categorical_smoke_v55",
+        "weight": 1,
+        "overrides": {
+          "pedVol": 250,
+          "pedestrianGroupSize": 1,
+          "hazardVol": 3,
+          "hazardCasualtyRate": [40, 9],
+          "panicRate": 0.5,
+          "initShelterVol": 2,
+          "maxAdditionalShelters": 8,
+          "shelterCapacityToken": 45
+        }
+      }]
+    }
+  ]
+}

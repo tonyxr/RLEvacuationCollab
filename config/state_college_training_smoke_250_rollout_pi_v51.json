@@ -1,0 +1,65 @@
+{
+  "schema_version": 2,
+  "curriculum_id": "state_college_n250_rollout_pi_v51_smoke4",
+  "description": "Four-episode smoke for simulator-graded residual rollout policy iteration with an unbounded linear correction and distribution-consistent behavior/actor entropy diagnostics.",
+  "learner_overrides": {
+    "cellX": 4,
+    "cellY": 4,
+    "cellPartitionMode": "population_density_adaptive",
+    "cellPartitionMinWidthFraction": 0.0001,
+    "stopTime": 181,
+    "shelterActionInterval": 15,
+    "requirePopulationMatchedShelterCapacity": true,
+    "shelterCapacitySurplus": 200,
+    "casualtyPriorityKappa": 2.0,
+    "hazardSpreadSpeedMPerMinute": 33.333333333333336,
+    "ppoRolloutEpisodes": 2,
+    "nmccPolicyImprovement": true,
+    "nmccCounterfactualHorizon": 0,
+    "nmccPiTapes": 1,
+    "nmccPiMaxBranches": 4,
+    "nmccPiWorkers": 4,
+    "randomReferenceRollouts": 1,
+    "nmccPiBranchHorizon": 15,
+    "nmccPiContinuationEnabled": false,
+    "nmccPiReplayEpochs": 16,
+    "actorPrior": "objective_greedy",
+    "actorPriorScale": 1.0,
+    "representationMode": "actor_owned",
+    "actorLearningRate": 0.001,
+    "learningRewardScale": 10.0,
+    "learningRateSchedule": "cosine",
+    "learningRateWarmupUpdates": 0,
+    "learningRateDecayUpdates": 2,
+    "actorLearningRateMinimumFraction": 0.2,
+    "entropyCoefficientStart": 0.0,
+    "entropyCoefficientEnd": 0.0,
+    "explorationDecayUpdates": 2,
+    "explorationSchedule": "exponential_half_life",
+    "explorationRateStart": 0.25,
+    "explorationRateEnd": 0.02,
+    "actionTemperatureStart": 1.0,
+    "actionTemperatureEnd": 1.0
+  },
+  "stages": [
+    {
+      "stage_id": "P",
+      "label": "simulator_graded_rollout_policy_iteration_smoke",
+      "episodes_per_city": 4,
+      "variants": [{
+        "variant_id": "state_college_n250_rollout_pi_smoke_v51",
+        "weight": 1,
+        "overrides": {
+          "pedVol": 250,
+          "pedestrianGroupSize": 1,
+          "hazardVol": 3,
+          "hazardCasualtyRate": [40, 9],
+          "panicRate": 0.5,
+          "initShelterVol": 2,
+          "maxAdditionalShelters": 8,
+          "shelterCapacityToken": 45
+        }
+      }]
+    }
+  ]
+}

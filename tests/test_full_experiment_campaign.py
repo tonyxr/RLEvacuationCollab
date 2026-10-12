@@ -9,6 +9,7 @@ from full_experiment_campaign import (
     _behavior_gate_passes,
     _parse_args,
 )
+from RuntimeEnvironment import preferred_python
 
 
 class ConvergenceFirstCampaignTests(unittest.TestCase):
@@ -39,6 +40,10 @@ class ConvergenceFirstCampaignTests(unittest.TestCase):
         self.assertEqual(_parse_args([]).policy_replicates, 1)
         with self.assertRaises(SystemExit):
             _parse_args(["--policy-replicates", "2"])
+
+    def test_campaign_prefers_the_validated_project_python(self):
+        root = Path(__file__).resolve().parents[1]
+        self.assertEqual(_parse_args([]).python, preferred_python(root))
 
     def test_behavior_gate_requires_multiple_held_out_scenarios(self):
         self.assertEqual(_parse_args([]).behavior_gate_replications_per_city, 5)

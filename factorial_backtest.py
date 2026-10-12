@@ -130,7 +130,8 @@ def _write_csv(path: Path, rows: Sequence[Mapping]) -> None:
         "deployment_strategy",
         "scenario_seed",
         "policy_seed",
-        "objective_episode_return",
+        "objective_normalized_cost",
+        "expected_casualties",
         "safe_completed",
         "casualty",
         "unfinished",
@@ -275,7 +276,8 @@ def _condition_seed(
 
 def _aggregate(rows: Sequence[Mapping]) -> list[dict]:
     numeric = (
-        "objective_episode_return",
+        "objective_normalized_cost",
+        "expected_casualties",
         "safe_completed",
         "casualty",
         "unfinished",
@@ -595,7 +597,9 @@ def main(argv=None) -> int:
                         scenario_seed=scenario_seed,
                         policy_seed=policy_seed,
                         checkpoint_path=str(checkpoint),
-                        diagnostics_path=str(checkpoint.parent / "ppo_diagnostics.csv"),
+                        diagnostics_path=str(
+                            checkpoint.parent / "learner_diagnostics.csv"
+                        ),
                         overrides=base_overrides,
                         visualization_enabled=bool(
                             args.visualize_first_replication

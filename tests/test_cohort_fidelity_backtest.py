@@ -9,10 +9,10 @@ def _row(replication, group_size, episode_return, safe, casualty, risk):
         "maximum_persons_per_agent": group_size,
         "initial_population": 100,
         "horizon_transitions": 10,
-        "objective_episode_return": episode_return,
+        "objective_normalized_cost": episode_return,
         "safe_completed": safe,
+        "expected_casualties": casualty,
         "casualty": casualty,
-        "objective_risk_weighted_person_time": risk,
     }
 
 

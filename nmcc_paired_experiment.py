@@ -348,13 +348,11 @@ def run_experiment(
         # real policy would actually reach.
         best_index = int(np.argmax(measurement.common().mean(axis=0)))
         best_cell = measurement.cells[best_index]
-        cell = divmod(best_cell, int(core.cellY))
+        cell = core.cellTracker.unflatten_cell(best_cell)
         shelter_id = core.shelterDS.newShelter({"cell": cell}, core.cellTracker)
         if shelter_id is not None and hasattr(core.cellTracker, "addShelter"):
             core.cellTracker.addShelter(cell, core.shelterDS.shelterList[shelter_id])
-            reroute = getattr(core.pedDS, "reroute_to_new_shelter_if_closer", None)
-            if callable(reroute):
-                reroute(core.shelterDS.shelterList[shelter_id])
+            core.pedDS.reroute_active_to_nearest_shelter()
         for _ in range(int(decision_interval)):
             CB.advance_one_timestep(core)
 

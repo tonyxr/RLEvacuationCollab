@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Stateless outcome reward for exact shelter-candidate decisions.
+"""Counterfactual shelter-site reward in hazard-weighted time-to-safety units.
 
-For decision interval ``k`` the training reward is
+The active model compares a selected site with the uniform average over all
+feasible sites.  Every branch installs the same capacity token, so this
+centering removes the capacity value shared by every action and preserves only
+location, route, congestion, exposure, and continuation effects.  Archived
+utilities can still request the former WAIT comparison through
+``evaluate_counterfactual``.
 
-    r_k = (Delta safe_k - 3 Delta casualty_k) / P
-          - active_person_time_k / (P H)
-          - hazard_exposure_person_time_k / (P H)
+    r_k = (mean_a J(s_k, a) - J(s_k, chosen)) / (P H_minutes)
 
-The two person-time terms are intentionally separate: the first rewards faster
-completion for everyone still evacuating; the second additionally penalizes
-time spent in hazardous regions.  Since normalized danger is in ``[0, 1]``, a
-person can avoid at most two normalized units of future time cost by leaving
-the active population.  The casualty coefficient of three therefore makes a
-death strictly worse than that artificial shortcut. No shelter-service shaping
-or site-selection bonus is included; policy and evaluation optimize the same
-population outcome objective.
+``J`` is measured in hazard-weighted pedestrian-minutes.  The site advantage is
+signed: a worse-than-random site is negative and a better-than-random site is
+positive.  Realised full-episode time-to-safety is accounted separately so the
+evaluation objective is independent of this variance-reducing baseline.
 """
+
+from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
@@ -25,62 +26,97 @@ import numpy as np
 from DecisionInterface import OutcomeSnapshot
 
 
-REWARD_COMPONENT_NAMES = (
-    "safe_completion",
-    "casualty",
-    "evacuation_time",
-    "hazard_exposure",
-)
+REWARD_COMPONENT_NAMES = ("forward_hazard_weighted_progress",)
 
-# One source of truth for the physical objective.  The recurrent critic,
-# natural/causal outcome model, exact branch scorer, training reward and held-
-# out evaluator all import these constants; changing a reward weight can no
-# longer leave the GNN optimizing a stale hard-coded decomposition.
-DEFAULT_SAFE_COMPLETION_WEIGHT = 1.0
-DEFAULT_CASUALTY_WEIGHT = 3.0
-DEFAULT_EVACUATION_TIME_WEIGHT = 1.0
+# Retained as neutral compatibility constants for modules that import them as
+# architecture metadata.  The new reward has no separately weighted terms.
+DEFAULT_EVACUATION_TIME_WEIGHT = 0.0
 DEFAULT_HAZARD_EXPOSURE_WEIGHT = 1.0
 
 
 @dataclass(frozen=True)
 class RewardBreakdown:
-    safe_completion_reward: float
-    casualty_penalty: float
-    evacuation_time_penalty: float
-    hazard_exposure_penalty: float
+    """One installation's auditable signed site advantage."""
+
     total: float
+    raw_total: float
+    remaining_risk_time_before: float
+    remaining_risk_time_after: float
+    raw_remaining_risk_time_reduction: float
+    remaining_risk_time_reduction: float
+    plain_time_wait: float
+    plain_time_action: float
+    raw_plain_time_reduction: float
+    hazard_exposure_wait: float
+    hazard_exposure_action: float
+    raw_hazard_exposure_reduction: float
     new_safe_completions: int
     new_casualties: int
-    active_person_time: float
-    hazard_exposure_person_time: float
+    initial_population: int
+    horizon_minutes: float
 
     def as_dict(self) -> dict[str, float]:
         return asdict(self)
 
     def component_vector(self) -> np.ndarray:
-        """Return the signed objective branches in the registered order."""
-        return np.asarray(
-            (
-                self.safe_completion_reward,
-                self.casualty_penalty,
-                self.evacuation_time_penalty,
-                self.hazard_exposure_penalty,
-            ),
-            dtype=np.float32,
-        )
+        return np.asarray((self.total,), dtype=np.float32)
+
+    def raw_component_vector(self) -> np.ndarray:
+        """Signed causal gain used to rank actions before display clipping."""
+        return np.asarray((self.raw_total,), dtype=np.float32)
+
+    # Deprecated report aliases remain read-only so existing CSV consumers can
+    # read new runs without influencing the optimized objective.
+    @property
+    def safe_completion_reward(self) -> float:
+        return 0.0
+
+    @property
+    def casualty_penalty(self) -> float:
+        return 0.0
+
+    @property
+    def evacuation_time_penalty(self) -> float:
+        return 0.0
+
+    @property
+    def hazard_exposure_penalty(self) -> float:
+        return float(self.total)
+
+    @property
+    def terminal_residual_penalty(self) -> float:
+        return 0.0
+
+    @property
+    def terminal_residual_person_time(self) -> float:
+        return 0.0
 
     @property
     def risk_time_penalty(self) -> float:
-        """Backward-compatible aggregate of the two explicit time terms."""
-        return self.evacuation_time_penalty + self.hazard_exposure_penalty
+        return float(self.total)
 
     @property
     def risk_weighted_person_time(self) -> float:
-        return self.active_person_time + self.hazard_exposure_person_time
+        return float(self.remaining_risk_time_reduction)
+
+    @property
+    def active_person_time(self) -> float:
+        return 0.0
+
+    @property
+    def hazard_exposure_person_time(self) -> float:
+        return float(self.remaining_risk_time_reduction)
+
+    @property
+    def evacuation_time_weight(self) -> float:
+        return 0.0
+
+    @property
+    def hazard_exposure_weight(self) -> float:
+        return 1.0
 
     @property
     def shelter_service_reward(self) -> float:
-        """Deprecated diagnostic: service shaping is excluded from the reward."""
         return 0.0
 
     @property
@@ -89,88 +125,132 @@ class RewardBreakdown:
 
 
 class RewardProcessor:
-    """Pure interval reward with fixed, interpretable normalization."""
+    """Convert time-to-safety cost contrasts into normalized reward."""
 
-    def __init__(
+    evacuation_time_weight = DEFAULT_EVACUATION_TIME_WEIGHT
+    hazard_exposure_weight = DEFAULT_HAZARD_EXPOSURE_WEIGHT
+
+    @staticmethod
+    def _cost(name: str, value: float) -> float:
+        result = float(value)
+        if not np.isfinite(result) or result < 0.0:
+            raise ValueError(f"{name} must be finite and non-negative")
+        return result
+
+    def evaluate_counterfactual(
         self,
         *,
-        casualty_weight: float = DEFAULT_CASUALTY_WEIGHT,
-        evacuation_time_weight: float = DEFAULT_EVACUATION_TIME_WEIGHT,
-        hazard_exposure_weight: float = DEFAULT_HAZARD_EXPOSURE_WEIGHT,
-    ):
-        evacuation_time_weight = float(evacuation_time_weight)
-        hazard_exposure_weight = float(hazard_exposure_weight)
-        if not np.isfinite(evacuation_time_weight) or evacuation_time_weight <= 0.0:
-            raise ValueError("evacuation_time_weight must be finite and positive")
-        if not np.isfinite(hazard_exposure_weight) or hazard_exposure_weight <= 0.0:
-            raise ValueError("hazard_exposure_weight must be finite and positive")
-        casualty_weight = float(casualty_weight)
-        maximum_avoided_time_cost = evacuation_time_weight + hazard_exposure_weight
-        if not np.isfinite(casualty_weight) or casualty_weight <= maximum_avoided_time_cost:
-            raise ValueError(
-                "casualty_weight must exceed the sum of the evacuation-time and "
-                "hazard-exposure weights so casualties cannot reduce total cost"
-            )
-        self.casualty_weight = casualty_weight
-        self.evacuation_time_weight = evacuation_time_weight
-        self.hazard_exposure_weight = hazard_exposure_weight
+        start: OutcomeSnapshot,
+        action_after: OutcomeSnapshot,
+        plain_time_wait: float,
+        plain_time_action: float,
+        hazard_exposure_wait: float,
+        hazard_exposure_action: float,
+        initial_population: int,
+        horizon_minutes: int | float,
+        signed: bool = False,
+    ) -> RewardBreakdown:
+        """Score the matched WAIT-minus-action exposure-to-safety cost."""
+        population = int(initial_population)
+        horizon = float(horizon_minutes)
+        if population <= 0:
+            raise ValueError("initial_population must be positive")
+        if not np.isfinite(horizon) or horizon <= 0.0:
+            raise ValueError("horizon_minutes must be finite and positive")
+
+        wait_plain = self._cost("plain_time_wait", plain_time_wait)
+        action_plain = self._cost("plain_time_action", plain_time_action)
+        wait_exposure = self._cost(
+            "hazard_exposure_wait", hazard_exposure_wait
+        )
+        action_exposure = self._cost(
+            "hazard_exposure_action", hazard_exposure_action
+        )
+        plain_reduction = wait_plain - action_plain
+        exposure_reduction = wait_exposure - action_exposure
+        wait_total = wait_plain + wait_exposure
+        action_total = action_plain + action_exposure
+        raw_reduction = plain_reduction + exposure_reduction
+        denominator = float(population) * horizon
+        raw_total = raw_reduction / denominator
+        reduction = raw_reduction if bool(signed) else max(0.0, raw_reduction)
+        total = reduction / denominator
+        if not np.isfinite(raw_total) or not np.isfinite(total):
+            raise FloatingPointError("Reward total is non-finite")
+
+        new_safe = int(action_after.safe_completed - start.safe_completed)
+        new_casualties = int(action_after.casualties - start.casualties)
+        if new_safe < 0 or new_casualties < 0:
+            raise ValueError("Cumulative population outcomes must be monotone")
+
+        return RewardBreakdown(
+            total=float(total),
+            raw_total=float(raw_total),
+            remaining_risk_time_before=float(wait_total),
+            remaining_risk_time_after=float(action_total),
+            raw_remaining_risk_time_reduction=float(raw_reduction),
+            remaining_risk_time_reduction=float(reduction),
+            plain_time_wait=float(wait_plain),
+            plain_time_action=float(action_plain),
+            raw_plain_time_reduction=float(plain_reduction),
+            hazard_exposure_wait=float(wait_exposure),
+            hazard_exposure_action=float(action_exposure),
+            raw_hazard_exposure_reduction=float(exposure_reduction),
+            new_safe_completions=new_safe,
+            new_casualties=new_casualties,
+            initial_population=population,
+            horizon_minutes=horizon,
+        )
+
+    def evaluate_random_site_advantage(
+        self,
+        *,
+        start: OutcomeSnapshot,
+        action_after: OutcomeSnapshot,
+        random_plain_time: float,
+        action_plain_time: float,
+        random_hazard_exposure: float,
+        action_hazard_exposure: float,
+        initial_population: int,
+        horizon_minutes: int | float,
+    ) -> RewardBreakdown:
+        """Return chosen-site value relative to a uniform feasible-site draw.
+
+        ``random_*`` is the arithmetic mean across the complete feasible set,
+        not a sampled control action.  Equal capacity therefore cancels exactly
+        and the result has zero mean over feasible sites in every state.
+        """
+        return self.evaluate_counterfactual(
+            start=start,
+            action_after=action_after,
+            plain_time_wait=random_plain_time,
+            plain_time_action=action_plain_time,
+            hazard_exposure_wait=random_hazard_exposure,
+            hazard_exposure_action=action_hazard_exposure,
+            initial_population=initial_population,
+            horizon_minutes=horizon_minutes,
+            signed=True,
+        )
 
     def evaluate(
         self,
         *,
         before: OutcomeSnapshot,
         after: OutcomeSnapshot,
-        active_person_time: float,
-        hazard_exposure_person_time: float,
+        remaining_risk_time_before: float,
+        remaining_risk_time_after: float,
         initial_population: int,
-        horizon: int,
+        horizon: int | float,
     ) -> RewardBreakdown:
-        population = int(initial_population)
-        horizon = int(horizon)
-        if population <= 0:
-            raise ValueError("initial_population must be positive")
-        if horizon <= 0:
-            raise ValueError("horizon must be positive")
-        active_time = float(active_person_time)
-        exposure_time = float(hazard_exposure_person_time)
-        if not np.isfinite(active_time) or active_time < 0.0:
-            raise ValueError("active_person_time must be finite and non-negative")
-        if not np.isfinite(exposure_time) or exposure_time < 0.0:
-            raise ValueError(
-                "hazard_exposure_person_time must be finite and non-negative"
-            )
-
-        new_safe = int(after.safe_completed - before.safe_completed)
-        new_casualties = int(after.casualties - before.casualties)
-        if new_safe < 0 or new_casualties < 0:
-            raise ValueError("Cumulative population outcomes must be monotone")
-        safe_reward = (
-            DEFAULT_SAFE_COMPLETION_WEIGHT * float(new_safe) / float(population)
-        )
-        casualty_penalty = -self.casualty_weight * float(new_casualties) / float(population)
-        evacuation_time_penalty = -(
-            self.evacuation_time_weight * active_time / float(population * horizon)
-        )
-        hazard_exposure_penalty = -(
-            self.hazard_exposure_weight * exposure_time / float(population * horizon)
-        )
-        total = (
-            safe_reward
-            + casualty_penalty
-            + evacuation_time_penalty
-            + hazard_exposure_penalty
-        )
-        if not np.isfinite(total):
-            raise FloatingPointError("Reward total is non-finite")
-
-        return RewardBreakdown(
-            safe_completion_reward=safe_reward,
-            casualty_penalty=casualty_penalty,
-            evacuation_time_penalty=evacuation_time_penalty,
-            hazard_exposure_penalty=hazard_exposure_penalty,
-            total=float(total),
-            new_safe_completions=new_safe,
-            new_casualties=new_casualties,
-            active_person_time=active_time,
-            hazard_exposure_person_time=exposure_time,
+        # Compatibility path for offline utilities that already provide one
+        # combined risk-time cost rather than its plain/exposure split.
+        return self.evaluate_counterfactual(
+            start=before,
+            action_after=after,
+            plain_time_wait=remaining_risk_time_before,
+            plain_time_action=remaining_risk_time_after,
+            hazard_exposure_wait=0.0,
+            hazard_exposure_action=0.0,
+            initial_population=initial_population,
+            horizon_minutes=horizon,
         )

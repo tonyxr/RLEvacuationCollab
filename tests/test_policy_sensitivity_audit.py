@@ -48,7 +48,7 @@ class PolicySensitivityAuditTests(unittest.TestCase):
     def test_zero_residual_actor_fails_required_dynamic_state_checks(self):
         with tempfile.TemporaryDirectory() as directory:
             result = audit_policy(self._checkpoint(directory, trained_actor=False))
-        self.assertTrue(result["state_family_checks"]["dynamic_population"])
+        self.assertFalse(result["state_family_checks"]["dynamic_population"])
         self.assertFalse(result["state_family_checks"]["hazard_and_forecast"])
         self.assertFalse(
             result["state_family_checks"]["physical_environment_and_shelters"]

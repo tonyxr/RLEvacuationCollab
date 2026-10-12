@@ -1,0 +1,242 @@
+{
+  "schema_version": 2,
+  "curriculum_id": "seattle_population_adaptive_environment_action_foresight_v37_160",
+  "description": "Seattle-only 160-episode curriculum over 2500, 5000, 7500, and 10000 pedestrians. Population-density-adaptive 8x8 cells are rebuilt from each scenario's exact initial pedestrian-origin mass, with smaller cells where more represented people begin. Stage E uses six four-episode updates to learn natural environment dynamics. Stage A uses twelve updates to learn decision-interval shelter effects. Stage F uses twenty-two joint updates with the dedicated NMCC continuation head trained by backward returns across all eight sequential installations. Exploration, entropy, temperature, and actor/critic learning rates decay independently inside every stage. Every episode starts with two shelters, installs eight equal-capacity shelters at t=15,30,...,120, continues through t=180, and provides exactly 200 places of capacity above the simulated population. NMCC compares each chosen location with the uniform random-site average; no heuristic action prior, action gate, fallback controller, or model-filled candidate is used.",
+  "learner_overrides": {
+    "cellPartitionMode": "population_density_adaptive",
+    "cellPartitionMinWidthFraction": 0.0001,
+    "stopTime": 181,
+    "shelterActionInterval": 15,
+    "requirePopulationMatchedShelterCapacity": true,
+    "shelterCapacitySurplus": 200,
+    "ppoRolloutEpisodes": 4,
+    "nmccEnabled": false,
+    "nmccPolicyImprovement": true,
+    "nmccCounterfactualHorizon": 0,
+    "nmccCounterfactualWeight": 1.0,
+    "nmccJointCounterfactualWeight": 1.0,
+    "nmccInterventionCost": 0.0,
+    "nmccPiEpsilon": 0.25,
+    "nmccPiEtaMin": 0.02,
+    "nmccPiTapes": 2,
+    "nmccPiWorkers": 4,
+    "nmccPiBranchHorizon": 15,
+    "nmccPiContinuationEnabled": true,
+    "nmccPiContinuationLossCoefficient": 1.0,
+    "nmccPiActorEpochs": 256,
+    "nmccPiFitTolerance": 0.01,
+    "nmccNaturalLossCoefficient": 1.0,
+    "actorPrior": "none",
+    "actorPriorScale": 0.0,
+    "representationMode": "shared_multitask",
+    "actorLearningRate": 0.001,
+    "criticLearningRate": 0.001,
+    "actorPpoEpochs": 4,
+    "criticPpoEpochs": 8,
+    "learningRewardScale": 10.0,
+    "learningRateSchedule": "cosine",
+    "learningRateWarmupUpdates": 0,
+    "learningRateDecayUpdates": 34,
+    "actorLearningRateMinimumFraction": 0.1,
+    "criticLearningRateMinimumFraction": 0.1,
+    "entropyCoefficientStart": 0.01,
+    "entropyCoefficientEnd": 0.001,
+    "explorationDecayUpdates": 8,
+    "explorationSchedule": "exponential_half_life",
+    "explorationRateStart": 0.3,
+    "explorationRateEnd": 0.02,
+    "actionTemperatureStart": 1.25,
+    "actionTemperatureEnd": 0.8
+  },
+  "stages": [
+    {
+      "stage_id": "E",
+      "label": "environment_dynamics_pretraining",
+      "episodes_per_city": 24,
+      "variants": [
+        {
+          "variant_id": "seattle_n2500_environment",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 2500,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "initShelterVol": 2,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 270
+          }
+        },
+        {
+          "variant_id": "seattle_n5000_environment",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 5000,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "initShelterVol": 2,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 520
+          }
+        },
+        {
+          "variant_id": "seattle_n7500_environment",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 7500,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "initShelterVol": 2,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 770
+          }
+        },
+        {
+          "variant_id": "seattle_n10000_environment",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 10000,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "initShelterVol": 2,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 1020
+          }
+        }
+      ]
+    },
+    {
+      "stage_id": "A",
+      "label": "decision_interval_action_learning",
+      "episodes_per_city": 48,
+      "variants": [
+        {
+          "variant_id": "seattle_n2500_action",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 2500,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "initShelterVol": 2,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 270
+          }
+        },
+        {
+          "variant_id": "seattle_n5000_action",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 5000,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "initShelterVol": 2,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 520
+          }
+        },
+        {
+          "variant_id": "seattle_n7500_action",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 7500,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "initShelterVol": 2,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 770
+          }
+        },
+        {
+          "variant_id": "seattle_n10000_action",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 10000,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "initShelterVol": 2,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 1020
+          }
+        }
+      ]
+    },
+    {
+      "stage_id": "F",
+      "label": "backward_continuation_foresight_learning",
+      "episodes_per_city": 88,
+      "variants": [
+        {
+          "variant_id": "seattle_n2500_foresight",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 2500,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "initShelterVol": 2,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 270
+          }
+        },
+        {
+          "variant_id": "seattle_n5000_foresight",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 5000,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "initShelterVol": 2,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 520
+          }
+        },
+        {
+          "variant_id": "seattle_n7500_foresight",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 7500,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "initShelterVol": 2,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 770
+          }
+        },
+        {
+          "variant_id": "seattle_n10000_foresight",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 10000,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "initShelterVol": 2,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 1020
+          }
+        }
+      ]
+    }
+  ]
+}

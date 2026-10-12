@@ -42,6 +42,7 @@ DEFAULT_LAUNCH_DIR = (
 )
 STRATEGY_ORDER = (
     "rl",
+    "objective_greedy",
     "risk_reduction",
     "heuristic",
     "hazard_weighted",
@@ -53,6 +54,7 @@ STRATEGY_ORDER = (
 )
 STRATEGY_LABEL = {
     "rl": "RL regional priority",
+    "objective_greedy": "Objective-matched greedy",
     "risk_reduction": "Future risk-time reduction",
     "heuristic": "Active-population heuristic",
     "hazard_weighted": "Hazard-weighted demand",
@@ -60,12 +62,13 @@ STRATEGY_LABEL = {
     "random": "Random feasible region",
     "static_greedy": "Static demand-greedy",
     "rl_precommit": "RL precommitment",
-    "initial_only": "Static predeployment",
+    "initial_only": "Static committed schedule",
     "pooled_all_cities": "Pooled all-city RL",
     "leave_one_city_out": "Leave-one-city-out RL",
 }
 STRATEGY_COLOR = {
     "rl": "#0072B2",
+    "objective_greedy": "#000000",
     "risk_reduction": "#F0E442",
     "heuristic": "#E69F00",
     "hazard_weighted": "#D55E00",
@@ -86,12 +89,12 @@ CITY_LABEL = {
 }
 METRIC_DIRECTION = {
     "episode_return": 1.0,
-    "objective_episode_return": 1.0,
+    "objective_normalized_cost": -1.0,
     "safe_fraction": 1.0,
+    "expected_casualties": -1.0,
     "casualty_fraction": -1.0,
     "unfinished_fraction": -1.0,
     "restricted_mean_time_to_safety": -1.0,
-    "normalized_risk_weighted_person_time": -1.0,
     "simulation_runtime_s": -1.0,
 }
 
@@ -172,9 +175,6 @@ def _strategy(row: Mapping, field: str = "deployment_strategy") -> str:
 
 
 def _metric(row: Mapping, metric: str) -> float:
-    if metric == "episode_return":
-        objective = str(row.get("objective_episode_return", "")).strip()
-        return float(objective) if objective else _f(row, "episode_return")
     if metric in {"safe_fraction", "casualty_fraction", "unfinished_fraction"}:
         population = max(1.0, _f(row, "initial_population"))
         numerator = {
@@ -261,10 +261,10 @@ def balanced_training_blocks(training: Sequence[Mapping]) -> list[dict]:
         raise ValueError("Training rows require positive policy_replication values")
     metrics = (
         "episode_return",
-        "safe_completion_reward",
-        "casualty_penalty",
-        "risk_time_penalty",
-        "entropy",
+        "objective_normalized_cost",
+        "expected_casualties",
+        "casualty",
+        "behavior_policy_entropy",
         "heuristic_agreement_rate",
     )
     for policy_id in policy_ids:
@@ -587,7 +587,7 @@ def _plot_training(
                 row for row in checkpoint if _i(row, "training_episode_per_city") == episode
             ]
             matrices = paired_difference_matrices(
-                subset, "rl", "heuristic", "episode_return"
+                subset, "rl", "heuristic", "objective_normalized_cost"
             )
             estimate, lo, hi = hierarchical_bootstrap(
                 matrices, seed=seed + 50 + index, draws=draws
@@ -599,7 +599,7 @@ def _plot_training(
                 _summary_row(
                     "F01",
                     "rl_minus_heuristic_at_checkpoint",
-                    "episode_return",
+                    "objective_normalized_cost",
                     estimate,
                     lo,
                     hi,
@@ -613,14 +613,13 @@ def _plot_training(
         axes[1].set(
             title="Fixed development-set performance",
             xlabel="Training episodes per city",
-            ylabel="RL − heuristic return",
+            ylabel="Objective-cost improvement over heuristic",
         )
     else:
         components = (
-            ("safe_completion_reward", "Safe completion", "#0072B2"),
-            ("casualty_penalty", "Casualty", "#D55E00"),
-            ("risk_time_penalty", "Risk-weighted person-time", "#009E73"),
-            ("episode_return", "Total", "#111111"),
+            ("episode_return", "Savings versus random", "#111111"),
+            ("objective_normalized_cost", "Physical objective cost", "#0072B2"),
+            ("expected_casualties", "Expected casualties", "#D55E00"),
         )
         for index, (metric, label, color) in enumerate(components):
             component_x, component_mean, _, _ = _pointwise_policy_summary(
@@ -639,7 +638,26 @@ def _plot_training(
             xlabel="Equal-city training block",
             ylabel="Normalized contribution",
         )
-        axes[1].legend(frameon=False, ncol=2)
+        casualty_x, casualty_mean, _, _ = _pointwise_policy_summary(
+            blocks, "casualty", seed=seed + 20, draws=draws
+        )
+        casualty_axis = axes[1].twinx()
+        casualty_axis.plot(
+            casualty_x,
+            _moving_average(casualty_mean, window),
+            color="#D55E00",
+            linestyle="--",
+            linewidth=1.8,
+            label="Casualties (reported only)",
+        )
+        casualty_axis.set_ylabel("Casualties per episode")
+        lines = axes[1].get_lines() + casualty_axis.get_lines()
+        axes[1].legend(
+            lines,
+            [line.get_label() for line in lines],
+            frameon=False,
+            ncol=2,
+        )
         axes[1].text(
             0.02,
             0.02,
@@ -658,9 +676,11 @@ def _plot_training(
     return paths, summary
 
 
-def _load_ppo_diagnostics(launch_dir: Path) -> list[dict]:
+def _load_learner_diagnostics(launch_dir: Path) -> list[dict]:
     rows: list[dict] = []
-    for path in sorted((launch_dir / "policies").glob("policy_*/ppo_diagnostics.csv")):
+    for path in sorted(
+        (launch_dir / "policies").glob("policy_*/learner_diagnostics.csv")
+    ):
         try:
             policy_id = int(path.parent.name.split("_")[-1])
         except ValueError as error:
@@ -683,11 +703,13 @@ def _diagnostic_seed_series(
             for row in diagnostics
             if _policy_id(row) == policy_id and _f(row, "optimizer_updated") > 0.5
         ]
-        updates.sort(key=lambda row: _i(row, "optimizer_updates", default=_i(row, "episode")))
+        updates.sort(
+            key=lambda row: _i(row, "optimizer_steps", default=_i(row, "episode"))
+        )
         if updates:
             by_policy[policy_id] = updates
     if not by_policy:
-        raise ValueError("No PPO optimizer updates were recorded")
+        raise ValueError("No learner updates were recorded")
     common_length = min(len(rows) for rows in by_policy.values())
     matrix = np.asarray(
         [[_f(row, metric) for row in by_policy[policy_id][:common_length]] for policy_id in sorted(by_policy)]
@@ -706,13 +728,13 @@ def training_update_averages(
     """Align optimizer diagnostics with means over their contributing episodes.
 
     An update is triggered only after a complete multi-episode rollout.  The
-    optimization fields on that update row are already means over PPO epochs
-    and minibatches.  This function adds means over the episodes in the same
-    rollout, preventing the final episode of a rollout from being presented as
+    optimization fields on that update row already summarize the learner fit.
+    This function adds means over the episodes in the same batch, preventing
+    the final episode from being presented as
     though it were the update's average training outcome.
     """
     if not training or not diagnostics:
-        raise ValueError("Training rows and PPO diagnostics are both required")
+        raise ValueError("Training rows and learner diagnostics are both required")
     output: list[dict] = []
     policy_ids = sorted({_policy_id(row) for row in diagnostics})
     for policy_id in policy_ids:
@@ -726,7 +748,7 @@ def training_update_averages(
         ]
         if not training_rows or not diagnostic_rows:
             raise ValueError(
-                f"Policy {policy_id} lacks training rows or PPO diagnostics"
+                f"Policy {policy_id} lacks training rows or learner diagnostics"
             )
         # A continuation launch deliberately keeps the checkpoint's global
         # episode counter while its launch-local training table restarts at
@@ -755,8 +777,8 @@ def training_update_averages(
             expected = episode_end - previous_end
             if len(contributing) != expected or not contributing:
                 raise ValueError(
-                    f"Policy {policy_id} PPO update {update_index} lacks its complete "
-                    "contributing episode rollout"
+                    f"Policy {policy_id} learner update {update_index} lacks its "
+                    "complete contributing episode batch"
                 )
             decisions = sum(_f(row, "decisions") for row in contributing)
             weighted_agreement = sum(
@@ -771,29 +793,46 @@ def training_update_averages(
                 "source_episode_end": source_episode_end,
                 "episode_index_offset": episode_offset,
                 "contributing_episodes": len(contributing),
-                "optimizer_steps_cumulative": _i(update, "optimizer_updates"),
-                "epochs_completed": _f(update, "epochs_completed"),
-                "approximate_kl": _f(update, "approximate_kl"),
-                "clip_fraction": _f(update, "clip_fraction"),
-                "explained_variance": _f(update, "explained_variance"),
+                "optimizer_steps_cumulative": _i(update, "optimizer_steps"),
+                "policy_iterations_completed": _i(
+                    update, "policy_iterations_completed"
+                ),
+                "actor_policy_kl": _f(update, "rollout_pi_actor_kl"),
+                "target_kl_before": _f(update, "rollout_pi_target_kl_before"),
+                "target_kl_after": _f(update, "rollout_pi_target_kl_after"),
+                "candidate_grade_fraction": _f(
+                    update, "rollout_pi_candidate_grade_fraction"
+                ),
+                "weighted_pairwise_accuracy_after": _f(
+                    update, "rollout_pi_weighted_pairwise_accuracy_after"
+                ),
                 "policy_loss": _f(update, "policy_loss"),
-                "value_loss": _f(update, "value_loss"),
-                "gradient_norm": _f(update, "gradient_norm"),
-                "update_entropy": _f(update, "update_entropy"),
+                "actor_gradient_norm": _f(update, "actor_gradient_norm"),
+                "actor_policy_entropy_after": _f(
+                    update, "actor_policy_entropy_after"
+                ),
+                "rollout_pi_actor_enabled": _f(
+                    update, "rollout_pi_actor_enabled"
+                ),
+                "exploration_rate": _f(update, "exploration_rate"),
                 "mean_episode_return": float(
                     np.mean([_metric(row, "episode_return") for row in contributing])
                 ),
-                "mean_safe_completion_reward": float(
-                    np.mean([_f(row, "safe_completion_reward") for row in contributing])
+                "mean_objective_normalized_cost": float(
+                    np.mean(
+                        [_f(row, "objective_normalized_cost") for row in contributing]
+                    )
                 ),
-                "mean_casualty_penalty": float(
-                    np.mean([_f(row, "casualty_penalty") for row in contributing])
+                "mean_casualty_count": float(
+                    np.mean([_f(row, "casualty") for row in contributing])
                 ),
-                "mean_risk_time_penalty": float(
-                    np.mean([_f(row, "risk_time_penalty") for row in contributing])
+                "mean_expected_casualties": float(
+                    np.mean([_f(row, "expected_casualties") for row in contributing])
                 ),
                 "mean_behavior_entropy": float(
-                    np.mean([_f(row, "entropy") for row in contributing])
+                    np.mean(
+                        [_f(row, "behavior_policy_entropy") for row in contributing]
+                    )
                 ),
                 "decision_weighted_heuristic_agreement": (
                     weighted_agreement / decisions if decisions > 0.0 else 0.0
@@ -802,7 +841,7 @@ def training_update_averages(
             output.append(record)
             previous_end = episode_end
     if not output:
-        raise ValueError("No completed PPO rollout updates were found")
+        raise ValueError("No completed learner updates were found")
     return output
 
 
@@ -820,7 +859,7 @@ def _update_seed_series(
     }
     common_length = min(len(values) for values in by_policy.values())
     if common_length <= 0:
-        raise ValueError("Every policy seed requires at least one PPO update")
+        raise ValueError("Every policy seed requires at least one learner update")
     matrix = np.asarray(
         [
             [_f(row, metric) for row in by_policy[policy_id][:common_length]]
@@ -836,13 +875,13 @@ def _update_seed_series(
     return np.arange(1, common_length + 1), mean, lower, upper
 
 
-def _plot_ppo_diagnostics(
+def _plot_learner_diagnostics(
     training: Sequence[Mapping], diagnostics: Sequence[Mapping], output_dir: Path
 ) -> list[Path]:
     import matplotlib.pyplot as plt
 
     if not diagnostics:
-        raise ValueError("PPO diagnostics are unavailable")
+        raise ValueError("Learner diagnostics are unavailable")
     updates = training_update_averages(training, diagnostics)
     policy_count = len({_policy_id(row) for row in updates})
     update_count = min(
@@ -868,18 +907,20 @@ def _plot_ppo_diagnostics(
         return x, mean
 
     trust = axes[0]
-    series(trust, "approximate_kl", "Mean approximate KL", "#0072B2")
-    trust.axhline(
-        0.03,
-        color="#56B4E9",
-        linestyle="--",
-        linewidth=1.2,
-        label="Target KL = 0.03",
-    )
+    series(trust, "actor_policy_kl", "Actor KL from frozen prior", "#0072B2")
     trust_right = trust.twinx()
-    series(trust_right, "clip_fraction", "Mean clip fraction", "#E69F00")
-    trust.set(title="Trust-region behavior", ylabel="KL divergence")
-    trust_right.set_ylabel("Clip fraction")
+    series(
+        trust_right,
+        "candidate_grade_fraction",
+        "Physically graded candidate fraction",
+        "#E69F00",
+    )
+    trust.set(
+        title="Actor movement and simulator grading coverage",
+        ylabel="KL(new actor || iteration prior)",
+    )
+    trust_right.set_ylabel("Mean per-state graded fraction")
+    trust_right.set_ylim(-0.02, 1.02)
     lines = trust.get_lines() + trust_right.get_lines()
     trust.legend(lines, [line.get_label() for line in lines], frameon=False, loc="best")
 
@@ -892,8 +933,8 @@ def _plot_ppo_diagnostics(
     )
     series(
         exploration,
-        "update_entropy",
-        "Epoch/minibatch-mean update entropy",
+        "actor_policy_entropy_after",
+        "Raw trainable actor after update",
         "#9467BD",
     )
     exploration_right = exploration.twinx()
@@ -903,22 +944,28 @@ def _plot_ppo_diagnostics(
         "Decision-weighted heuristic agreement",
         "#009E73",
     )
-    exploration.set(title="Exploration and policy concentration", ylabel="Entropy (nats)")
+    exploration.set(
+        title="Exploration and policy concentration",
+        ylabel="Normalized feasible-action entropy [0, 1]",
+    )
     exploration_right.set_ylabel("Agreement fraction")
     exploration_right.set_ylim(-0.02, 1.02)
     lines = exploration.get_lines() + exploration_right.get_lines()
     exploration.legend(lines, [line.get_label() for line in lines], frameon=False, loc="best")
 
     critic = axes[2]
-    series(critic, "explained_variance", "Explained variance", "#7F7F7F")
-    critic.axhline(0.0, color="#777777", linewidth=0.8)
-    critic.set_ylim(-1.05, 1.05)
+    series(critic, "target_kl_before", "Target KL before fit", "#7F7F7F")
+    series(critic, "target_kl_after", "Target KL after fit", "#17BECF")
     critic_right = critic.twinx()
-    series(critic_right, "value_loss", "Mean value loss", "#BCBD22")
-    series(critic_right, "policy_loss", "Mean policy loss", "#17BECF")
-    critic_right.set_yscale("symlog", linthresh=1e-4)
-    critic.set(title="Critic and optimization fit", ylabel="Explained variance")
-    critic_right.set_ylabel("Epoch/minibatch-mean loss")
+    series(
+        critic_right,
+        "weighted_pairwise_accuracy_after",
+        "Weighted branch-ranking accuracy",
+        "#BCBD22",
+    )
+    critic.set(title="Categorical actor-target fit", ylabel="KL(target || actor)")
+    critic_right.set_ylabel("Weighted pairwise accuracy")
+    critic_right.set_ylim(-0.02, 1.02)
     lines = [
         line
         for line in critic.get_lines() + critic_right.get_lines()
@@ -928,19 +975,32 @@ def _plot_ppo_diagnostics(
 
     outcome = axes[3]
     for metric, label, color in (
-        ("mean_episode_return", "Total return", "#111111"),
-        ("mean_safe_completion_reward", "Safe completion", "#0072B2"),
-        ("mean_casualty_penalty", "Casualty", "#D55E00"),
-        ("mean_risk_time_penalty", "Risk-weighted person-time", "#009E73"),
+        ("mean_episode_return", "Savings versus random", "#111111"),
+        ("mean_objective_normalized_cost", "Physical objective cost", "#0072B2"),
     ):
         series(outcome, metric, label, color)
     outcome.axhline(0.0, color="#777777", linewidth=0.8)
+    casualty_outcome = outcome.twinx()
+    series(
+        casualty_outcome,
+        "mean_expected_casualties",
+        "Expected casualties",
+        "#D55E00",
+    )
+    casualty_outcome.set_ylabel("Mean expected casualties per episode")
     outcome.set(
         title="Rollout-averaged training outcomes",
-        xlabel="PPO rollout update (optimization statistics average its completed training epochs)",
-        ylabel="Mean normalized reward contribution",
+        xlabel="Rollout-policy iteration",
+        ylabel="Return / normalized objective cost",
     )
-    outcome.legend(frameon=False, ncol=2, loc="best")
+    lines = outcome.get_lines() + casualty_outcome.get_lines()
+    outcome.legend(
+        [line for line in lines if not line.get_label().startswith("_")],
+        [line.get_label() for line in lines if not line.get_label().startswith("_")],
+        frameon=False,
+        ncol=2,
+        loc="best",
+    )
 
     fig.suptitle(
         f"Training PPO update diagnostics ({update_count} rollout updates; "
@@ -990,7 +1050,12 @@ def _plot_primary_performance(
 
     strategies = _available_strategies(rows)
     metrics = (
-        ("episode_return", "Policy-objective return", 1.0, "Return"),
+        (
+            "objective_normalized_cost",
+            "Physical evacuation objective",
+            1.0,
+            "Normalized cost (lower is better)",
+        ),
         ("safe_fraction", "Safe completion", 100.0, "Population (%)"),
         ("casualty_fraction", "Casualty", 100.0, "Population (%)"),
         (
@@ -1061,7 +1126,7 @@ def _plot_city_forest(
     import matplotlib.pyplot as plt
 
     metrics = (
-        ("episode_return", "Return improvement", 1.0),
+        ("objective_normalized_cost", "Objective-cost improvement", 1.0),
         ("safe_fraction", "Safe-completion improvement (pp)", 100.0),
         ("casualty_fraction", "Casualty reduction (pp)", 100.0),
     )
@@ -1158,7 +1223,7 @@ def _plot_regime_heatmap(
     capacities = list(suite.factors["capacity_regime"])
     hazards = list(suite.factors["hazard_regime"])
     panels = (
-        ("episode_return", "RL return improvement", 1.0),
+        ("objective_normalized_cost", "RL objective-cost improvement", 1.0),
         ("casualty_fraction", "RL casualty reduction (pp)", 100.0),
     )
     fig, axes = plt.subplots(1, 2, figsize=(11.6, 4.6))
@@ -1319,7 +1384,12 @@ def _plot_scalability(
     metrics = (
         ("action_count", "Action-space size", "Available actions", True),
         ("decision_latency_ms", "Decision latency", "Milliseconds", True),
-        ("episode_return", "Decision quality", "Episode return", False),
+        (
+            "objective_normalized_cost",
+            "Decision quality",
+            "Normalized objective cost",
+            False,
+        ),
     )
     fig, axes = plt.subplots(1, 3, figsize=(14.4, 4.4))
     summary = []
@@ -1449,7 +1519,11 @@ def _plot_ablation(
     summary = []
     for panel_index, (metric, title, scale) in enumerate(
         (
-            ("episode_return", "Return retained by the full model", 1.0),
+            (
+                "objective_normalized_cost",
+                "Objective improvement retained by the full model",
+                1.0,
+            ),
             ("casualty_fraction", "Casualty reduction from the full model (pp)", 100.0),
         )
     ):
@@ -1522,7 +1596,11 @@ def _plot_transfer(
     summary = []
     for panel_index, (metric, title, scale) in enumerate(
         (
-            ("episode_return", "Held-out-city return improvement", 1.0),
+            (
+                "objective_normalized_cost",
+                "Held-out-city objective-cost improvement",
+                1.0,
+            ),
             ("casualty_fraction", "Held-out-city casualty reduction (pp)", 100.0),
         )
     ):
@@ -1591,7 +1669,7 @@ def _plot_robustness(
     summary = []
     for panel_index, (metric, title, scale) in enumerate(
         (
-            ("episode_return", "Return improvement", 1.0),
+            ("objective_normalized_cost", "Objective-cost improvement", 1.0),
             ("casualty_fraction", "Casualty reduction (pp)", 100.0),
         )
     ):
@@ -1888,7 +1966,7 @@ def _design_checks(
         parity_passed = False
         try:
             paired_difference_matrices(
-                evaluation, "rl", "heuristic", "episode_return"
+                evaluation, "rl", "heuristic", "objective_normalized_cost"
             )
             parity_passed = True
         except (KeyError, ValueError):
@@ -2196,9 +2274,9 @@ def main(argv: Iterable[str] | None = None) -> int:
             else "Training-only fallback; checkpoint evaluation table is not yet available."
         )
         record_figure("F01", "generated", paths, detail)
-        diagnostics = _load_ppo_diagnostics(launch_dir)
+        diagnostics = _load_learner_diagnostics(launch_dir)
         if diagnostics:
-            paths = _plot_ppo_diagnostics(training, diagnostics, output_dir)
+            paths = _plot_learner_diagnostics(training, diagnostics, output_dir)
             generated.extend(paths)
             record_figure("F02", "generated", paths)
         else:

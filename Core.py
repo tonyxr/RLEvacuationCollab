@@ -27,17 +27,18 @@ from MapDatabase import MapDS
 from HazardDatabase import HazardDS
 from ShelterDatabase import ShelterDS
 from PedestrianDatabase import PedDS
-from CAProcessor import CellTracker
+from CAProcessor import CellTracker, authoritative_grid_shape
 from CellPartitioning import (
     NODE_DENSITY_ADAPTIVE,
+    POPULATION_DENSITY_ADAPTIVE,
     build_cell_partition,
     normalize_partition_mode,
+    sample_population_origins,
 )
 from SocialForce import ForceProcessor
 
 """Import RL components"""
 from RLBridge import (
-    DEFAULT_ACTOR_BASELINE_DECAY,
     DEFAULT_ACTOR_EPOCHS,
     DEFAULT_ACTOR_LEARNING_RATE,
     DEFAULT_ADVANTAGE_SCALE_FLOOR,
@@ -45,24 +46,14 @@ from RLBridge import (
     DEFAULT_CRITIC_EPOCHS,
     DEFAULT_ENTROPY_COEF,
     DEFAULT_ROLLOUT_EPISODES,
-    DEFAULT_TARGET_KL,
     DEFAULT_ENTROPY_COEF_END,
     DEFAULT_EXPLORATION_DECAY_UPDATES,
-    DEFAULT_NMCC_CAUSAL_LOSS_COEF,
-    DEFAULT_NMCC_DUELING_LOSS_COEF,
-    DEFAULT_NMCC_GUIDANCE_MAX,
-    DEFAULT_NMCC_GUIDANCE_RAMP_UPDATES,
-    DEFAULT_NMCC_GUIDANCE_WARMUP_UPDATES,
     DEFAULT_NMCC_NATURAL_LOSS_COEF,
-    DEFAULT_NMCC_TEACHER_COEF,
-    DEFAULT_NMCC_TEACHER_DECAY_UPDATES,
-    DEFAULT_NMCC_UNCERTAINTY_PENALTY,
     DEFAULT_TEMPERATURE_END,
     DEFAULT_TEMPERATURE_START,
     RLBridge,
 )
-from NMCCPIConfig import NMCC_PI_CORE_FIELDS
-from GNN import DEFAULT_NMCC_ENSEMBLE_SIZE
+from NMCCPIConfig import NMCC_PI_ALL_CORE_FIELDS
 from TrainingLogger import trainingLog
 from EvacuationVisualizer import EvacuationVisualizer
 from NetworkCongestion import PedestrianCongestionModel
@@ -121,6 +112,18 @@ class Core:
             raise ValueError("maximum_additions must be non-negative")
         additions = windows if cap == 0 else min(windows, cap)
         return int(min(available, initial + additions))
+
+    @staticmethod
+    def _initial_shelter_volume(
+        deployment_strategy: str,
+        requested_initial: int,
+        final_target: int,
+    ) -> int:
+        """Return the t=0 count while preserving one common final budget."""
+        strategy = str(deployment_strategy).strip().lower()
+        if strategy == "none":
+            return int(final_target)
+        return int(requested_initial)
     
     def __init__(self, machine):
         
@@ -176,12 +179,16 @@ class Core:
         # outcomes until the next action actually occurs, and the last action
         # remains accountable through the physical episode terminal boundary.
         self.shelterActionInterval = 10
-        # Candidate sites forecast above this normalized action-window danger
-        # are unavailable to every policy, including benchmarks. This encodes
-        # the operational requirement that a new shelter must remain in a
-        # plausibly safe region rather than asking PPO to discover a hard
-        # safety rule through casualties.
-        self.maximumShelterForecastDanger = 0.6
+        # Experiment invariant: when enabled, the initial and sequential
+        # equal-capacity shelter budget must sum to the population plus the
+        # explicitly declared integer surplus.  The surplus prevents
+        # reservation fragmentation from leaving rational pedestrians without
+        # capacity after the final scheduled installation.
+        self.requirePopulationMatchedShelterCapacity = False
+        self.shelterCapacitySurplus = 0
+        # Retained only so archived curricula still parse. These values do not
+        # filter the policy's action space; risk and benefit are observations.
+        self.maximumShelterForecastDanger = 1.0
         self.requireCandidateOperationalBenefit = False
         self.minimumCandidateReroutableFraction = 0.0
         self.minimumCandidateRouteTimeSaving = 0.0
@@ -204,6 +211,16 @@ class Core:
         # Hazard casualty rates are cumulative Level-5 exposure probabilities
         # over this reference duration, not probabilities reapplied every minute.
         self.hazardCasualtyReferenceMinutes = 60.0
+        # Expected casualties are priced in the same person-minute ledger as
+        # evacuation time.  kappa=2 makes one expected casualty cost twice the
+        # maximum remaining living burden; sensitivity runs vary this declared
+        # value rather than hiding it in reward weights.
+        self.casualtyPriorityKappa = 2.0
+        # Optional coherent tail-clearance objective.  Older experiment files
+        # leave the weight at zero; curricula that enable it state both the
+        # CVaR population fraction and its extra weight explicitly.
+        self.clearanceTailFraction = 0.10
+        self.clearanceTailExtraWeight = 0.0
         # Observable exogenous wind used by both hazard evolution and the
         # administrator-facing action-window hazard forecast. Direction is the
         # direction toward which the hazard is transported, counter-clockwise
@@ -211,6 +228,10 @@ class Core:
         self.hazardWindSpeedMPerMinute = 0.0
         self.hazardWindDirectionDegrees = 0.0
         self.hazardWindInfluence = 1.0
+        # Physical front speed used by deterministic spread and to scale the
+        # stochastic transition probability.  It is independent of the
+        # decision-grid resolution and population-adaptive cell widths.
+        self.hazardSpreadSpeedMPerMinute = 100.0 / 3.0
         
         # Input defined, indicate the initial volume of shelters we deploy in the network at t = 0
         self.initShelterVol = 0
@@ -261,8 +282,11 @@ class Core:
         self.criticLearningRate = 0.0
         self.actorPpoEpochs = DEFAULT_ACTOR_EPOCHS
         self.criticPpoEpochs = DEFAULT_CRITIC_EPOCHS
-        self.actorBaselineDecay = DEFAULT_ACTOR_BASELINE_DECAY
+        # Parsed for archived curricula only; direct PPO uses its state-value
         self.advantageScaleFloor = DEFAULT_ADVANTAGE_SCALE_FLOOR
+        # Positive conditioning multiplier applied only to PPO/NMCC learning
+        # targets.  Reported physical rewards retain their normalized units.
+        self.learningRewardScale = 1.0
         # Exploration vs. Exploitation prob
         self.explorationRate = 0
         # name of the optimizer used
@@ -280,30 +304,17 @@ class Core:
         self.nmccCounterfactualWeight = 1.0
         self.nmccJointCounterfactualWeight = 1.0
         self.nmccInterventionCost = 0.0
-        self.nmccEnsembleSize = DEFAULT_NMCC_ENSEMBLE_SIZE
         self.nmccNaturalLossCoefficient = DEFAULT_NMCC_NATURAL_LOSS_COEF
-        self.nmccCausalLossCoefficient = DEFAULT_NMCC_CAUSAL_LOSS_COEF
-        self.nmccDuelingLossCoefficient = DEFAULT_NMCC_DUELING_LOSS_COEF
-        self.nmccTeacherCoefficient = DEFAULT_NMCC_TEACHER_COEF
-        self.nmccTeacherDecayUpdates = DEFAULT_NMCC_TEACHER_DECAY_UPDATES
-        self.nmccGuidanceMaximum = DEFAULT_NMCC_GUIDANCE_MAX
-        self.nmccGuidanceWarmupUpdates = DEFAULT_NMCC_GUIDANCE_WARMUP_UPDATES
-        self.nmccGuidanceRampUpdates = DEFAULT_NMCC_GUIDANCE_RAMP_UPDATES
-        self.nmccUncertaintyPenalty = DEFAULT_NMCC_UNCERTAINTY_PENALTY
+        self.entropyCoefficientStart = DEFAULT_ENTROPY_COEF
         self.entropyCoefficientEnd = DEFAULT_ENTROPY_COEF_END
         self.explorationDecayUpdates = DEFAULT_EXPLORATION_DECAY_UPDATES
+        self.explorationSchedule = "half_cosine"
         self.actionTemperatureStart = DEFAULT_TEMPERATURE_START
         self.actionTemperatureEnd = DEFAULT_TEMPERATURE_END
-        # Optional staged-learning gates. Zero preserves the historical joint
-        # optimizer from the first rollout. Positive counts refer to complete
-        # PPO rollout batches, not individual gradient minibatches.
-        self.nmccNaturalPretrainRollouts = 0
-        self.nmccCausalPretrainRollouts = 0
-        self.nmccControllerWarmupRollouts = 0
         # NMCC policy improvement (exact within-state branch targets) and the
         # actor's prior logit.  Defaults, types and constructor keywords come
-        # from RLBridge.NMCC_PI_CORE_FIELDS.
-        for attribute, _, _, default in NMCC_PI_CORE_FIELDS:
+        # from the shared NMCC configuration contract.
+        for attribute, _, _, default in NMCC_PI_ALL_CORE_FIELDS:
             setattr(self, attribute, default)
 
         """Pointers to main processing modules"""
@@ -363,6 +374,14 @@ class Core:
         self.visualization_vector_outputs = True
         self.random_stream_seeds = {}
         self._hazard_trajectory_hasher = None
+        # Curriculum-owned schedule coordinates.  They are supplied by the
+        # runner for every episode so exploration and optimizer learning rates
+        # can decay independently inside each learning stage.
+        self.trainingStageId = "standalone"
+        self.trainingStageUpdateIndex = 0
+        self.trainingStageTotalUpdates = 1
+        self.trainMode = False
+        self.finalInstallationUnassignedRationalPopulation = None
 
     """Getter Functions"""
     
@@ -423,6 +442,7 @@ class Core:
         if config_overrides:
             self._apply_configuration_overrides(config_overrides)
 
+        self.trainMode = bool(train_mode)
         self._validate_effective_configuration()
         print(
             "[EFFECTIVE CONFIG] "
@@ -460,6 +480,11 @@ class Core:
             ),
             "pedestrian_panic_behavior": int(
                 np.random.SeedSequence([self.scenario_seed, 3]).generate_state(
+                    1, dtype=np.uint64
+                )[0]
+            ),
+            "pedestrian_origins": int(
+                np.random.SeedSequence([self.scenario_seed, 4]).generate_state(
                     1, dtype=np.uint64
                 )[0]
             ),
@@ -591,6 +616,7 @@ class Core:
             wind_direction_degrees=self.hazardWindDirectionDegrees,
             wind_influence=self.hazardWindInfluence,
             time_step_minutes=self.timeStepMinutes,
+            spread_speed_m_per_minute=self.hazardSpreadSpeedMPerMinute,
         )
         self.hazardDS.cell_state_evolution_mode = str(self.hazardEvolutionMode).strip().lower()
         if self.hazardDS.cell_state_evolution_mode not in {"deterministic", "stochastic"}:
@@ -610,20 +636,42 @@ class Core:
         
         self.hazardDS.setCellTracker(self.cellTracker)
 
-        
+        raw_nodes = list(self.OSMProcessor.nodeList)
+        planned_birth_osmids = None
+        population_weights = None
+        population_partition_key = None
+        if self.cellPartitionMode == POPULATION_DENSITY_ADAPTIVE:
+            origin_plan = sample_population_origins(
+                len(raw_nodes),
+                int(self.pedVol),
+                int(self.pedestrianGroupSize),
+                self.random_stream_seeds["pedestrian_origins"],
+            )
+            planned_birth_osmids = [
+                int(raw_nodes[index][0])
+                for index in origin_plan["origin_indices"]
+            ]
+            population_weights = np.asarray(
+                origin_plan["node_population"], dtype=float
+            )
+            population_partition_key = hashlib.sha256(
+                population_weights.tobytes()
+            ).hexdigest()
+
         partition_cache_key = (
             infra_cache_key,
             int(self.cellX),
             int(self.cellY),
             str(self.cellPartitionMode),
             float(self.cellPartitionMinWidthFraction),
+            population_partition_key,
         )
         cached_partition = Core._cell_partition_cache.get(partition_cache_key)
 
         if cached_partition is None:
             x_vals = []
             y_vals = []
-            for _, data in self.OSMProcessor.nodeList:
+            for _, data in raw_nodes:
                 lon = float(data["x"])
                 lat = float(data["y"])
                 x_m, y_m = self.mapDS.coordToMeters(lon, lat)
@@ -637,6 +685,7 @@ class Core:
                 int(self.cellY),
                 str(self.cellPartitionMode),
                 min_width_fraction=float(self.cellPartitionMinWidthFraction),
+                population_weights=population_weights,
             )
             x_edges = list(partition["x_edges"])
             y_edges = list(partition["y_edges"])
@@ -677,8 +726,18 @@ class Core:
         print("network Y range (occupied): ", (yMin, yMax))
         
         self.cellTracker.initialCut(xLength, yLength, xEdges = x_edges, yEdges = y_edges)
-        
-        N = int(self.cellX * self.cellY)
+        grid_x, grid_y = authoritative_grid_shape(self)
+        partition_shape = tuple(
+            int(value)
+            for value in self.cellPartitionDiagnostics.get("grid_shape", ())
+        )
+        if partition_shape != (grid_x, grid_y):
+            raise RuntimeError(
+                "Cell partition and CellTracker disagree: "
+                f"partition={partition_shape}, tracker={(grid_x, grid_y)}"
+            )
+
+        N = int(self.cellTracker.number_of_cells)
         def _init_vec(name):
             if getattr(self.cellTracker, name, None) is None:
                 setattr(self.cellTracker, name, np.zeros(N, dtype=float))
@@ -716,22 +775,52 @@ class Core:
             if int(self.shelterCapacityToken) == 0
             else int(self.shelterCapacityToken)
         )
-        self.shelterDS.shelterPerCell(self.cellTracker, self.cellX, self.cellY)
+        self.shelterDS.shelterPerCell(self.cellTracker)
+        authoritative_grid_shape(self)
         available_shelters = int(self.shelterDS.remainingCandidateCount())
         requested_initial_shelters = int(self.initShelterVol)
+        planned_shelters = int(self.initShelterVol) + int(
+            self.maxAdditionalShelters
+        )
+        if (
+            self.requirePopulationMatchedShelterCapacity
+            and available_shelters < planned_shelters
+        ):
+            raise RuntimeError(
+                "Population-matched deployment requires at least "
+                f"{planned_shelters} detected shelter candidates, but only "
+                f"{available_shelters} are available"
+            )
         shelter_action_interval = int(self.shelterActionInterval)
         deploy_windows = 0
-        if int(self.stopTime) > 1:
-            deploy_windows = ((int(self.stopTime) - 2) // shelter_action_interval) + 1
+        first_action_time = shelter_action_interval
+        terminal_time = int(self.stopTime) - 1
+        if terminal_time >= first_action_time:
+            deploy_windows = (
+                (terminal_time - first_action_time) // shelter_action_interval
+            ) + 1
         self.targetActiveShelters = self._shelter_target(
             available_candidates=available_shelters,
             initial_shelters=self.initShelterVol,
             decision_windows=deploy_windows,
             maximum_additions=self.maxAdditionalShelters,
         )
+        if (
+            self.requirePopulationMatchedShelterCapacity
+            and int(self.targetActiveShelters) != planned_shelters
+        ):
+            raise RuntimeError(
+                "Population-matched deployment must schedule the complete "
+                f"{planned_shelters}-shelter budget; computed target was "
+                f"{self.targetActiveShelters}"
+            )
         strategy_key = str(deployment_strategy).strip().lower()
+        self.shelterDS.initVol = self._initial_shelter_volume(
+            strategy_key,
+            requested_initial_shelters,
+            self.targetActiveShelters,
+        )
         if strategy_key == "none":
-            self.shelterDS.initVol = int(self.targetActiveShelters)
             print(
                 f"[SHELTER FAIRNESS] strategy={deployment_strategy} pre-deploying "
                 f"{self.shelterDS.initVol} initial shelters to match end-of-episode shelter budget."
@@ -743,14 +832,15 @@ class Core:
         )
         predeployed_ids = list(initialized_shelter_ids[requested_initial_shelters:])
         if strategy_key == "static_greedy":
-            node_mass = np.zeros(int(self.cellX * self.cellY), dtype=float)
+            grid_x, grid_y = authoritative_grid_shape(self)
+            node_mass = np.zeros(self.cellTracker.number_of_cells, dtype=float)
             for node in self.mapDS.nodeListByLocalID.values():
                 cell = getattr(node, "cellID", None)
                 if cell is None:
                     continue
                 i, j = int(cell[0]), int(cell[1])
-                if 0 <= i < int(self.cellX) and 0 <= j < int(self.cellY):
-                    node_mass[i * int(self.cellY) + j] += 1.0
+                if 0 <= i < grid_x and 0 <= j < grid_y:
+                    node_mass[self.cellTracker.flatten_cell((i, j))] += 1.0
             if float(node_mass.sum()) <= 0.0:
                 node_mass[:] = 1.0
             expected_initial_demand = (
@@ -782,7 +872,12 @@ class Core:
         self._hazard_trajectory_hasher = hashlib.sha256()
         self._record_hazard_state(0)
         
-        self.pedDS.initPedestrianAgent(self.mapDS, self.cellTracker, self.maxSpeed)
+        self.pedDS.initPedestrianAgent(
+            self.mapDS,
+            self.cellTracker,
+            self.maxSpeed,
+            birth_node_osmids=planned_birth_osmids,
+        )
         
         self.shelterDS.shelterByOSMID   = {sh.nodeMapped.OSMID: sh for sh in self.shelterDS.shelterList.values()}    
         
@@ -799,6 +894,28 @@ class Core:
                               ),
                               evacuationHorizonTimesteps = self.stopTime)
         self.pedDS.route_active_to_nearest_shelter()
+        # Initialize every cell-indexed observation from the same authoritative
+        # CA state before a t=0 precommitment or the first RL observation. In
+        # particular, hazards installed by ``initHazard`` must not remain as
+        # zeroes in the decision layer until the first physical timestep.
+        self.cellTracker.cellUpdate(
+            pedDS=self.pedDS,
+            forceTracker=self.forceTracker,
+        )
+        authoritative_grid_shape(self)
+        if (
+            self.requirePopulationMatchedShelterCapacity
+            and len(self.shelterDS.shelterList) == int(self.targetActiveShelters)
+        ):
+            unassigned = int(self.pedDS.unassigned_rational_population())
+            self.finalInstallationUnassignedRationalPopulation = int(
+                unassigned
+            )
+            if unassigned != 0:
+                raise RuntimeError(
+                    "Complete shelter budget left capacity-eligible rational "
+                    f"pedestrians unassigned: {unassigned}"
+                )
 
         self.rl = RLBridge(
             self,
@@ -811,13 +928,13 @@ class Core:
             epochs = int(self.criticPpoEpochs),
             actor_epochs = int(self.actorPpoEpochs),
             critic_epochs = int(self.criticPpoEpochs),
-            actor_baseline_decay = float(self.actorBaselineDecay),
             advantage_scale_floor = float(self.advantageScaleFloor),
+            learning_reward_scale = float(self.learningRewardScale),
             minibatch_size = 32,
-            entropy_coef = DEFAULT_ENTROPY_COEF,
-            target_kl = DEFAULT_TARGET_KL,
+            entropy_coef = float(self.entropyCoefficientStart),
             rollout_episodes = int(self.ppoRolloutEpisodes),
             shelter_action_interval = int(self.shelterActionInterval),
+            first_decision_time = int(self.shelterActionInterval),
             optimizer_name = self.optimizer,
             deployment_strategy = deployment_strategy,
             target_active_shelters = int(self.targetActiveShelters),
@@ -835,34 +952,29 @@ class Core:
                 self.nmccJointCounterfactualWeight
             ),
             counterfactual_intervention_cost=float(self.nmccInterventionCost),
-            nmcc_ensemble_size=int(self.nmccEnsembleSize),
             nmcc_natural_loss_coef=float(self.nmccNaturalLossCoefficient),
-            nmcc_causal_loss_coef=float(self.nmccCausalLossCoefficient),
-            nmcc_dueling_loss_coef=float(self.nmccDuelingLossCoefficient),
-            nmcc_teacher_coef=float(self.nmccTeacherCoefficient),
-            nmcc_teacher_decay_updates=int(self.nmccTeacherDecayUpdates),
-            nmcc_guidance_max=float(self.nmccGuidanceMaximum),
-            nmcc_guidance_warmup_updates=int(self.nmccGuidanceWarmupUpdates),
-            nmcc_guidance_ramp_updates=int(self.nmccGuidanceRampUpdates),
-            nmcc_uncertainty_penalty=float(self.nmccUncertaintyPenalty),
             entropy_coef_end=float(self.entropyCoefficientEnd),
             exploration_decay_updates=int(self.explorationDecayUpdates),
+            exploration_schedule=str(self.explorationSchedule),
             action_temperature_start=float(self.actionTemperatureStart),
             action_temperature_end=float(self.actionTemperatureEnd),
-            nmcc_natural_pretrain_rollouts=int(
-                self.nmccNaturalPretrainRollouts
-            ),
-            nmcc_causal_pretrain_rollouts=int(
-                self.nmccCausalPretrainRollouts
-            ),
-            nmcc_controller_warmup_rollouts=int(
-                self.nmccControllerWarmupRollouts
-            ),
+            training_stage_id=str(self.trainingStageId),
+            training_stage_update_index=int(self.trainingStageUpdateIndex),
+            training_stage_total_updates=int(self.trainingStageTotalUpdates),
             **{
                 keyword: getattr(self, attribute)
-                for attribute, keyword, _, _ in NMCC_PI_CORE_FIELDS
+                for attribute, keyword, _, _ in NMCC_PI_ALL_CORE_FIELDS
             },
         )
+        if strategy_key == "initial_only":
+            schedule = self.rl.precommit_static_schedule()
+            print(
+                "[SHELTER FAIRNESS] strategy=initial_only committed "
+                f"{len(schedule)} initial-state sites for scheduled deployment "
+                f"at t={self.shelterActionInterval},...,"
+                f"{len(schedule) * self.shelterActionInterval}.",
+                flush=True,
+            )
         if strategy_key == "rl_precommit":
             receipts = self.rl.precommit_all()
             self.static_predeployment_shelter_ids = frozenset(
@@ -887,7 +999,7 @@ class Core:
             self.visualizer.observe(0)
 
         run_metadata = {
-            "schema_version": 5,
+            "schema_version": 6,
             "city_id": str(self.cityID),
             "map_spec": map_spec,
             "map_provenance": self.OSMProcessor.graph_provenance(),
@@ -901,7 +1013,7 @@ class Core:
             "random_stream_seeds": dict(self.random_stream_seeds),
             "hazard_evolution_mode": self.hazardDS.cell_state_evolution_mode,
             "initial_population": self.rl.initial_population,
-            "grid_shape": [int(self.cellX), int(self.cellY)],
+            "grid_shape": list(authoritative_grid_shape(self)),
             "cell_partition": {
                 **dict(self.cellPartitionDiagnostics),
                 "minimum_axis_width_fraction": float(
@@ -912,25 +1024,20 @@ class Core:
             "time_step_minutes": float(self.timeStepMinutes),
             "horizon_minutes": (int(self.stopTime) - 1) * float(self.timeStepMinutes),
             "shelter_action_interval_timesteps": int(self.shelterActionInterval),
+            "first_sequential_shelter_timestep": int(self.shelterActionInterval),
+            "final_sequential_shelter_timestep": int(
+                self.maxAdditionalShelters * self.shelterActionInterval
+            ),
+            "post_final_installation_timesteps": int(
+                (self.stopTime - 1)
+                - self.maxAdditionalShelters * self.shelterActionInterval
+            ),
             "shelter_action_interval_minutes": (
                 int(self.shelterActionInterval) * float(self.timeStepMinutes)
             ),
-            "maximum_shelter_forecast_danger": float(
-                self.maximumShelterForecastDanger
-            ),
             "candidate_action_constraints": {
-                "require_operational_benefit": bool(
-                    self.requireCandidateOperationalBenefit
-                ),
-                "minimum_reroutable_fraction": float(
-                    self.minimumCandidateReroutableFraction
-                ),
-                "minimum_route_time_saving": float(
-                    self.minimumCandidateRouteTimeSaving
-                ),
-                "minimum_hazard_safety_margin": float(
-                    self.minimumCandidateHazardSafetyMargin
-                ),
+                "mask": "remaining_budget_and_positive_physical_capacity_only",
+                "risk_and_benefit_features_are_observations_only": True,
             },
             "free_flow_speed_m_per_minute": float(self.maxSpeed),
             "free_flow_speed_m_per_second": float(self.maxSpeed) / 60.0,
@@ -939,13 +1046,52 @@ class Core:
             "panic_behavior": self.pedDS.panic_contract(),
             "initial_shelters": int(len(self.shelterDS.shelterList)),
             "maximum_dynamic_deployments": int(self.rl.maximum_deployments),
+            "static_precommit_schedule": [
+                {
+                    "order": int(index + 1),
+                    "candidate_osm_node_id": str(candidate_osm_node_id),
+                    "cell_index": int(cell_index),
+                    "scheduled_timestep": int(
+                        self.shelterActionInterval * (index + 1)
+                    ),
+                }
+                for index, (candidate_osm_node_id, cell_index) in enumerate(
+                    self.rl.static_precommit_schedule
+                )
+            ],
             "checkpoint_path": (
                 self.rl.checkpoint_path
                 if strategy_key in {"rl", "rl_precommit"}
                 else None
             ),
-            "ppo_rollout_episodes": int(self.rl.rollout_episodes),
-            "reward": "(safe_completions - 3*casualties)/population - risk_weighted_person_time/(population*horizon)",
+            "learner_batch_episodes": int(self.rl.rollout_episodes),
+            "reward": (
+                "V_uniform_random(state) - realized_complete_interval_cost - "
+                "V_uniform_random(next_state), normalized by population*horizon"
+            ),
+            "reward_plain_time_term": (
+                "realized_active_person_time_plus_terminal_remaining_time_to_safety"
+            ),
+            "reward_hazard_exposure_term": (
+                "realized_danger_weighted_active_person_time_plus_terminal_exposure"
+            ),
+            "route_change_rule": (
+                "none_to_reserved_or_strictly_shorter_capacity_valid_destination"
+            ),
+            "unavailable_shelter_time_minutes": float(
+                (int(self.stopTime) - 1) * float(self.timeStepMinutes)
+            ),
+            "terminal_residual_in_learning_reward": (
+                "charged_inside_the_final_complete_interval_cost"
+            ),
+            "evaluation_objective": (
+                "minimize_normalized_complete_ledger_cost_composed_of_active_"
+                "time_hazard_exposure_expected_casualty_and_clearance_tail"
+            ),
+            "casualty_role": (
+                "rao_blackwellized_expected_casualty_intensity_weighted_by_"
+                "declared_priority_kappa; realized_casualties_reported_secondarily"
+            ),
             "visualization_enabled": bool(self.visualization_enabled),
             "visualization_milestones": (
                 list(self.visualizer.milestones) if self.visualizer is not None else []
@@ -965,6 +1111,11 @@ class Core:
             setattr(self, key, value)
 
     def _effective_configuration(self) -> dict:
+        stage_id = str(self.trainingStageId).upper()
+        comparison_horizon = {
+            "E": "environment_dynamics_only_actor_frozen",
+            "P": "one_decision_interval_plus_nmcc_continuation_value",
+        }.get(stage_id, "one_decision_interval_plus_nmcc_continuation_value")
         return {
             "city_id": str(self.cityID),
             "address": str(self.address),
@@ -1032,13 +1183,54 @@ class Core:
             ),
             "initial_shelters": int(self.initShelterVol),
             "shelter_capacity_token": int(self.shelterCapacityToken),
+            "planned_total_shelter_capacity": int(
+                (self.initShelterVol + self.maxAdditionalShelters)
+                * self.shelterCapacityToken
+            ),
+            "population_matched_shelter_capacity": bool(
+                self.requirePopulationMatchedShelterCapacity
+            ),
+            "shelter_capacity_surplus": int(self.shelterCapacitySurplus),
+            "training_stage": {
+                "id": str(self.trainingStageId),
+                "update_index": int(self.trainingStageUpdateIndex),
+                "total_updates": int(self.trainingStageTotalUpdates),
+                "train_environment_dynamics": bool(
+                    self.trainMode and stage_id == "E"
+                ),
+                "train_actor": bool(self.trainMode and stage_id != "E"),
+                "train_shared_critic": bool(
+                    self.trainMode
+                    and stage_id not in {"E"}
+                    and not bool(getattr(self, "nmccPolicyImprovement"))
+                ),
+                "critic_target": (
+                    "not_used_by_rollout_policy_improvement"
+                    if bool(getattr(self, "nmccPolicyImprovement"))
+                    else "current_policy_return_to_go"
+                ),
+                "use_continuation_for_actions": bool(
+                    not bool(getattr(self, "nmccPolicyImprovement"))
+                    and ((not self.trainMode) or stage_id == "P")
+                ),
+            },
             "hazard_casualty_distribution": list(self.hazardCasualtyRate),
             "hazard_casualty_reference_exposure_minutes": float(
                 self.hazardCasualtyReferenceMinutes
             ),
+            "expected_casualty_priority_kappa": float(
+                self.casualtyPriorityKappa
+            ),
+            "clearance_tail_fraction": float(self.clearanceTailFraction),
+            "clearance_tail_extra_weight": float(
+                self.clearanceTailExtraWeight
+            ),
             "hazard_spread_distribution": list(self.hazardSpreadRate),
             "hazard_speed_distribution": list(self.hazardSpeedReduct),
             "hazard_evolution_mode": str(self.hazardEvolutionMode),
+            "hazard_spread_speed_m_per_minute": float(
+                self.hazardSpreadSpeedMPerMinute
+            ),
             "hazard_wind": {
                 "speed_m_per_minute": float(self.hazardWindSpeedMPerMinute),
                 "direction_degrees_from_east": float(
@@ -1051,73 +1243,145 @@ class Core:
             "critic_learning_rate": float(self.criticLearningRate),
             "actor_ppo_epochs": int(self.actorPpoEpochs),
             "critic_ppo_epochs": int(self.criticPpoEpochs),
-            "actor_baseline_decay": float(self.actorBaselineDecay),
-            "advantage_scale_floor": float(self.advantageScaleFloor),
+            "advantage_normalization": (
+                "none_categorical_target_retains_physical_cost_scale"
+                if bool(getattr(self, "nmccPolicyImprovement"))
+                else "zero_mean_unit_variance_with_machine_epsilon_only"
+            ),
+            "learning_reward_scale": float(self.learningRewardScale),
             "actor_credit_target": (
-                "nmcc_policy_improvement_exact_branch_target"
+                "kl_constrained_categorical_rollout_policy_improvement"
+                if bool(getattr(self, "nmccPolicyImprovement"))
+                else (
+                    "exact_common_noise_chosen_candidate_minus_policy_reference_candidate"
+                    if bool(self.nmccEnabled)
+                    else "complete_episode_return_minus_value_baseline"
+                )
+            ),
+            **(
+                {
+                    "policy_improvement_learner": {
+                        "candidate_coverage": (
+                            "objective_greedy_contenders_plus_uniform_feasible_extras"
+                        ),
+                        "sampled_actions_per_state": int(
+                            self.nmccPiMaxBranches
+                        ),
+                        "branch_comparator": (
+                            "complete_costs_from_same_state_and_shared_futures"
+                        ),
+                        "branch_horizon": "to_episode_end",
+                        "advantage": (
+                            "complete_rollout_cost_categorical_advantages"
+                        ),
+                        "interval_cost_contract": (
+                            "unchanged_complete_ledger_cost_to_episode_horizon"
+                        ),
+                        "actor_optimizer": (
+                            "categorical_kl_fit_to_constrained_policy_target"
+                        ),
+                        "residual_correction": (
+                            "unbounded_linear_actor_readout"
+                        ),
+                        "actor_epochs": int(self.nmccPiReplayEpochs),
+                        "actor_replay_episodes": int(
+                            self.nmccPiReplayMaxEpisodes
+                        ),
+                        "actor_replay_evidence": "physical_branch_scores",
+                        "historical_probability_targets": False,
+                        "random_reference_rollouts_per_state": int(
+                            self.randomReferenceRollouts
+                        ),
+                        "continuation_policy": "frozen_current_residual_actor",
+                        "shared_actor_critic_continuation_value": False,
+                        "continuation_target": "realized_complete_simulator_cost",
+                        "environment_reward_branch_horizon": 0,
+                        "correction_gate": False,
+                        "fallback_controller": False,
+                        "model_filled_actions": False,
+                        "entropy_diagnostics": {
+                            "behavior": (
+                                "sampled_policy_after_one_temperature_and_"
+                                "uniform_mixture_application"
+                            ),
+                            "actor_before_after": (
+                                "raw_temperature_one_trainable_policy"
+                            ),
+                        },
+                    }
+                }
+                if bool(getattr(self, "nmccPolicyImprovement"))
+                else {}
+            ),
+            "critic_target": (
+                "not_used_by_rollout_policy_improvement"
                 if bool(getattr(self, "nmccPolicyImprovement"))
                 else "complete_episode_smdp_monte_carlo_return_to_go"
             ),
-            "policy_improvement_learner": {
-                keyword: getattr(self, attribute)
-                for attribute, keyword, _, _ in NMCC_PI_CORE_FIELDS
-            },
-            "critic_target": "one_step_smdp_td0",
-            "ppo_optimizer": str(self.optimizer),
-            "ppo_rollout_episodes": int(self.ppoRolloutEpisodes),
-            "ppo_finalize_rollout": bool(self.finalizePpoRollout),
-            "epsilon_exploration": {
-                "legacy": float(self.explorationRate),
-                "start": float(self.explorationRateStart),
-                "end": float(self.explorationRateEnd),
-                "decay_updates": int(self.explorationDecayUpdates),
-            },
-            "nmcc": {
-                "enabled": bool(self.nmccEnabled),
-                "counterfactual_horizon_timesteps": int(
-                    self.nmccCounterfactualHorizon
+            "optimizer": str(self.optimizer),
+            "learner_batch_episodes": int(self.ppoRolloutEpisodes),
+            "finalize_incomplete_learner_batch": bool(self.finalizePpoRollout),
+            "counterfactual_branching": {
+                "enabled": bool(
+                    self.nmccEnabled or getattr(self, "nmccPolicyImprovement")
+                ),
+                "role": (
+                    "simulator_graded_residual_rollout_policy_iteration"
+                    if bool(getattr(self, "nmccPolicyImprovement"))
+                    else "exact_credit_assignment_only"
+                ),
+                "comparison_horizon": (
+                    "complete_simulation_to_episode_horizon"
+                    if bool(getattr(self, "nmccPolicyImprovement"))
+                    else comparison_horizon
+                    if int(self.nmccPiBranchHorizon) > 0
+                    else "immediate_pre_post_remaining_time_to_safety"
                 ),
                 "counterfactual_weight": float(self.nmccCounterfactualWeight),
-                "joint_counterfactual_weight": float(
-                    self.nmccJointCounterfactualWeight
+                "reference_action": (
+                    "objective_greedy_contenders_plus_uniform_feasible_extras"
+                    if bool(getattr(self, "nmccPolicyImprovement"))
+                    else "independent_draw_from_same_categorical_behavior_policy"
                 ),
-                "intervention_cost": float(self.nmccInterventionCost),
-                "ensemble_size": int(self.nmccEnsembleSize),
-                "natural_loss_coefficient": float(
-                    self.nmccNaturalLossCoefficient
+                "both_branches_install": bool(
+                    self.nmccEnabled or getattr(self, "nmccPolicyImprovement")
                 ),
-                "causal_loss_coefficient": float(
-                    self.nmccCausalLossCoefficient
-                ),
-                "dueling_loss_coefficient": float(
-                    self.nmccDuelingLossCoefficient
-                ),
-                "teacher_coefficient": float(self.nmccTeacherCoefficient),
-                "teacher_decay_updates": int(self.nmccTeacherDecayUpdates),
-                "guidance_maximum": float(self.nmccGuidanceMaximum),
-                "guidance_warmup_updates": int(
-                    self.nmccGuidanceWarmupUpdates
-                ),
-                "guidance_ramp_updates": int(self.nmccGuidanceRampUpdates),
-                "uncertainty_penalty": float(self.nmccUncertaintyPenalty),
-                "staged_rollouts": {
-                    "natural_pretrain": int(
-                        self.nmccNaturalPretrainRollouts
-                    ),
-                    "causal_pretrain": int(
-                        self.nmccCausalPretrainRollouts
-                    ),
-                    "controller_warmup": int(
-                        self.nmccControllerWarmupRollouts
-                    ),
-                },
+                "missing_branch_behavior": "fail_training",
             },
             "exploration_schedule": {
-                "entropy_start": float(DEFAULT_ENTROPY_COEF),
+                "kind": (
+                    "exponential_half_life_categorical_temperature_entropy_and_uniform_mixture"
+                    if self.explorationSchedule == "exponential_half_life"
+                    else "half_cosine_categorical_temperature_entropy_and_uniform_mixture"
+                ),
+                "entropy_start": float(self.entropyCoefficientStart),
                 "entropy_end": float(self.entropyCoefficientEnd),
                 "temperature_start": float(self.actionTemperatureStart),
                 "temperature_end": float(self.actionTemperatureEnd),
+                "uniform_mixture_start": float(self.explorationRateStart),
+                "uniform_mixture_end": float(self.explorationRateEnd),
+                "schedule_updates": int(self.explorationDecayUpdates),
                 "decay_updates": int(self.explorationDecayUpdates),
+                "scope": "reset_independently_for_each_training_stage",
+                "stage_id": str(self.trainingStageId),
+                "stage_update_index": int(self.trainingStageUpdateIndex),
+                "stage_total_updates": int(self.trainingStageTotalUpdates),
+            },
+            "learning_rate_schedule": {
+                "kind": str(self.learningRateSchedule),
+                "scope": "reset_independently_for_each_training_stage",
+                "warmup_updates": int(self.learningRateWarmupUpdates),
+                "decay_updates": int(self.learningRateDecayUpdates),
+                "actor_start": float(self.actorLearningRate),
+                "actor_end": float(
+                    self.actorLearningRate
+                    * self.actorLearningRateMinimumFraction
+                ),
+                "critic_start": float(self.criticLearningRate),
+                "critic_end": float(
+                    self.criticLearningRate
+                    * self.criticLearningRateMinimumFraction
+                ),
             },
         }
 
@@ -1150,17 +1414,58 @@ class Core:
         self.panicRate = float(self.panicRate)
         self.panicHerdProbability = float(self.panicHerdProbability)
         self.panicDangerThreshold = int(self.panicDangerThreshold)
+        self.casualtyPriorityKappa = float(self.casualtyPriorityKappa)
+        self.clearanceTailFraction = float(self.clearanceTailFraction)
+        self.clearanceTailExtraWeight = float(self.clearanceTailExtraWeight)
+        self.hazardSpreadSpeedMPerMinute = float(
+            self.hazardSpreadSpeedMPerMinute
+        )
         self.cellX = int(self.cellX)
         self.cellY = int(self.cellY)
         self.cellPartitionMode = normalize_partition_mode(self.cellPartitionMode)
         self.cellPartitionMinWidthFraction = float(
             self.cellPartitionMinWidthFraction
         )
+        if (
+            not math.isfinite(self.casualtyPriorityKappa)
+            or self.casualtyPriorityKappa < 1.0
+        ):
+            raise ValueError("casualtyPriorityKappa must be finite and at least 1")
+        if (
+            not math.isfinite(self.clearanceTailFraction)
+            or not 0.0 < self.clearanceTailFraction <= 1.0
+        ):
+            raise ValueError("clearanceTailFraction must be in (0, 1]")
+        if (
+            not math.isfinite(self.clearanceTailExtraWeight)
+            or self.clearanceTailExtraWeight < 0.0
+        ):
+            raise ValueError("clearanceTailExtraWeight must be finite and non-negative")
+        if (
+            not math.isfinite(self.hazardSpreadSpeedMPerMinute)
+            or self.hazardSpreadSpeedMPerMinute <= 0.0
+        ):
+            raise ValueError(
+                "hazardSpreadSpeedMPerMinute must be finite and positive"
+            )
         self.shelterCanVol = int(self.shelterCanVol)
         self.initShelterVol = int(self.initShelterVol)
         self.shelterCapacityToken = int(self.shelterCapacityToken)
+        self.shelterCapacitySurplus = int(self.shelterCapacitySurplus)
         self.maxAdditionalShelters = int(self.maxAdditionalShelters)
         self.shelterActionInterval = int(self.shelterActionInterval)
+        self.trainingStageId = str(self.trainingStageId).strip()
+        self.trainingStageUpdateIndex = int(self.trainingStageUpdateIndex)
+        self.trainingStageTotalUpdates = int(self.trainingStageTotalUpdates)
+        if not isinstance(
+            self.requirePopulationMatchedShelterCapacity, (bool, np.bool_)
+        ):
+            raise ValueError(
+                "requirePopulationMatchedShelterCapacity must be boolean"
+            )
+        self.requirePopulationMatchedShelterCapacity = bool(
+            self.requirePopulationMatchedShelterCapacity
+        )
         self.maximumShelterForecastDanger = float(
             self.maximumShelterForecastDanger
         )
@@ -1185,8 +1490,8 @@ class Core:
             self.criticLearningRate = self.learningRate
         self.actorPpoEpochs = int(self.actorPpoEpochs)
         self.criticPpoEpochs = int(self.criticPpoEpochs)
-        self.actorBaselineDecay = float(self.actorBaselineDecay)
         self.advantageScaleFloor = float(self.advantageScaleFloor)
+        self.learningRewardScale = float(self.learningRewardScale)
         self.ppoRolloutEpisodes = int(self.ppoRolloutEpisodes)
         if not isinstance(self.finalizePpoRollout, (bool, np.bool_)):
             raise ValueError("finalizePpoRollout must be boolean")
@@ -1201,28 +1506,14 @@ class Core:
             self.nmccJointCounterfactualWeight
         )
         self.nmccInterventionCost = float(self.nmccInterventionCost)
-        self.nmccEnsembleSize = int(self.nmccEnsembleSize)
         self.nmccNaturalLossCoefficient = float(self.nmccNaturalLossCoefficient)
-        self.nmccCausalLossCoefficient = float(self.nmccCausalLossCoefficient)
-        self.nmccDuelingLossCoefficient = float(self.nmccDuelingLossCoefficient)
-        self.nmccTeacherCoefficient = float(self.nmccTeacherCoefficient)
-        self.nmccTeacherDecayUpdates = int(self.nmccTeacherDecayUpdates)
-        self.nmccGuidanceMaximum = float(self.nmccGuidanceMaximum)
-        self.nmccGuidanceWarmupUpdates = int(self.nmccGuidanceWarmupUpdates)
-        self.nmccGuidanceRampUpdates = int(self.nmccGuidanceRampUpdates)
-        self.nmccUncertaintyPenalty = float(self.nmccUncertaintyPenalty)
+        self.entropyCoefficientStart = float(self.entropyCoefficientStart)
         self.entropyCoefficientEnd = float(self.entropyCoefficientEnd)
         self.explorationDecayUpdates = int(self.explorationDecayUpdates)
+        self.explorationSchedule = str(self.explorationSchedule).strip().lower()
         self.actionTemperatureStart = float(self.actionTemperatureStart)
         self.actionTemperatureEnd = float(self.actionTemperatureEnd)
-        self.nmccNaturalPretrainRollouts = int(
-            self.nmccNaturalPretrainRollouts
-        )
-        self.nmccCausalPretrainRollouts = int(self.nmccCausalPretrainRollouts)
-        self.nmccControllerWarmupRollouts = int(
-            self.nmccControllerWarmupRollouts
-        )
-        for attribute, _, kind, _ in NMCC_PI_CORE_FIELDS:
+        for attribute, _, kind, _ in NMCC_PI_ALL_CORE_FIELDS:
             value = getattr(self, attribute)
             if kind is bool:
                 if not isinstance(value, (bool, np.bool_)):
@@ -1347,10 +1638,57 @@ class Core:
             raise ValueError("initShelterVol must lie in [0, shelterCanVol]")
         if self.shelterCapacityToken < 0:
             raise ValueError("shelterCapacityToken must be non-negative")
+        if self.shelterCapacitySurplus < 0:
+            raise ValueError("shelterCapacitySurplus must be non-negative")
         if self.maxAdditionalShelters < 0:
             raise ValueError("maxAdditionalShelters must be non-negative")
         if self.shelterActionInterval <= 0:
             raise ValueError("shelterActionInterval must be positive")
+        if not self.trainingStageId:
+            raise ValueError("trainingStageId must not be empty")
+        if self.trainingStageUpdateIndex < 0:
+            raise ValueError("trainingStageUpdateIndex must be non-negative")
+        if self.trainingStageTotalUpdates <= 0:
+            raise ValueError("trainingStageTotalUpdates must be positive")
+        if self.trainingStageUpdateIndex >= self.trainingStageTotalUpdates:
+            raise ValueError(
+                "trainingStageUpdateIndex must be smaller than "
+                "trainingStageTotalUpdates"
+            )
+        if self.requirePopulationMatchedShelterCapacity:
+            planned_shelters = int(self.initShelterVol) + int(
+                self.maxAdditionalShelters
+            )
+            if planned_shelters <= 0:
+                raise ValueError("Population-matched capacity requires shelters")
+            if int(self.shelterCanVol) < planned_shelters:
+                raise ValueError(
+                    "Population-matched capacity requires at least one "
+                    "candidate for every planned shelter"
+                )
+            planned_capacity = planned_shelters * int(self.shelterCapacityToken)
+            required_capacity = int(self.pedVol) + int(
+                self.shelterCapacitySurplus
+            )
+            if planned_capacity != required_capacity:
+                raise ValueError(
+                    "Equal shelter capacity must sum to pedVol plus the "
+                    "declared surplus: "
+                    f"{planned_shelters} * {self.shelterCapacityToken} "
+                    f"!= {self.pedVol} + {self.shelterCapacitySurplus}"
+                )
+            if int(self.initShelterVol) != 2 or int(self.maxAdditionalShelters) != 8:
+                raise ValueError(
+                    "Population-matched experiment requires 2 initial and "
+                    "8 sequential shelters"
+                )
+            final_installation_time = (
+                int(self.maxAdditionalShelters) * int(self.shelterActionInterval)
+            )
+            if int(self.stopTime) - 1 <= final_installation_time:
+                raise ValueError(
+                    "The episode must continue after the eighth installation"
+                )
         if (
             not math.isfinite(self.maximumShelterForecastDanger)
             or not 0.0 <= self.maximumShelterForecastDanger <= 1.0
@@ -1375,10 +1713,10 @@ class Core:
                 raise ValueError(f"{name} must be in (0, 0.01]")
         if self.actorPpoEpochs <= 0 or self.criticPpoEpochs <= 0:
             raise ValueError("actorPpoEpochs and criticPpoEpochs must be positive")
-        if not math.isfinite(self.actorBaselineDecay) or not 0.0 <= self.actorBaselineDecay < 1.0:
-            raise ValueError("actorBaselineDecay must be in [0, 1)")
         if not math.isfinite(self.advantageScaleFloor) or self.advantageScaleFloor <= 0.0:
             raise ValueError("advantageScaleFloor must be finite and positive")
+        if not math.isfinite(self.learningRewardScale) or self.learningRewardScale <= 0.0:
+            raise ValueError("learningRewardScale must be finite and positive")
         if self.ppoRolloutEpisodes <= 0:
             raise ValueError("ppoRolloutEpisodes must be positive")
         if self.explorationRate != 0.0:
@@ -1392,30 +1730,10 @@ class Core:
             raise ValueError("nmccCounterfactualWeight must lie in [0, 1]")
         if not 0.0 <= self.nmccJointCounterfactualWeight <= 1.0:
             raise ValueError("nmccJointCounterfactualWeight must lie in [0, 1]")
-        staged_rollouts = (
-            self.nmccNaturalPretrainRollouts,
-            self.nmccCausalPretrainRollouts,
-            self.nmccControllerWarmupRollouts,
-        )
-        if any(value < 0 for value in staged_rollouts):
-            raise ValueError("NMCC staged rollout counts must be non-negative")
-        if any(staged_rollouts) and not (
-            self.nmccEnabled or getattr(self, "nmccPolicyImprovement")
-        ):
-            raise ValueError(
-                "NMCC staged rollouts require nmccEnabled or nmccPolicyImprovement"
-            )
-        if getattr(self, "nmccPolicyImprovement"):
-            if self.nmccGuidanceMaximum != 0.0:
-                raise ValueError("nmccPolicyImprovement requires nmccGuidanceMaximum=0")
         nonnegative_nmcc = {
             "nmccInterventionCost": self.nmccInterventionCost,
             "nmccNaturalLossCoefficient": self.nmccNaturalLossCoefficient,
-            "nmccCausalLossCoefficient": self.nmccCausalLossCoefficient,
-            "nmccDuelingLossCoefficient": self.nmccDuelingLossCoefficient,
-            "nmccTeacherCoefficient": self.nmccTeacherCoefficient,
-            "nmccGuidanceMaximum": self.nmccGuidanceMaximum,
-            "nmccUncertaintyPenalty": self.nmccUncertaintyPenalty,
+            "entropyCoefficientStart": self.entropyCoefficientStart,
             "entropyCoefficientEnd": self.entropyCoefficientEnd,
         }
         if any(
@@ -1423,20 +1741,21 @@ class Core:
             for value in nonnegative_nmcc.values()
         ):
             raise ValueError("NMCC coefficients must be finite and non-negative")
-        if self.nmccEnsembleSize < 2:
-            raise ValueError("nmccEnsembleSize must be at least two")
-        if (
-            self.nmccTeacherDecayUpdates <= 0
-            or self.nmccGuidanceWarmupUpdates < 0
-            or self.nmccGuidanceRampUpdates <= 0
-            or self.explorationDecayUpdates <= 0
-        ):
-            raise ValueError("NMCC and exploration schedules are invalid")
+        if self.explorationDecayUpdates <= 0:
+            raise ValueError("explorationDecayUpdates must be positive")
+        if self.explorationSchedule not in {
+            "half_cosine",
+            "exponential_half_life",
+        }:
+            raise ValueError(
+                "explorationSchedule must be half_cosine or "
+                "exponential_half_life"
+            )
         if not (
             0.0 < self.actionTemperatureEnd <= self.actionTemperatureStart
         ):
             raise ValueError("action temperatures must satisfy 0 < end <= start")
-        if self.entropyCoefficientEnd > DEFAULT_ENTROPY_COEF:
+        if self.entropyCoefficientEnd > self.entropyCoefficientStart:
             raise ValueError(
                 "entropyCoefficientEnd cannot exceed the starting coefficient"
             )
@@ -1452,7 +1771,7 @@ class Core:
         self._hazard_trajectory_hasher.update(
             np.asarray([int(simulation_time)], dtype=np.int64).tobytes()
         )
-        ordered_cells = sorted(self.cellTracker.cellList)
+        ordered_cells = tuple(self.cellTracker.cell_ids())
         states = np.asarray(
             [int(self.cellTracker.getCellState(cell)) for cell in ordered_cells],
             dtype=np.int8,
@@ -1593,7 +1912,16 @@ class Core:
                 "reward_hazard_exposure": rl_out.get(
                     "reward_hazard_exposure", 0.0
                 ),
+                "reward_reference_potential": rl_out.get(
+                    "reward_reference_potential", 0.0
+                ),
+                "reward_terminal_residual": rl_out.get(
+                    "reward_terminal_residual", 0.0
+                ),
                 "reward_risk_time": rl_out.get("reward_risk_time", 0.0),
+                "reward_remaining_risk_time_reduction": rl_out.get(
+                    "reward_remaining_risk_time_reduction", 0.0
+                ),
                 "reward_shelter_service": rl_out.get(
                     "reward_shelter_service", 0.0
                 ),
@@ -1606,6 +1934,35 @@ class Core:
                 "active_person_time": rl_out.get("active_person_time", 0.0),
                 "hazard_exposure_person_time": rl_out.get(
                     "hazard_exposure_person_time", 0.0
+                ),
+                "terminal_residual_person_time": rl_out.get(
+                    "terminal_residual_person_time", 0.0
+                ),
+                "remaining_risk_time_before": rl_out.get(
+                    "remaining_risk_time_before", 0.0
+                ),
+                "remaining_risk_time_after": rl_out.get(
+                    "remaining_risk_time_after", 0.0
+                ),
+                "raw_remaining_risk_time_reduction": rl_out.get(
+                    "raw_remaining_risk_time_reduction", 0.0
+                ),
+                "remaining_risk_time_reduction": rl_out.get(
+                    "remaining_risk_time_reduction", 0.0
+                ),
+                "plain_time_wait": rl_out.get("plain_time_wait", 0.0),
+                "plain_time_action": rl_out.get("plain_time_action", 0.0),
+                "raw_plain_time_reduction": rl_out.get(
+                    "raw_plain_time_reduction", 0.0
+                ),
+                "hazard_exposure_wait": rl_out.get(
+                    "hazard_exposure_wait", 0.0
+                ),
+                "hazard_exposure_action": rl_out.get(
+                    "hazard_exposure_action", 0.0
+                ),
+                "raw_hazard_exposure_reduction": rl_out.get(
+                    "raw_hazard_exposure_reduction", 0.0
                 ),
                 "decision_made": rl_out.get("decision_made", 0),
                 "selected_candidate": rl_out.get("selected_candidate", -1),
@@ -1653,11 +2010,7 @@ class Core:
                       f"added_sh={metrics['added_shelters']}")
             if tmr is not None: tmr.lap("logger.log_step")
        
-            for name in ["countByCell","avgVelocityByCell","heatByCell","smokeByCell",
-                "dangerLevelByCell","shelterFulfillByCell","wellnessPenaltyByCell"]:
-                arr = getattr(self.cellTracker, name, None)
-                if arr is None or len(np.asarray(arr).reshape(-1)) != (self.cellX * self.cellY):
-                    print(f"[WIRE CHECK] {name} missing or wrong length")
+            authoritative_grid_shape(self)
             if self.rl.episode_done:
                 break
 
@@ -1671,12 +2024,10 @@ class Core:
 
         pending_before_finalize = self.pedDS.remaining_active_count()
         panicked_before_finalize = self.pedDS.active_panicked_count()
-        finalized_remaining = 0
-        if pending_before_finalize > 0 and hasattr(self.pedDS, "finalize_remaining_pedestrians"):
-            finalized_remaining = int(self.pedDS.finalize_remaining_pedestrians(event="Unfinished"))
-            self.pedDS.docuStatus()
-            print(f"[EPISODE FINALIZE] unfinished={finalized_remaining} previously_active={pending_before_finalize}")
-            
+        # Evaluate the physical terminal state before classifying survivors as
+        # ``Unfinished`` and removing them from the live pedestrian database.
+        # The realised HWTTS objective needs their capacity-valid remaining
+        # route time (or full-horizon debt when none exists).
         rl_diagnostics = {}
         if self.rl is not None and hasattr(self.rl, "end_episode"):
             rl_diagnostics = self.rl.end_episode(
@@ -1684,6 +2035,24 @@ class Core:
             )
             if hasattr(self.shelterDS, "remainingCandidateCount"):
                 print(f"[SHELTER POOL] remaining_candidates={self.shelterDS.remainingCandidateCount()} active_shelters={len(self.shelterDS.shelterList)}")
+
+        finalized_remaining = 0
+        if pending_before_finalize > 0 and hasattr(self.pedDS, "finalize_remaining_pedestrians"):
+            finalized_remaining = int(self.pedDS.finalize_remaining_pedestrians(event="Unfinished"))
+            self.pedDS.docuStatus()
+            print(f"[EPISODE FINALIZE] unfinished={finalized_remaining} previously_active={pending_before_finalize}")
+
+        # Policies can finish a minute or two apart after the final scheduled
+        # installation. Complete only the exogenous hazard audit stream to the
+        # configured horizon so matched-policy provenance compares the same
+        # future length without extending pedestrian motion, rewards, or the
+        # decision process.
+        for audit_time in range(last_simulation_time + 1, int(self.stopTime)):
+            self.hazardDS.spreadUpdate()
+            self.hazardDS.heatUpdate()
+            self.hazardDS.smokeUpdate()
+            self.hazardDS.terminateHazard()
+            self._record_hazard_state(audit_time)
                 
         total_arrival = int(self.pedDS.result.get("arrival", 0))
         total_casualty = int(self.pedDS.result.get("casualty", 0))
@@ -1711,7 +2080,7 @@ class Core:
         ) / float(max(1, actual_population))
 
         self.episode_summary = {
-            "schema_version": 6,
+            "schema_version": 7,
             "city_id": str(self.cityID),
             "address": str(self.address),
             "map_spec": {
@@ -1740,7 +2109,7 @@ class Core:
             "initialized_agent_count": int(
                 math.ceil(float(actual_population) / float(self.pedestrianGroupSize))
             ),
-            "grid_shape": [int(self.cellX), int(self.cellY)],
+            "grid_shape": list(authoritative_grid_shape(self)),
             "cell_partition": {
                 **dict(self.cellPartitionDiagnostics),
                 "minimum_axis_width_fraction": float(
@@ -1774,11 +2143,28 @@ class Core:
             "mean_safe_completion_time": float(self.pedDS.mean_safe_completion_time()),
             "restricted_mean_time_to_safety": restricted_mean_time_to_safety,
             "active_shelters": int(len(self.shelterDS.shelterList)),
+            "total_shelter_capacity": int(
+                sum(
+                    int(getattr(shelter, "shelterCap", 0))
+                    for shelter in self.shelterDS.shelterList.values()
+                )
+            ),
+            "planned_capacity_surplus": int(self.shelterCapacitySurplus),
+            "unassigned_rational_after_final_installation": (
+                -1
+                if self.finalInstallationUnassignedRationalPopulation is None
+                else int(
+                    self.finalInstallationUnassignedRationalPopulation
+                )
+            ),
             "remaining_candidates": int(self.shelterDS.remainingCandidateCount()),
             "initial_observation_digest": self.rl.initial_observation_digest,
             "precommit_initial_observation_digest": (
                 self.rl.precommit_initial_observation_digest
             ),
+            "deployment_times": [
+                int(value) for value in self.rl.deployment_times
+            ],
             "ppo_rollout_episodes": int(self.rl.rollout_episodes),
             "visualization_manifest": (
                 None

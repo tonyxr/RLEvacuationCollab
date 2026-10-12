@@ -55,8 +55,10 @@ full_experiment_campaign.py
   exists for isolated pedestrian simulations.
 - Safe cells (levels 0–1) supply the paper's binary self-driven force.
 - Gaussian heat and smoke fields are normalized and combined into the
-  emergency impact force. Velocity is recurrently updated before network
-  movement; congestion is applied afterward on frozen physical-link loads.
+  emergency impact force. On each danger-level transition, free speed is
+  recomputed once from maximum speed; the same level therefore cannot compound
+  its reduction over time. Congestion is applied afterward on frozen
+  physical-link loads.
 - The OSM graph is the environmental collision constraint.
 - Each active, non-panicked individual in a level 3–5 cell receives exactly
   one panic-onset trial per simulator timestep. Panic is permanent and removes
@@ -104,13 +106,13 @@ choice, not as the city-scale outcome variable.
 - Population: 5,000; 10,000; 15,000; 20,000; 25,000.
 - Hazard sources: 1–5.
 - Panic: 10%, 30%, 50%, 70%, 90%.
-- Benchmarks: static initial-only, active-population density, random,
-  hazard-weighted demand, and maximum accessibility deficit.
+- Benchmarks: static initial-only, risk-time reduction, active-population
+  density, random, hazard-weighted demand, and maximum accessibility deficit.
 - Training: 120 balanced episodes per city for each of eight policy seeds
   (4,800 episodes total). Stage sizes are 4/4/8/20/84 per city so every PPO
   update remains inside one stage.
-- Evaluation: 625 factor cells × 10 scenario replications × (8 RL seeds + 5
-  benchmarks) = 81,250 episodes.
+- Evaluation: 625 factor cells × 10 scenario replications × (8 RL seeds + 6
+  benchmarks) = 87,500 episodes.
 - Every completed evaluation episode is appended and `fsync`-committed to a
   resumable JSONL journal.
 - Complete policies and their exact training ledgers are stored in a
@@ -147,8 +149,8 @@ social-force/panic/guidance/consolidation/cache tests cover the active model.
 The machine's default Anaconda environment is internally inconsistent
 (Pandas 2.2.3 imports against NumPy 1.21.5 despite different package metadata).
 That is not a repository logic failure. `requirements.txt` and
-`environment.yml` now define one bounded Python 3.11 stack matching the tested
-NumPy 1.26 / Pandas 2.1 / OSMnx 1.6 / NetworkX 3.1 / PyTorch 2.4 generation.
+`environment.yml` now define one bounded Python 3.10 stack matching the tested
+NumPy 1.26 / Pandas 2.2 / OSMnx 1.9 / NetworkX 3.3 / PyTorch 2.5 generation.
 
 ## Validation commands
 

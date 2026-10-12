@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Exact paired policy improvement for sequential shelter deployment.
+"""Common-noise candidate valuation and KL-constrained policy improvement.
 
-Candidate branches share a snapshot and future-noise tape, then continue under
-one fixed base rule. Their full-horizon, within-state value differences train
-the conservative controller. A deferred ``WAIT`` branch separately supervises
-natural system evolution. This module is torch-free and uses the same simulator
-and shelter executor as live deployment.
+The active learner uses :func:`improvement_target` on physically simulated
+equal-capacity action contrasts. Objective-greedy contenders and uniformly
+sampled feasible extras are graded under shared futures; ungraded probability
+mass stays exactly at the frozen policy. The simulator branching itself lives in
+``CounterfactualBranch``.
+
+Older experiment utilities below remain import-compatible for archived audits;
+they are not part of the runtime learner.
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ from DecisionInterface import (
     RegionalShelterExecutor,
     RiskTimeReductionHeuristic,
     RouteTimeSavingHeuristic,
+    estimate_remaining_hazard_weighted_travel_time,
 )
 from RewardProcessor import RewardProcessor
 
@@ -195,25 +199,17 @@ class EpisodeClock:
 
 
 def step_and_score(core, clock: EpisodeClock, reward_model: RewardProcessor) -> float:
-    """Advance one timestep and add its reward to the clock."""
+    """Advance one timestep; natural progress creates no installation reward."""
+    del reward_model
     clock.t += 1
     CB.advance_one_timestep(core)
     current = CB.outcome_snapshot(core)
     if clock.previous is None:
         clock.previous = current
-    breakdown = reward_model.evaluate(
-        before=clock.previous,
-        after=current,
-        active_person_time=float(current.active_population),
-        hazard_exposure_person_time=float(current.hazard_exposure_mass),
-        initial_population=int(clock.population),
-        horizon=int(clock.horizon),
-    )
-    clock.accumulated += float(breakdown.total)
     clock.active_person_time += float(current.active_population)
     clock.hazard_exposure_person_time += float(current.hazard_exposure_mass)
     clock.previous = current
-    return float(breakdown.total)
+    return 0.0
 
 
 # -----------------------------------------------------------------------------
@@ -293,10 +289,32 @@ class BranchValuer:
         self.branch_horizon = None if branch_horizon is None else int(branch_horizon)
         self.full_horizon_decisions = max(0, int(full_horizon_decisions))
 
-    def _install(self, observation: RegionalObservation, action: int) -> None:
+    def _install(
+        self,
+        observation: RegionalObservation,
+        action: int,
+        clock: EpisodeClock,
+    ) -> None:
+        before = estimate_remaining_hazard_weighted_travel_time(
+            self.core,
+            episode_horizon=clock.horizon,
+        )
         self.executor.execute(
             observation, PolicyDecision(action_index=int(action), strategy="nmcc_pi_branch")
         )
+        after = estimate_remaining_hazard_weighted_travel_time(
+            self.core,
+            episode_horizon=clock.horizon,
+        )
+        reward = self.reward_model.evaluate(
+            before=observation.outcome,
+            after=observation.outcome,
+            remaining_risk_time_before=before,
+            remaining_risk_time_after=after,
+            initial_population=clock.population,
+            horizon=clock.horizon,
+        )
+        clock.accumulated += float(reward.total)
 
     def _continue(self, clock: EpisodeClock, *, full_horizon: bool = False) -> float:
         """Continue with the base policy to the horizon; return reward accrued."""
@@ -313,7 +331,11 @@ class BranchValuer:
                     remaining_deployments=clock.budget - clock.deployed,
                 )
                 if observation.has_feasible_action:
-                    self._install(observation, self.base_policy(observation))
+                    self._install(
+                        observation,
+                        self.base_policy(observation),
+                        clock,
+                    )
                     clock.mark_deployed(clock.t)
         return float(clock.accumulated - start)
 
@@ -344,7 +366,7 @@ class BranchValuer:
                     CB.restore(self.core, base)
                     reseed_exogenous(self.core, seed)
                     branch_clock = clock.copy()
-                    self._install(observation, int(action))
+                    self._install(observation, int(action), branch_clock)
                     branch_clock.mark_deployed(branch_clock.t)
                     values[tape, column] = self._continue(
                         branch_clock,
@@ -421,6 +443,80 @@ def select_branch_actions(
         picks = rng.choice(len(remaining), size=min(extra, len(remaining)), replace=False)
         chosen.update(remaining[int(i)] for i in picks)
     return np.asarray(sorted(chosen), dtype=np.int64)
+
+
+def select_uniform_reference_actions(
+    feasible: np.ndarray,
+    *,
+    max_branches: int,
+    must_include: Sequence[int],
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Return required actions plus uniform feasible reference actions."""
+    feasible = np.asarray(feasible, dtype=np.int64)
+    if feasible.size == 0:
+        return feasible
+    required = {
+        int(action)
+        for action in must_include
+        if int(action) in set(feasible.tolist())
+    }
+    if not required:
+        raise ValueError("uniform reference sampling requires a chosen action")
+    limit = min(int(max_branches), int(feasible.size))
+    if len(required) > limit:
+        raise ValueError("required actions exceed the NMCC branch budget")
+    remaining = np.asarray(
+        [int(action) for action in feasible if int(action) not in required],
+        dtype=np.int64,
+    )
+    extra = limit - len(required)
+    if extra > 0:
+        sampled = rng.choice(remaining, size=extra, replace=False)
+        required.update(int(action) for action in sampled)
+    return np.asarray(sorted(required), dtype=np.int64)
+
+
+def uniform_reference_advantages(
+    branched_actions: np.ndarray,
+    branched_values: np.ndarray,
+    *,
+    feasible_count: int,
+    chosen_action: int,
+) -> tuple[np.ndarray, float]:
+    """Center branch values on an unbiased uniform-feasible-site baseline.
+
+    The chosen action is always branched.  Every other branched action is a
+    uniform sample without replacement from the remaining feasible actions.
+    Expanding their mean to the full remaining set therefore gives an unbiased
+    estimate of the value of one uniform feasible reference site.
+    """
+    actions = np.asarray(branched_actions, dtype=np.int64)
+    values = np.asarray(branched_values, dtype=np.float64)
+    count = int(feasible_count)
+    chosen = int(chosen_action)
+    if actions.ndim != 1 or values.shape != actions.shape:
+        raise ValueError("branched actions and values must be aligned vectors")
+    if count < actions.size or count <= 0:
+        raise ValueError("feasible_count must cover every branched action")
+    chosen_positions = np.flatnonzero(actions == chosen)
+    if chosen_positions.size != 1:
+        raise ValueError("chosen_action must appear exactly once")
+    chosen_position = int(chosen_positions[0])
+    other_values = np.delete(values, chosen_position)
+    if count == 1:
+        baseline = float(values[chosen_position])
+    elif other_values.size == 0:
+        raise ValueError("a random-site baseline requires a reference action")
+    else:
+        baseline = float(
+            (
+                values[chosen_position]
+                + float(count - 1) * float(other_values.mean())
+            )
+            / float(count)
+        )
+    return values - baseline, baseline
 
 
 # -----------------------------------------------------------------------------
@@ -559,6 +655,38 @@ def improvement_target(
         eta = math.exp(hi)
         q = assemble(eta)
     return ImprovementTarget(q, pi, float(eta), _kl(q, pi), advantage_full, branched, best_action)
+
+
+def full_action_improvement_target(
+    pi_old: np.ndarray,
+    action_mask: np.ndarray,
+    feasible_values: np.ndarray,
+    *,
+    epsilon: float,
+    eta_min: float,
+) -> ImprovementTarget:
+    """MPO E-step for a complete feasible-action NMCC value table.
+
+    Unlike the archived partial-branch interface, this function rejects a
+    missing candidate value. That makes it impossible for the live learner to
+    silently reintroduce top-k branching, heuristic fill, or pairwise-only
+    credit.
+    """
+    mask = np.asarray(action_mask, dtype=bool)
+    actions = np.flatnonzero(mask)
+    values = np.asarray(feasible_values, dtype=np.float64).reshape(-1)
+    if values.shape != actions.shape:
+        raise ValueError(
+            "full-action NMCC requires exactly one value for every feasible action"
+        )
+    return improvement_target(
+        pi_old,
+        mask,
+        actions,
+        values,
+        epsilon=epsilon,
+        eta_min=eta_min,
+    )
 
 
 # -----------------------------------------------------------------------------

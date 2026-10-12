@@ -1,0 +1,117 @@
+{
+  "schema_version": 2,
+  "curriculum_id": "state_college_n2500_counterfactual_ppo_v41_pilot20",
+  "description": "Bounded 4x4 State College integration pilot for the coherent forward-debt NMCC-PPO actor-critic. Four environment episodes verify dynamics learning, eight action episodes provide two immediate-credit PPO updates, and eight foresight episodes provide two continuation-aware PPO updates.",
+  "learner_overrides": {
+    "cellX": 4,
+    "cellY": 4,
+    "cellPartitionMode": "population_density_adaptive",
+    "cellPartitionMinWidthFraction": 0.0001,
+    "stopTime": 181,
+    "shelterActionInterval": 15,
+    "requirePopulationMatchedShelterCapacity": true,
+    "shelterCapacitySurplus": 200,
+    "ppoRolloutEpisodes": 4,
+    "nmccPolicyImprovement": true,
+    "nmccCounterfactualHorizon": 0,
+    "nmccPiEpsilon": 0.25,
+    "nmccPiEtaMin": 0.02,
+    "nmccPiTapes": 2,
+    "nmccPiExhaustiveDecisions": 0,
+    "nmccPiMaxBranches": 4,
+    "nmccPiWorkers": 4,
+    "nmccPiBranchHorizon": 15,
+    "nmccPiContinuationEnabled": true,
+    "nmccPiContinuationLossCoefficient": 1.0,
+    "nmccPiReplayMaxEpisodes": 20,
+    "nmccPiReplayEpochs": 8,
+    "nmccPiValidationFraction": 0.2,
+    "nmccNaturalLossCoefficient": 1.0,
+    "actorPrior": "none",
+    "actorPriorScale": 0.0,
+    "representationMode": "shared_multitask",
+    "actorLearningRate": 0.0005,
+    "criticLearningRate": 0.0005,
+    "actorPpoEpochs": 8,
+    "criticPpoEpochs": 8,
+    "learningRewardScale": 10.0,
+    "learningRateSchedule": "cosine",
+    "learningRateWarmupUpdates": 0,
+    "learningRateDecayUpdates": 4,
+    "actorLearningRateMinimumFraction": 0.1,
+    "criticLearningRateMinimumFraction": 0.1,
+    "entropyCoefficientStart": 0.01,
+    "entropyCoefficientEnd": 0.001,
+    "explorationDecayUpdates": 2,
+    "explorationSchedule": "exponential_half_life",
+    "explorationRateStart": 0.35,
+    "explorationRateEnd": 0.02,
+    "actionTemperatureStart": 1.25,
+    "actionTemperatureEnd": 0.8
+  },
+  "stages": [
+    {
+      "stage_id": "E",
+      "label": "environment_distribution_learning",
+      "episodes_per_city": 4,
+      "variants": [
+        {
+          "variant_id": "state_college_n2500_environment_pilot",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 2500,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "initShelterVol": 2,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 270
+          }
+        }
+      ]
+    },
+    {
+      "stage_id": "A",
+      "label": "counterfactual_action_learning",
+      "episodes_per_city": 8,
+      "variants": [
+        {
+          "variant_id": "state_college_n2500_action_pilot",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 2500,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "initShelterVol": 2,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 270
+          }
+        }
+      ]
+    },
+    {
+      "stage_id": "F",
+      "label": "shared_critic_foresight_learning",
+      "episodes_per_city": 8,
+      "variants": [
+        {
+          "variant_id": "state_college_n2500_foresight_pilot",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 2500,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "initShelterVol": 2,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 270
+          }
+        }
+      ]
+    }
+  ]
+}

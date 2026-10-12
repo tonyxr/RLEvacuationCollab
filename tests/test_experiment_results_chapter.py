@@ -25,12 +25,11 @@ class ExperimentResultsChapterTests(unittest.TestCase):
                     "city_id": city,
                     "deployment_strategy": "rl",
                     "initial_population": population,
-                    "objective_episode_return": safe / population,
+                    "objective_normalized_cost": 1.0 - safe / population,
                     "safe_completed": safe,
                     "casualty": 0,
                     "unfinished": population - safe,
                     "restricted_mean_time_to_safety": 30,
-                    "normalized_risk_weighted_person_time": 0.5,
                 }
             )
         summary = equal_city_strategy_summary(rows)
@@ -43,19 +42,19 @@ class ExperimentResultsChapterTests(unittest.TestCase):
             {
                 "scope": "macro_all_cities",
                 "city_id": "ALL",
-                "metric": "episode_return",
+                "metric": "objective_normalized_cost",
                 "mean_rl_improvement": 0.1,
             },
             {
                 "scope": "city",
                 "city_id": "a",
-                "metric": "episode_return",
+                "metric": "objective_normalized_cost",
                 "mean_rl_improvement": 0.2,
             },
             {
                 "scope": "city",
                 "city_id": "b",
-                "metric": "episode_return",
+                "metric": "objective_normalized_cost",
                 "mean_rl_improvement": -0.1,
             },
         ]
@@ -99,7 +98,7 @@ class ExperimentResultsChapterTests(unittest.TestCase):
                 evaluation.append(
                     {
                         "deployment_strategy": strategy,
-                        "objective_episode_return": -0.5,
+                        "objective_normalized_cost": 0.5,
                         "safe_completed": 4,
                         "casualty": 1,
                         "unfinished": 5,
@@ -113,7 +112,12 @@ class ExperimentResultsChapterTests(unittest.TestCase):
             with (root / "paired_comparison_by_city.csv").open("w", newline="") as handle:
                 writer = csv.DictWriter(handle, fieldnames=["scope", "metric"])
                 writer.writeheader()
-                writer.writerow({"scope": "macro_all_cities", "metric": "episode_return"})
+                writer.writerow(
+                    {
+                        "scope": "macro_all_cities",
+                        "metric": "objective_normalized_cost",
+                    }
+                )
             result = audit_core_launch(root)
             self.assertEqual(result["expected_training"], 1)
             self.assertEqual(result["expected_evaluation"], 2)

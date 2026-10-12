@@ -29,6 +29,7 @@ class ShelterDS:
         # one destination per pedestrian and many pedestrians per shelter.
         self.reservationByPedestrian = {}
         self.reservationsByShelter = {}
+        self.reservedPopulationByShelter = {}
         
         self.shelterPerCellList = None
         # When positive, every installed shelter consumes one identical
@@ -76,12 +77,12 @@ class ShelterDS:
         if shelter_id is None:
             return 0
         excluded = self._pedestrian_id(exclude_pedestrian)
-        reservations = self.reservationsByShelter.get(shelter_id, {})
-        return int(sum(
-            int(population)
-            for pedestrian_id, population in reservations.items()
-            if pedestrian_id != excluded
-        ))
+        total = int(self.reservedPopulationByShelter.get(shelter_id, 0))
+        if excluded is not None:
+            total -= int(
+                self.reservationsByShelter.get(shelter_id, {}).get(excluded, 0)
+            )
+        return int(max(0, total))
 
     def availableCapacity(self, shelter, for_pedestrian=None) -> int:
         """Return capacity not occupied or promised to another pedestrian."""
@@ -111,6 +112,13 @@ class ShelterDS:
         shelter_id, population = reservation
         by_shelter = self.reservationsByShelter.get(int(shelter_id), {})
         by_shelter.pop(int(pedestrian_id), None)
+        remaining = int(
+            self.reservedPopulationByShelter.get(int(shelter_id), 0)
+        ) - int(population)
+        if remaining > 0:
+            self.reservedPopulationByShelter[int(shelter_id)] = remaining
+        else:
+            self.reservedPopulationByShelter.pop(int(shelter_id), None)
         if not by_shelter:
             self.reservationsByShelter.pop(int(shelter_id), None)
         return int(population)
@@ -119,7 +127,14 @@ class ShelterDS:
         pedestrian_id = self._pedestrian_id(pedAgent)
         return 0 if pedestrian_id is None else self._release_by_id(pedestrian_id)
 
-    def reserveShelter(self, pedAgent, shelter, population=None) -> int:
+    def reserveShelter(
+        self,
+        pedAgent,
+        shelter,
+        population=None,
+        *,
+        validate=True,
+    ) -> int:
         """Atomically move one pedestrian/cohort's capacity commitment.
 
         Represented cohorts are indivisible while travelling, so a route is
@@ -148,10 +163,24 @@ class ShelterDS:
         self._release_by_id(pedestrian_id)
         self.reservationByPedestrian[pedestrian_id] = (shelter_id, assigned)
         self.reservationsByShelter.setdefault(shelter_id, {})[pedestrian_id] = assigned
-        self.assertCapacityInvariant()
+        self.reservedPopulationByShelter[shelter_id] = int(
+            self.reservedPopulationByShelter.get(shelter_id, 0)
+        ) + int(assigned)
+        # Bulk reassignment validates the complete ledger once after its
+        # transaction.  Re-scanning every reservation after each individual
+        # transfer makes a correct O(P) allocation O(P^2) at city scale.
+        if validate:
+            self.assertCapacityInvariant()
         return int(assigned)
 
-    def _admit_population(self, requested_population, shelter, pedAgent=None) -> int:
+    def _admit_population(
+        self,
+        requested_population,
+        shelter,
+        pedAgent=None,
+        *,
+        validate=True,
+    ) -> int:
         """Consume a reservation, while protecting every other reservation."""
         requested = max(0, int(requested_population))
         if requested <= 0 or shelter is None or int(getattr(shelter, "status", 0)) != 0:
@@ -166,7 +195,8 @@ class ShelterDS:
         shelter.updateFlow(admitted)
         if shelter.shelterFlow >= shelter.shelterCap:
             shelter.status = 1
-        self.assertCapacityInvariant()
+        if validate:
+            self.assertCapacityInvariant()
         return int(admitted)
 
     def reconcileReservations(self, pedestrians) -> int:
@@ -211,6 +241,9 @@ class ShelterDS:
                         int(shelter_id), retained
                     )
                     self.reservationsByShelter[int(shelter_id)][pedestrian_id] = retained
+                    self.reservedPopulationByShelter[int(shelter_id)] = int(
+                        self.reservedPopulationByShelter.get(int(shelter_id), 0)
+                    ) - (int(population) - retained)
         self.assertCapacityInvariant()
         return int(released)
 
@@ -238,6 +271,14 @@ class ShelterDS:
             committed = flow + sum(
                 int(value) for value in reservations.values()
             )
+            cached = int(
+                self.reservedPopulationByShelter.get(int(shelter_id), 0)
+            )
+            if cached != committed - flow:
+                raise RuntimeError(
+                    f"Shelter {shelter_id} reservation total disagrees with "
+                    f"its reverse index: {cached} != {committed - flow}"
+                )
             if committed > capacity:
                 raise RuntimeError(
                     f"Shelter {shelter_id} overcommitted: {committed} > "
@@ -250,6 +291,9 @@ class ShelterDS:
         missing = set(self.reservationsByShelter) - set(self.shelterList)
         if missing:
             raise RuntimeError("Reservation references a missing shelter")
+        total_missing = set(self.reservedPopulationByShelter) - set(self.shelterList)
+        if total_missing:
+            raise RuntimeError("Reservation total references a missing shelter")
         
     
     def remainingCandidateCount(self) -> int:
@@ -271,9 +315,12 @@ class ShelterDS:
     """
     Build 2D arrays (candidates + active list). Sort candidates by descending capacity
     """
-    def shelterPerCell(self, cellTracker, cellXNum, cellYNum, mapDS = None):
-        cellXNum = int(cellXNum)
-        cellYNum = int(cellYNum)
+    def shelterPerCell(self, cellTracker, mapDS = None):
+        """Index candidates on the exact grid owned by ``cellTracker``."""
+        cellXNum = int(cellTracker.cellXNum)
+        cellYNum = int(cellTracker.cellYNum)
+        if cellXNum <= 0 or cellYNum <= 0:
+            raise ValueError("CellTracker grid dimensions must be positive")
         
         self.shelterByCell = self.ensureGrid(cellXNum, cellYNum)
         self.shelterCanByCell = self.ensureGrid(cellXNum, cellYNum)
@@ -320,7 +367,7 @@ class ShelterDS:
         0 = admitted
         1 = full or unavailable
     """
-    def updateShelterFlow(self, pedAgent, shelter):
+    def updateShelterFlow(self, pedAgent, shelter, *, validate=True):
         if shelter is None:
             return 1
         
@@ -338,12 +385,24 @@ class ShelterDS:
             # close the shelter while it can still accept a smaller group.
             return 1
 
-        admitted = self._admit_population(group_size, shelter, pedAgent)
+        admitted = self._admit_population(
+            group_size,
+            shelter,
+            pedAgent,
+            validate=validate,
+        )
         if admitted != group_size:
             raise RuntimeError("Atomic shelter admission changed during commit")
         return 0
 
-    def admitShelterPopulation(self, requested_population, shelter, pedAgent=None):
+    def admitShelterPopulation(
+        self,
+        requested_population,
+        shelter,
+        pedAgent=None,
+        *,
+        validate=True,
+    ):
         """Admit as much of a represented cohort as capacity permits.
 
         This method is used only by the explicitly configured weighted-cohort
@@ -351,7 +410,10 @@ class ShelterDS:
         semantics for existing callers.
         """
         return self._admit_population(
-            requested_population, shelter, pedAgent=pedAgent
+            requested_population,
+            shelter,
+            pedAgent=pedAgent,
+            validate=validate,
         )
     
     """

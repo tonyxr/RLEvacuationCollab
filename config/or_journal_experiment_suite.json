@@ -42,7 +42,7 @@
   "strategies": {
     "primary": [
       "rl",
-      "heuristic"
+      "objective_greedy"
     ],
     "timing_isolation": [
       "rl",
@@ -63,14 +63,15 @@
     "bootstrap_draws": 20000,
     "confidence_level": 0.95,
     "familywise_alpha": 0.05,
-    "primary_estimand": "equal-city macro mean RL minus heuristic objective return",
+    "primary_estimand": "equal-city macro mean RL reduction in complete-ledger normalized objective cost relative to objective-greedy",
     "primary_outcomes": [
-      "casualty_fraction",
+      "objective_normalized_cost",
+      "expected_casualties",
       "restricted_mean_time_to_safety"
     ],
     "secondary_outcomes": [
       "safe_completion_fraction",
-      "normalized_risk_weighted_person_time",
+      "casualty_fraction",
       "unfinished_fraction"
     ],
     "capacity_regimes": {
@@ -78,7 +79,7 @@
       "proportional_capacity": "Scale sampled capacity to hold initial capacity per pedestrian approximately constant; estimates computational scaling with scarcity controlled."
     },
     "pairing": "Common scenario, hazard, and pedestrian-outcome random streams within city-population-policy comparison.",
-    "multiplicity": "Holm correction across the two primary outcomes; secondary intervals are descriptive.",
+    "multiplicity": "Holm correction across the three primary outcomes; secondary intervals are descriptive.",
     "missingness": "A failed or timed-out run remains missing and is never replaced by a favorable seed; report completion by design cell."
   },
   "state_college_gate": {
@@ -150,7 +151,7 @@
     "F12_completion_and_missingness"
   ],
   "claim_policy": {
-    "sequential_claim_requires": "RL improves outcomes relative to both heuristic and its own frozen rl_precommit selector.",
+    "sequential_claim_requires": "RL improves outcomes relative to both complete-ledger objective-greedy and its own frozen rl_precommit selector.",
     "hierarchy_claim_requires": "Latency or memory scaling improves relative to a candidate-level action representation while paired decision quality remains within a preregistered noninferiority margin.",
     "reward_claim_requires": "Stable diagnostics plus reward-component ablations; training curves alone are insufficient.",
     "prohibited_substitutions": [

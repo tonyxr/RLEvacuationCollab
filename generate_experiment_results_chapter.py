@@ -29,6 +29,7 @@ DEFAULT_SENSITIVITY = PROJECT_ROOT / "runs" / "extreme_sensitivity_full_20260909
 LEARNED_STRATEGIES = {"rl", "rl_precommit"}
 STRATEGY_LABELS = {
     "rl": "Sequential RL",
+    "objective_greedy": "Objective-matched greedy",
     "risk_reduction": "Future risk-time reduction",
     "heuristic": "Active-population heuristic",
     "hazard_weighted": "Hazard-weighted demand",
@@ -36,7 +37,7 @@ STRATEGY_LABELS = {
     "random": "Random feasible region",
     "static_greedy": "Static demand-greedy",
     "rl_precommit": "RL precommitment",
-    "initial_only": "Initial-only/round-robin",
+    "initial_only": "Static committed schedule",
 }
 
 
@@ -128,7 +129,8 @@ def audit_core_launch(launch_dir: Path) -> dict:
             for row in evaluation
         ),
         "finite_primary_metric": all(
-            math.isfinite(float(row["objective_episode_return"])) for row in evaluation
+            math.isfinite(float(row["objective_normalized_cost"]))
+            for row in evaluation
         ),
     }
     if not all(checks.values()):
@@ -180,12 +182,15 @@ def equal_city_strategy_summary(rows: Sequence[Mapping]) -> list[dict]:
             )
             city_means.append(
                 {
-                    "objective": float(np.mean([_finite(row["objective_episode_return"]) for row in subset])),
+                    "objective": float(
+                        np.mean(
+                            [_finite(row["objective_normalized_cost"]) for row in subset]
+                        )
+                    ),
                     "safe": float(np.mean(safe / population)),
                     "casualty": float(np.mean(casualty / population)),
                     "unfinished": float(np.mean(unfinished / population)),
                     "rmts": float(np.mean([_finite(row["restricted_mean_time_to_safety"]) for row in subset])),
-                    "risk": float(np.mean([_finite(row["normalized_risk_weighted_person_time"]) for row in subset])),
                 }
             )
         output.append(
@@ -197,7 +202,7 @@ def equal_city_strategy_summary(rows: Sequence[Mapping]) -> list[dict]:
                 },
             }
         )
-    return sorted(output, key=lambda row: row["objective"], reverse=True)
+    return sorted(output, key=lambda row: row["objective"])
 
 
 def _macro_paired_rows(rows: Sequence[Mapping]) -> list[dict]:
@@ -208,12 +213,12 @@ def _macro_paired_rows(rows: Sequence[Mapping]) -> list[dict]:
         name: index
         for index, name in enumerate(
             (
-                "episode_return",
+                "objective_normalized_cost",
                 "safe_completed",
+                "expected_casualties",
                 "casualty",
                 "unfinished",
                 "restricted_mean_time_to_safety",
-                "normalized_risk_weighted_person_time",
             )
         )
     }
@@ -221,7 +226,11 @@ def _macro_paired_rows(rows: Sequence[Mapping]) -> list[dict]:
 
 
 def _simpson_status(paired_rows: Sequence[Mapping]) -> tuple[str, str]:
-    objective = [row for row in paired_rows if str(row["metric"]) == "episode_return"]
+    objective = [
+        row
+        for row in paired_rows
+        if str(row["metric"]) == "objective_normalized_cost"
+    ]
     macro = [row for row in objective if str(row["scope"]) == "macro_all_cities"]
     cities = [row for row in objective if str(row["scope"]) == "city"]
     if len(macro) != 1 or not cities:
@@ -300,15 +309,17 @@ def build_chapter(
     fallacies = fallacy_scan(core["paired"])
     confidence = "CAUTION" if any(row[1] in {"CAUTION", "RED_FLAG"} for row in fallacies) else "SOLID"
 
-    objective = next(row for row in macro if row["metric"] == "episode_return")
+    objective = next(
+        row for row in macro if row["metric"] == "objective_normalized_cost"
+    )
     objective_supported = (
         str(objective.get("inferentially_eligible", "")).lower() == "true"
         and _finite(objective["bootstrap_95_ci_low"]) > 0.0
     )
     conclusion = (
-        "The prespecified primary analysis supports RL superiority over the active-population heuristic within the modeled five-city testbed."
+        "The prespecified primary analysis supports RL superiority over the complete-ledger objective-greedy policy within the modeled five-city testbed."
         if objective_supported
-        else "The prespecified primary analysis does not establish RL superiority over the active-population heuristic within the modeled five-city testbed."
+        else "The prespecified primary analysis does not establish RL superiority over the complete-ledger objective-greedy policy within the modeled five-city testbed."
     )
 
     lines = [
@@ -326,7 +337,7 @@ def build_chapter(
         "## 1. Experiment completion and analysis population",
         "",
         (
-            f"The confirmatory city experiment completed {core['expected_training']:,} staged PPO training episodes "
+            f"The confirmatory city experiment completed {core['expected_training']:,} staged learner episodes "
             f"and {core['expected_evaluation']:,} held-out policy-evaluation episodes across "
             f"{len(manifest['city_ids'])} fixed cities, {manifest['policy_replicates']} independently initialized "
             f"policy seeds, and {manifest['eval_replications_per_city']} held-out scenarios per city. "
@@ -360,48 +371,48 @@ def build_chapter(
             "## 3. Primary RL efficacy",
             "",
             (
-                f"{conclusion} The equal-city macro improvement in objective return was "
+                f"{conclusion} The equal-city macro reduction in normalized objective cost was "
                 f"{_fmt(objective['mean_rl_improvement'])} (hierarchical-bootstrap 95% CI "
                 f"[{_fmt(objective['bootstrap_95_ci_low'])}, {_fmt(objective['bootstrap_95_ci_high'])}]; "
                 f"two-sided policy-seed randomization p={_fmt(objective['two_sided_randomization_p'])}; "
                 f"paired dz={_fmt(objective['paired_effect_size_dz'])})."
             ),
             "",
-            "| Outcome (benefit-oriented difference) | RL mean | Heuristic mean | RL improvement | 95% CI | p |",
+            "| Outcome (benefit-oriented difference) | RL mean | Objective-greedy mean | RL improvement | 95% CI | p |",
             "|---|---:|---:|---:|---:|---:|",
         ]
     )
     metric_labels = {
-        "episode_return": "Objective return",
+        "objective_normalized_cost": "Normalized objective cost",
         "safe_completed": "Safe completions",
+        "expected_casualties": "Expected casualties avoided",
         "casualty": "Casualties avoided",
         "unfinished": "Unfinished avoided",
         "restricted_mean_time_to_safety": "RMTS reduction (min)",
-        "normalized_risk_weighted_person_time": "Normalized risk-time reduction",
     }
     for row in macro:
         lines.append(
             f"| {metric_labels.get(row['metric'], row['metric'])} | {_fmt(row['rl_mean'])} | "
-            f"{_fmt(row['heuristic_mean'])} | {_fmt(row['mean_rl_improvement'])} | "
+            f"{_fmt(row['benchmark_mean'])} | {_fmt(row['mean_rl_improvement'])} | "
             f"[{_fmt(row['bootstrap_95_ci_low'])}, {_fmt(row['bootstrap_95_ci_high'])}] | "
             f"{_fmt(row['two_sided_randomization_p'])} |"
         )
     lines.extend(
         [
             "",
-            "Positive values in the improvement column always favor RL; lower-is-better outcomes were sign-reversed by the analysis code. Only the objective-return contrast is the single prespecified confirmatory primary test. The remaining rows diagnose the operational tradeoff and are secondary.",
+            "Positive values in the improvement column always favor RL; lower-is-better outcomes were sign-reversed by the analysis code. Only the normalized-objective-cost contrast is the prespecified confirmatory primary test. The remaining rows are secondary diagnostics.",
             "",
             "## 4. Absolute benchmark performance",
             "",
-            "| Policy | Objective return | Safe fraction | Casualty fraction | Unfinished fraction | RMTS (min) | Normalized risk-time |",
-            "|---|---:|---:|---:|---:|---:|---:|",
+            "| Policy | Normalized objective cost | Safe fraction | Casualty fraction | Unfinished fraction | RMTS (min) |",
+            "|---|---:|---:|---:|---:|---:|",
         ]
     )
     for row in strategies:
         lines.append(
             f"| {STRATEGY_LABELS.get(row['strategy'], row['strategy'])} | {_fmt(row['objective'])} | "
             f"{_pct(row['safe'])} | {_pct(row['casualty'])} | {_pct(row['unfinished'])} | "
-            f"{_fmt(row['rmts'])} | {_fmt(row['risk'])} |"
+            f"{_fmt(row['rmts'])} |"
         )
     lines.extend(
         [
@@ -417,7 +428,8 @@ def build_chapter(
     city_objective = [
         row
         for row in core["paired"]
-        if row["scope"] == "city" and row["metric"] == "episode_return"
+        if row["scope"] == "city"
+        and row["metric"] == "objective_normalized_cost"
     ]
     for row in city_objective:
         lines.append(

@@ -1,0 +1,117 @@
+{
+  "schema_version": 2,
+  "curriculum_id": "state_college_n250_coherent_nmcc_v43_smoke10",
+  "description": "Small 4x4 State College end-to-end verification of the corrected coherent PPO/NMCC learner: two environment episodes, four immediate-action episodes, and four forward-value episodes.",
+  "learner_overrides": {
+    "cellX": 4,
+    "cellY": 4,
+    "cellPartitionMode": "population_density_adaptive",
+    "cellPartitionMinWidthFraction": 0.0001,
+    "stopTime": 181,
+    "shelterActionInterval": 15,
+    "requirePopulationMatchedShelterCapacity": true,
+    "shelterCapacitySurplus": 200,
+    "ppoRolloutEpisodes": 1,
+    "nmccPolicyImprovement": true,
+    "nmccCounterfactualHorizon": 0,
+    "nmccPiEpsilon": 0.25,
+    "nmccPiEtaMin": 0.02,
+    "nmccPiTapes": 2,
+    "nmccPiExhaustiveDecisions": 0,
+    "nmccPiMaxBranches": 4,
+    "nmccPiWorkers": 4,
+    "nmccPiBranchHorizon": 15,
+    "nmccPiContinuationEnabled": true,
+    "nmccPiContinuationLossCoefficient": 1.0,
+    "nmccPiReplayMaxEpisodes": 10,
+    "nmccPiReplayEpochs": 8,
+    "nmccPiValidationFraction": 0.2,
+    "nmccNaturalLossCoefficient": 1.0,
+    "actorPrior": "none",
+    "actorPriorScale": 0.0,
+    "representationMode": "staged_transfer",
+    "actorLearningRate": 0.0005,
+    "criticLearningRate": 0.0005,
+    "actorPpoEpochs": 24,
+    "criticPpoEpochs": 8,
+    "learningRewardScale": 10.0,
+    "learningRateSchedule": "cosine",
+    "learningRateWarmupUpdates": 0,
+    "learningRateDecayUpdates": 5,
+    "actorLearningRateMinimumFraction": 0.1,
+    "criticLearningRateMinimumFraction": 0.1,
+    "entropyCoefficientStart": 0.01,
+    "entropyCoefficientEnd": 0.001,
+    "explorationDecayUpdates": 2,
+    "explorationSchedule": "exponential_half_life",
+    "explorationRateStart": 0.35,
+    "explorationRateEnd": 0.02,
+    "actionTemperatureStart": 1.25,
+    "actionTemperatureEnd": 0.8
+  },
+  "stages": [
+    {
+      "stage_id": "E",
+      "label": "environment_distribution_learning",
+      "episodes_per_city": 2,
+      "variants": [
+        {
+          "variant_id": "state_college_n250_environment_smoke",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 250,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "initShelterVol": 2,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 45
+          }
+        }
+      ]
+    },
+    {
+      "stage_id": "A",
+      "label": "random_reference_action_learning",
+      "episodes_per_city": 4,
+      "variants": [
+        {
+          "variant_id": "state_college_n250_action_smoke",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 250,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "initShelterVol": 2,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 45
+          }
+        }
+      ]
+    },
+    {
+      "stage_id": "F",
+      "label": "random_reference_foresight_learning",
+      "episodes_per_city": 4,
+      "variants": [
+        {
+          "variant_id": "state_college_n250_foresight_smoke",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 250,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "initShelterVol": 2,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 45
+          }
+        }
+      ]
+    }
+  ]
+}

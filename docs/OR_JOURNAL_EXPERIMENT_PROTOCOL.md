@@ -24,10 +24,11 @@ confirmatory protocol hash while registering `equal_area` and
 
 ## Hypotheses and estimands
 
-H1 (planner efficacy): the learned sequential policy reduces casualty fraction
-and restricted mean time to safety relative to the active-population heuristic.
-The estimand is the equal-city macro mean paired difference. The two primary
-outcomes use Holm correction at familywise alpha 0.05.
+H1 (planner efficacy): the learned sequential policy improves the complete
+realized evacuation objective relative to complete-ledger objective-greedy.
+The estimand is the equal-city macro mean paired difference. Operational
+outcomes, including restricted mean time to safety and casualties, are reported
+as secondary components rather than substituted for the declared objective.
 
 H2 (value of sequential information): the sequential learned policy improves
 outcomes relative to `rl_precommit`, which uses the identical frozen neural
@@ -36,7 +37,7 @@ comparison isolates feedback and timing from learned ranking ability.
 
 H3 (static planning): the sequential learned policy improves outcomes relative
 to `static_greedy`, a non-anticipative expected-demand capacity placement, and
-the legacy round-robin `initial_only` rule. The demand-aware comparator is the
+the static precommitted-schedule `initial_only` rule. The demand-aware comparator is the
 substantive static benchmark; round robin remains only as a diagnostic.
 
 H4 (candidate-action scalability): exact-site scoring grows acceptably with
@@ -87,13 +88,15 @@ the other four cities.
   at time zero while candidate availability is updated between selections.
 - `static_greedy`: expected-demand placement at time zero with no realized
   hazard information.
-- `initial_only`: legacy round-robin static placement, retained as a diagnostic.
+- `initial_only`: initial-state objective-greedy site order, executed without
+  replanning at the common sequential decision epochs.
 - `random`: dynamic uniform feasible-candidate policy, retained as a negative
   control.
 
-Every policy receives the same final shelter-count budget. Static policies may
-receive an inherent early-capacity advantage; this makes them conservative
-comparators for demonstrating the value of later adaptive information.
+Every policy receives the same final shelter-count budget. `initial_only` also
+receives the same capacity timing as RL; only `static_greedy` and
+`rl_precommit` retain an inherent early-capacity advantage and must be reported
+as timing diagnostics rather than equal online competitors.
 
 ## Outcomes
 

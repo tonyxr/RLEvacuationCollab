@@ -4,13 +4,19 @@ The codes are personal properties of Xiaoru Shi, Department of Industrial and Sy
 
 Use the all-Conda-forge CPU environment in `environment.yml`; mixing pip
 PyTorch with Conda scientific packages can load incompatible OpenMP runtimes.
-On Apple Silicon, create a native environment rather than an x86/Rosetta one:
+The registered environment uses Python 3.10. On Apple Silicon, create a native
+environment rather than an x86/Rosetta one:
 
 ```bash
 micromamba create --platform osx-arm64 -f environment.yml
 micromamba activate rlevacuation
 python -m unittest discover -s tests -v
 ```
+
+If the repository-local `.venv` is used instead, invoke training with
+`.venv/bin/python`. Campaign launches select that verified interpreter
+automatically and fail before creating a run when the scientific stack is
+missing or binary-incompatible.
 
 The convergence-first five-city runner uses a conservative PPO learning rate
 of `0.0003`; use `--learning-rate` only for a separately identified sensitivity
@@ -25,9 +31,10 @@ uses one stationary nominal distribution: exactly three hazard instances and
 policy. Only after convergence and a held-out 5,000-person RL-versus-heuristic
 behavior gate does the separate factorial evaluation vary city, population
 (5,000–25,000), hazard count (1–5), and panic (10%–90%). Guidance points are
-deprecated and are not populated. The paper's social-force recurrence,
-synchronized link congestion, and 5 m topology-rebuilding intersection
-consolidation are active in every episode.
+deprecated and are not populated. Hazard-adjusted free speed is recomputed
+from maximum speed only when a pedestrian's danger level changes, synchronized
+link congestion is applied afterward, and 5 m topology-rebuilding intersection
+consolidation is active in every episode.
 
 The Southern California profile is a 35 km point-centered bounding footprint
 covering the Malibu coast, Santa Monica Bay, and substantial north and west Los
@@ -43,7 +50,7 @@ python full_experiment_campaign.py --dry-run
 The registered plan trains one fixed policy for 120 episodes per city (600
 episodes), caches it only after convergence under an exact checksummed
 contract, runs 50 held-out nominal RL/heuristic behavior-gate episodes, and
-only then executes 37,500 matched full-factorial episodes. Uncertainty for the
+only then executes 43,750 matched full-factorial episodes. Uncertainty for the
 primary campaign is conditional on this frozen policy and resamples held-out
 scenario seeds; it does not claim variation over independently trained policy
 seeds. Start or resume it with:
@@ -172,48 +179,34 @@ epsilon-greedy mixture over the masked scores, while evaluation is always
 deterministic argmax. Actor and critic learning rates use independent warm-up
 and cosine decay schedules. Forecast danger, physical site availability,
 remaining capacity tokens, hazard safety margin, and optional positive
-risk-time benefit are hard constraints rather than reward penalties.
+risk-reduction benefit are hard constraints rather than reward penalties.
 
-Model version 28 uses one transparent base rule: install the safe candidate
-with the largest capacity-capped reduction in future active plus exposure
-time. Shelter capacity is reserved when a route is assigned, conserved while
-people are en route, and released on admission, rerouting, casualty, panic,
-termination, or shelter loss. A persistent fitted-policy controller may
-improve on that rule. The
-first two, highest-leverage shelter decisions are branched
-exhaustively through the physical episode terminal. Every exact labelled
-episode is retained in a bounded, checkpointed replay dataset; complete
-episodes are assigned to fitting, early stopping, or a disjoint deployment
-gate. A dedicated
-intervention-value ensemble is refit over the growing dataset through the full
-relational GNN and episode LSTM, with held-out early stopping and direct
-pairwise candidate-difference supervision. The system encoder is frozen during
-these refits and feeds a wide-and-deep intervention model: a linear path over
-the normalized physical features stabilizes small-data fitting while a deep
-path preserves nonlinear GNN/LSTM capacity. Deployment stays on the simple
-risk-time-reduction prior until the lower confidence bound of gate-set paired
-gain is positive. Only decisions that branched every feasible candidate may
-certify the gate. After
-that gate opens, the prior contributes only its common base-score level and the
-conservative physical-advantage estimate supplies candidate ordering, so the
-heuristic is not double-counted. Ensemble uncertainty is computed on each
-candidate's paired value
-difference from the base action, so arbitrary head-specific value offsets
-cannot corrupt the conservative ranking. The
-scientific reward remains the four-term safe-completion, casualty,
-evacuation-time, and exposure objective.
+Model version 35 keeps the positive matched-WAIT exposure-removal reward and
+adds a clean NMCC improvement step after ordinary recurrent PPO. PPO learns
+from complete realized episode returns. At each visited decision, NMCC replays
+WAIT and every feasible equal-capacity shelter from one common-noise snapshot,
+forms the complete candidate-value vector, and fits the actor to
+`q(a|s) proportional to pi_old(a|s) exp(A(a)/eta)`. There is no heuristic
+continuation policy, correction gate, fallback controller, learned fill for
+unobserved actions, or candidate-level oracle feature. The full learner is
+documented in `docs/CLEAN_NMCC_POLICY_IMPROVEMENT_V35.md`; the underlying
+reward remains documented in
+`docs/COUNTERFACTUAL_EXPOSURE_REMOVAL_MDP_V34.md`.
 
-The production State College v28 curriculum is:
+The active State College curriculum is:
 
 ```bash
 python multicity_backtest.py \
   --cities state_college_pa \
-  --launch-id state_college_2500_risk_value_v28 \
+  --launch-id state_college_clean_nmcc_pi_v35_staged_120 \
   --policy-replicates 1 \
-  --train-episodes-per-city 104 \
-  --training-curriculum config/state_college_training_curriculum_2500_risk_value_v28.json \
+  --train-episodes-per-city 120 \
+  --training-curriculum config/state_college_training_curriculum_2500_counterfactual_exposure_v34.json \
   --train-only --no-require-convergence --no-policy-cache
 ```
+
+The sampled candidate-pair credit and fitted-correction controllers are
+retained as ablations, not active learners.
 
 For pooled training across cities and the registered population × hazard-count
 × panic scenario distribution, use
@@ -372,13 +365,52 @@ The cross-city research design and commands are documented in
 
 The secondary benchmark definitions and their operations-research literature
 basis are registered in `docs/BENCHMARK_MODEL_PROTOCOL.md`. The dynamic
-hazard-weighted and accessibility-deficit policies use the same regional
-observation, exact-candidate mask, cadence, budget, and candidate executor as
-RL. Run a complete strategy evaluation with:
+hazard-weighted, accessibility-deficit, and objective-matched greedy policies
+use the same regional observation, exact-candidate mask, cadence, budget, and
+candidate executor as RL. `objective_greedy` evaluates every feasible action
+with the RL reward's exact same-state, zero-horizon counterfactual calculation;
+it is therefore the direct test of whether RL adds value beyond a myopic
+calculation of its own objective. Run a complete strategy evaluation with:
 
 ```bash
 python multicity_backtest.py \
-  --strategies rl,heuristic,hazard_weighted,accessibility_deficit,random,static_greedy,rl_precommit,initial_only
+  --strategies rl,objective_greedy,risk_reduction,route_saving,heuristic,hazard_weighted,accessibility_deficit,random,static_greedy,rl_precommit,initial_only
+```
+
+The current v41 decision-interval learner builds on the historical v37/v38
+designs documented in `docs/DECISION_INTERVAL_NMCC_V37.md` and
+`docs/SCALABLE_SAMPLED_NMCC_V38.md`. At each visited state, the executed site
+and coverage-sampled feasible sites are installed in matched physical branches
+under common random numbers and advanced to the next 15-timestep decision.
+Every branch adds the same capacity token, so the within-state contrast removes
+shared hazard evolution and capacity value. No WAIT action, heuristic score,
+correction gate, fallback controller, or model-filled candidate is used.
+
+NMCC supplies the signed matched action advantage; PPO is the sole actor
+optimizer. The ordinary actor-critic value head also prices each NMCC endpoint,
+and is fitted by backward replay across the eight sequential installations, so
+actor, critic, and continuation use the same `Q = V + A` system. The environment
+reward is normalized controllable evacuation-debt reduction minus realized
+controllable person-time. It contains plain time plus danger-weighted exposure;
+panic and casualty are reported but excluded from action credit. Frozen
+evaluation minimizes realized hazard-weighted time to safety including terminal
+remaining-time debt. Four concise momentum rates summarize population
+clearance, congestion-delay reduction, route-time reduction, and forecast-
+exposure reduction.
+
+The Seattle curriculum resets exploration and actor/critic learning-rate decay
+inside each E/A/F stage. Every comparison arm receives ten equal-capacity
+shelters totalling `population + 200`. RL and dynamic heuristics choose and
+install at minutes 15,30,...,120. `initial_only` fixes its complete site order
+from the time-zero state, then installs that open-loop schedule at the same
+minutes, so it no longer receives an early-capacity advantage:
+
+```bash
+python multicity_backtest.py \
+  --cities seattle_wa \
+  --train-episodes-per-city 160 \
+  --training-curriculum config/seattle_training_curriculum_population_foresight_v37.json \
+  --train-only --no-policy-cache
 ```
 
 The completed integration backtest, parity audit, five-city map preflight, and

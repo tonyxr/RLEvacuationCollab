@@ -3,7 +3,7 @@
 ## Research question
 
 Does one pooled regional shelter-priority policy improve the preregistered
-evacuation return over the active-population heuristic across heterogeneous
+evacuation return over complete-ledger objective-greedy across heterogeneous
 urban road networks, without losing performance as city scale increases?
 
 This is a fixed-site experiment over five deliberately selected cities. It is
@@ -83,16 +83,26 @@ The two additional deterministic heuristic definitions are registered in
 `docs/BENCHMARK_MODEL_PROTOCOL.md`; they are secondary comparisons and do not
 replace the primary RL-minus-active-population estimand.
 
-The action-training reward uses a fixed 10-timestep post-deployment window:
+The environment reward at decision interval `k` is the normalized potential
+residual
 
-`r_k = (Delta safe_k - 3 Delta casualty_k) / P
-       - active_person_time_k / (P H)
-       - hazard_exposure_person_time_k / (P H)`.
+`r_k = [D_ctrl(s_k) - gamma^dt D_ctrl(s_{k+1}) - C_ctrl,k] / (P H_minutes)`.
 
-The full-episode held-out objective uses the same four components. There is no
-shelter-service shaping or site-selection bonus, so training cannot improve by
-exploiting an auxiliary objective that is absent from evaluation. Changing
-cities therefore does not change the scientific objective or comparator.
+`D_ctrl` is capacity-valid forecast remaining plain time plus danger-weighted
+exposure time for active, non-panicked pedestrians. `C_ctrl,k` is the same
+cohort's realized plain-plus-exposure person-time during the interval. A
+pedestrian without a reserved operational shelter contributes the complete
+horizon `H`. With the registered `gamma = 1`, interval rewards telescope to
+the controllable realized objective plus endpoint debt instead of awarding
+installed capacity or ordinary passage of time.
+
+NMCC supplies actor credit separately: it advances the executed and sampled
+equal-capacity sites under common random numbers to the next decision and adds
+the shared actor-critic continuation value. PPO consumes that matched signed
+advantage as its sole actor objective. WAIT, heuristic ranks, casualties,
+panic, capacity bonuses, and completion bonuses are not training targets.
+Evaluation uses negative realized hazard-weighted time to safety including
+terminal remaining-time debt; casualty and panic remain reported outcomes.
 
 ## Training design
 
@@ -130,8 +140,8 @@ same city-scenario. Required parity checks include the city and map query,
 first observation and feasibility mask, deployment budget, random component
 streams, and complete exogenous hazard trajectory.
 
-The primary estimate is the equal-city macro mean of RL-minus-heuristic episode
-return, conditional on the one frozen trained checkpoint. The bootstrap
+The primary estimate is the equal-city macro mean of RL-minus-objective-greedy
+episode return, conditional on the one frozen trained checkpoint. The bootstrap
 resamples held-out scenarios independently within each city, then averages the
 five city estimates. It does not resample policy seeds or the five deliberately
 selected cities. Report the macro estimate and

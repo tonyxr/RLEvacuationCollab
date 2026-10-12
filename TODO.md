@@ -12,7 +12,351 @@ This list is ordered by correctness and research-validity risk. Check an item on
 - A model-code task is not complete until its tests, `LOG.md`, and `TODO.md`
   agree with the implemented behavior.
 
+## Current priority — complete the clean v40 staged run (2026-10-02)
+
+- [x] Make the three stages own distinct jobs. Stage E trains the shared
+  graph/LSTM environment representation and six candidate-conditioned
+  traffic/hazard rates while the actor is frozen. Stage A freezes that
+  representation, trains the complete nonlinear actor adapter on
+  one-decision-interval installed-site contrasts, and warms the backward
+  continuation value without using it. Stage F retains the same observable
+  action features and activates the continuation value in NMCC targets.
+- [x] Remove inactive ensemble, teacher, guidance, uncertainty, alternative
+  M-step, gate, model-fill, and heuristic-base-policy controls from the active
+  code/configuration surface. Delete the historical curriculum tests that
+  asserted those retired contracts; retain tests of current E/A/F ownership,
+  exact branches, backward returns, schedules, and deterministic evaluation.
+- [x] Verify a fresh 500-person E/A/F smoke run. Stage E joint dynamics
+  explained variance rose from 0.390 to 0.724; Stage A branch-target top-1
+  agreement moved 0.219 to 0.438; Stage F moved 0.406 to 0.688 and used a
+  continuation spread equal to 16.2% of the total within-state value spread.
+  The eight-dynamic-policy initial-state, capacity, partition, random-stream,
+  and full hazard-trajectory parity audit passed. This 12-episode smoke was
+  inferior to objective-greedy and is not performance evidence.
+- [ ] Complete the active 5,000-person State College run at
+  `runs/state_college_5000_staged_nmcc_v40_20261002`: 24 E episodes, 48 A
+  episodes, 88 F episodes, followed by 20 deterministic matched scenarios for
+  all eleven policies. At each stage boundary audit actor ownership, dynamics
+  explained variance, target-fit KL/top-1, continuation train/validation
+  explained variance, continuation ranking share, and the independent
+  exploration/LR reset and decay.
+- [ ] After evaluation, report realised hazard-weighted time to safety,
+  congestion, exposure, completion, unfinished, panic, and casualty outcomes
+  against every benchmark. Treat heuristic agreement as descriptive only and
+  do not infer convergence or superiority unless the recorded evidence
+  supports it.
+
+## Current priority — validate scalable sampled NMCC v38 (2026-10-02)
+
+- [x] Remove exhaustive per-state physical branching from the active learner.
+  Every NMCC state now includes the executed action and a coverage sample;
+  production uses two installed actions under two common-noise futures. The
+  MPO target changes only exactly observed probability mass and leaves every
+  unobserved action at its behavior-policy probability.
+- [x] Remove the redundant WAIT simulation from policy improvement. Equal
+  capacity and natural system evolution cancel directly between the two
+  installed-site branches. Preserve the complete 15-timestep congestion,
+  movement, hazard, and dedicated-continuation calculation.
+- [x] Verify the direct installed-site contrast against the corresponding
+  difference in the former full action table, and measure the real map path.
+  The 5,000-person first decision improved from 157.3 to 22.0 seconds; a fresh
+  2,500-person eight-decision episode completed in 157.6 seconds including map
+  initialization.
+- [ ] Start a fresh v38 E/A/F run. The v37 checkpoint must not resume because
+  the NMCC sampling and actor-target contract changed. Confirm that sampled
+  actions cover every candidate and all eight decision positions, target KL is
+  nonzero, the M-step converges, the continuation explained variance becomes
+  positive, and episode wall time remains near the measured scale.
+- [ ] Deterministically evaluate the completed v38 policy on matched scenarios
+  against every registered heuristic. Compare realised hazard-weighted time to
+  safety, congestion, exposure, safe completion, unfinished share, panic, and
+  casualties; do not treat heuristic action agreement as a success criterion.
+
+## Current priority — validate random-centred Seattle training (2026-10-01)
+
+- [ ] Complete the active 2,500-person State College precursor run at
+  `runs/state_college_n2500_random_centered_foresight_v37_20261001/`: 24
+  environment episodes, 48 action episodes, 88 foresight episodes, followed by
+  eight matched deterministic scenarios for all eleven registered strategies.
+  Do not interpret or compare policies until the launcher writes a complete
+  manifest and the capacity/interface parity audits pass.
+
+- [x] Give every ten-shelter run `population + 200` total capacity. The
+  registered Seattle levels now use capacities 270, 520, 770, and 1,020 per
+  shelter. Population-matched runs use the absolute `15,30,...,120` schedule,
+  reject an undersized detected candidate pool, and fail immediately rather
+  than postponing a scheduled action. After the eighth sequential installation
+  at `t = 120`, assert that every active non-panicked pedestrian has a valid
+  capacity reservation and a route to that shelter. Panicked pedestrians
+  remain deliberately outside the shelter-assignment controller.
+- [x] Verify that danger speed effects are level-based rather than recursively
+  compounded, and that moving to a lower danger level recomputes speed from
+  free-flow `maxSpeed`, allowing full recovery.
+- [x] Replace the learning reward's WAIT baseline with the signed uniform mean
+  over all feasible equal-capacity installation sites. Scalable v38 NMCC uses
+  exact sampled equal-capacity site contrasts; natural evolution and capacity
+  cancel directly, and WAIT is no longer simulated by policy improvement.
+- [x] Separate the signed learning reward from evaluation. Deterministic
+  held-out comparison now uses negative realised hazard-weighted time to
+  safety, including observed active/exposure person-time and a terminal
+  remaining-time residual. Casualty has no standalone coefficient, while a
+  person who never reaches safety retains time-to-safety debt.
+- [x] Reset exploration, entropy, temperature, and actor/critic learning-rate
+  decay at the start of each E/A/F curriculum stage and hit both configured
+  endpoints exactly. Keep heuristic agreement descriptive only. Ensure the
+  NMCC M-step uses the scheduled actor rate instead of restoring the base rate.
+- [x] Make final-stage evaluation deterministic and matched across RL and all
+  dynamic/static heuristics. Cycle the final Seattle stage's 2,500/5,000/
+  7,500/10,000 population variants so each policy sees the same scenario seed,
+  capacity, hazard realization, and ten-shelter budget.
+- [ ] Start a fresh checkpoint; the reward/baseline and evaluation contracts
+  intentionally invalidate the interrupted run. Confirm each stage begins at
+  its high exploration/LR endpoint and finishes at its low endpoint, and that
+  all scheduled episodes install at `15,30,...,120` with zero unassigned
+  rational population after the last installation.
+- [ ] Run deterministic matched evaluation against
+  `objective_greedy`, `risk_reduction`, `route_saving`, active-demand,
+  hazard-weighted, accessibility, random, static-greedy, learned-precommit,
+  and initial-only policies. Report the realised HWTTS objective by population,
+  together with congestion, exposure, completion, panic, and casualty trends.
+
+## Current priority — validate v37 decision-interval NMCC (2026-09-30)
+
+- [x] Evolve every clean-NMCC candidate and its shared common-noise WAIT from
+  the same snapshot through exactly one shelter decision interval.
+- [x] Add a dedicated NMCC continuation head and train it from backward
+  semi-Markov return-to-go across each episode's eight sequential
+  installations. Keep the environment reward on its unchanged zero-horizon
+  installation branch.
+- [x] Make the NMCC M-step fit the masked actor itself at the base actor
+  learning rate, without exploration-mixture distortion or gradient clipping;
+  stop on absolute `KL(q || pi) <= 0.01` plus exact top-1 agreement.
+- [x] Replace the redundant momentum vector with six traffic/hazard velocities
+  and expose physical congestion delay separately from general mobility delay.
+- [x] Enforce the common ten-shelter budget in evaluation. Dynamic policies
+  install two initially plus eight sequentially even after early clearance;
+  `initial_only` now commits eight sites from the time-zero state and installs
+  them at the common `t = 15,30,...,120` schedule. The frozen-policy matched
+  comparison is complete: RL reduced mean HWTTS by 20.3% and won 3/4 pairs on
+  the original four held-out State College scenarios. Expand the sample before
+  making an inferential superiority claim.
+- [ ] Run the v37 staged curriculum from a fresh checkpoint. Confirm that the
+  continuation explained variance becomes positive after the first fitted
+  update, NMCC residual KL and top-1 meet their fit criteria, branch endpoint
+  values acquire nonzero within-state dispersion, and all episodes contain
+  eight decisions unless the horizon or candidate contract is violated.
+- [ ] Freeze the trained v37 checkpoint and compare it with
+  `objective_greedy`, the remaining dynamic heuristics, random, static greedy,
+  learned precommitment, and initial-only at 2,500/5,000/7,500/10,000 people.
+  Report shelter-count parity, action-sequence divergence, congestion/exposure
+  outcomes, and traffic/hazard feature ablations before attributing an
+  advantage to foresight.
+
+## Current priority — v36 congestion and policy-use audit (2026-09-28)
+
+This section is the active continuation of the September 22--28 working
+session. It supersedes conflicting historical model-v22--v26 next-step items
+below for the current v36 line. The older items remain in this file as
+provenance and must be revalidated against the current MDP before reuse.
+
+### Current contract carried forward from the session
+
+- The policy objective is to reduce total expected future hazard-weighted
+  time-to-safety for active pedestrians. The implemented decision reward is
+  the positive, population/horizon-normalized reduction in remaining ordinary
+  travel time plus hazard exposure relative to the same-state `WAIT` branch.
+- Casualties and panic remain reported outcomes, not standalone reward terms.
+  There is no terminal-residual reward.
+- Pedestrians change shelter only for a strictly better valid reservation;
+  otherwise they keep following the shortest path to their assigned shelter.
+  Unassigned pedestrians retain the configured horizon-valued remaining-time
+  cost. Danger-level speed modifiers do not compound at every timestep.
+- Every dynamic run has two initial shelters and eight sequential
+  installations at minutes 15, 30, ..., 120 of a 180-minute episode. Each
+  shelter has capacity `population / 10`, so total installed capacity equals
+  the simulated population and 60 minutes remain after the final action.
+- Training is staged: environment dynamics first, then action learning. The
+  active policy has no engineered actor prior, fallback selector, correction
+  gate, or post-selection action replacement. Feasibility/safety masks remain
+  part of the MDP. Exploration and learning rates decay on their registered
+  schedules; frozen evaluation uses deterministic masked ranking.
+- Current multiscale evidence is
+  `runs/state_college_v36_complete_multiscale_nmcc_20260927/`: 120 balanced
+  training episodes and 112 frozen evaluation episodes at populations 2,500,
+  5,000, 7,500, and 10,000. RL reward relative to the best dynamic benchmark
+  changes from `-0.0574`, to `-0.0068`, to `+0.0362`, to `+0.0810` across
+  those four levels. This is diagnostic evidence from one city and four
+  evaluation seeds per population, not a general superiority claim.
+
+### P0 — Complete before another long training run
+
+- [x] **Add the objective-matched myopic benchmark and run the first paired audit.**
+  - `objective_greedy` scores every feasible cell with the exact signed
+    same-state reduction in remaining plain plus forecast-danger-weighted
+    travel time used by the current RL objective. It has no physical rollout,
+    temporal memory, or continuation value.
+  - The frozen v36 policy and benchmark were compared on the existing 16
+    held-out State College scenario keys. RL lost episode return in 14/16 and
+    had 20.3% mean action agreement; pooled restricted mean time-to-safety was
+    3.40 minutes worse. At 10,000 pedestrians RL had lower RMTTS in 3/4
+    scenarios despite lower immediate reward, a possible high-congestion
+    continuation effect that is not yet statistically or causally established.
+  - Artifacts: `runs/state_college_v36_complete_multiscale_nmcc_20260927/objective_greedy_analysis_20260930/`.
+
+- [ ] **Separate genuine self-evolution understanding from immediate-target underfit.**
+  - At retained decision states compare the objective-greedy ordering, the
+    frozen RL ordering, a common-noise 15-minute physical-branch ordering, and
+    a continuation-valued ordering. Report top-1 agreement, Spearman rank,
+    regret, and subsequent realized outcome by decision position and population.
+  - Evaluate at least 12 new matched seeds per population. Then retrain matched
+    no-momentum/no-recurrent-history and no-hazard-forecast ablations; frozen
+    feature masking is diagnostic but cannot establish causality.
+  - Acceptance: show that RL preferentially departs from the myopic benchmark
+    where future physical evolution reverses the immediate ranking, and loses
+    that advantage when temporal/forecast information is removed.
+
+- [ ] **Measure which observation groups the frozen v36 policy actually uses.**
+  - Add a read-only matched-evaluation audit for the existing checkpoint with
+    grouped masking/permutation and local sensitivity for: current load and
+    mobility delay; route assignments and route-flow edges; hazard and hazard
+    momentum; shelter capacity/utilization; spatial/geometry features; and
+    recurrent history.
+  - Do not infer importance from feature availability or neural weights alone.
+    Report action-distribution change, selected-cell change, reward,
+    completion, unfinished share, and congestion person-minutes by population.
+  - Follow the frozen audit with the minimum retrained ablations needed for a
+    causal architecture claim: no route-flow information, no load/congestion
+    information, and no temporal/candidate-attention context. Use the same
+    population blocks, action schedule, capacities, seeds, and evaluation
+    contract as the full model.
+  - Acceptance: identify which groups explain the 7,500/10,000 advantage and
+    whether the low-population deficit is a scale-conditioning or action-
+    coverage problem. Preserve all negative results.
+
+- [ ] **Make current congestion observable without adding an oracle.**
+  - Keep the existing administrator-observable inputs, but separate physical
+    congestion from generic low speed. Add regional current congestion-speed
+    ratio, congested-population share, and occupied-link/storage share computed
+    from the same pre-action physical-link state used by the simulator.
+  - Replace or rename the static `network_load_share`. It currently measures
+    initial population relative to link storage, so
+    `network_load_reduction_velocity` is identically zero. Retain the static
+    quantity as an explicit scenario-load descriptor and create a genuinely
+    time-varying load/clearance quantity if a momentum feature is needed.
+  - Do not expose future action outcomes, candidate rollouts, or perfect
+    candidate rankings as policy inputs. The observation must remain available
+    from the current emergency-operations state.
+  - Bump the model/signature version, reject incompatible checkpoints, document
+    units and normalization, and add deterministic tests for zero load,
+    increasing density, jam-floor behavior, regional aggregation, and temporal
+    change.
+
+- [ ] **Test whether the immediate causal label misses action-induced congestion.**
+  - The current zero-horizon candidate evaluator uses each pedestrian's
+    current speed for every hypothetical destination. It rewards immediate
+    reservation/route improvement but does not recompute the congestion that
+    the candidate's new routes create.
+  - On a retained set of pre-action states, compare the current immediate
+    all-candidate ordering with a common-noise physical branch that advances
+    every equal-capacity candidate through one complete 15-minute decision
+    interval. Also record the later realized ordering from the live episode.
+  - Compare rank agreement, top-1 recall, regret, and compute cost by
+    population. Use candidate-versus-candidate contrasts so the common benefit
+    of installing one capacity token cannot dominate the siting differential.
+  - Change the training target only if the congestion-aware label improves
+    held-out ordering at matched states. Do not introduce a fallback policy,
+    correction gate, teacher ranking, or post-action override.
+
+### P1 — Training after the P0 measurements
+
+- [ ] **Run one fresh, balanced engineering pilot for the accepted v37 contract.**
+  - Start from a new checkpoint after any observation or target-schema change.
+    Use 32 environment-dynamics episodes followed by 128 action-learning
+    episodes, balanced in repeating 2,500/5,000/7,500/10,000 blocks so every
+    four-episode optimizer batch contains all four population levels.
+  - Preserve the v36 shelter schedule, equal capacities, positive exposure-
+    removal objective, no actor/base prior, smooth exploration decay, learning-
+    rate decay, and full feasible-action NMCC coverage unless the P0 label
+    experiment justifies a preregistered alternative.
+  - Evaluate on at least 12 new matched seeds per population before extending
+    training. Report policy KL, selection-TV movement, NMCC fit/ranking,
+    reward and component trajectories, per-installation action value,
+    congestion, completion, unfinished share, and exact shelter sequences.
+  - Acceptance: the learned policy must move, beat random at every population,
+    retain the high-population advantage, and not obtain that advantage merely
+    by rerouting more pedestrians or choosing larger capacity (capacities are
+    equal by contract).
+
+- [ ] **Run a multi-seed confirmatory evaluation only after the engineering pilot passes.**
+  - Train at least three independent policy seeds under the frozen accepted
+    contract and evaluate at least 20 untouched matched scenario seeds per
+    population.
+  - Report seed- and scenario-level uncertainty for reward, completion,
+    unfinished share, congestion person-minutes, and benefit per rerouted
+    pedestrian. Casualty and panic remain documented outcomes only.
+  - Separate the scale claim (advantage grows with demand) from the policy
+    superiority claim. Test the population-by-policy interaction rather than
+    relying on four separate means.
+
+### Explicit non-priorities for the next cycle
+
+- Do not run a longer single-seed copy of v36 before the P0 audits; it cannot
+  distinguish missing congestion information from inadequate optimization.
+- Do not add a complete engineered candidate ranking, perfect-information
+  benchmark, correction gate, conservative fallback, casualty reward, or
+  terminal-residual reward.
+- Do not expand to the full multi-city campaign until the State College
+  congestion mechanism and feature contribution are identified with matched
+  ablations.
+
 ## P0 — Blockers before further training
+
+- [ ] **Re-divide the NMCC branch budget: fewer cells, more tapes, full horizon.**
+  - Measured in `docs/SITING_SIGNAL_IDENTIFIABILITY_20260927.md`: the label,
+    not the network, is where the siting information is lost. With one tape at
+    the full horizon its rank agreement with the quantity it represents is
+    0.731 pooled over decisions and 0.636 at the first decision, where the
+    regret is.
+  - Branch the candidate prior's top 9-12 cells instead of every feasible cell
+    at the exhaustive decisions (executed and base actions still always
+    included), and set `nmccPiTapes = 2`. Cost-neutral against the present
+    configuration: 17 cells x 1 tape x full is 1003 simulator timesteps per
+    decision for expected top-1 0.359 and regret 0.551 cell-effect SD; 9 cells
+    x 2 tapes x full is 1062 steps for 0.429 and 0.416.
+  - Change `DEFAULT_NMCC_PI_BRANCH_HORIZON` from 20 to 0. A noiseless +20
+    contrast correlates only 0.598 with the full-horizon cell effect at the
+    first decision, so a curriculum that omits the key is silently capped at
+    Spearman ~0.55 at any tape count.
+  - If truncation is ever needed for cost, add the bootstrap term
+    `gamma^k * V(s_{+k})` from the value head to `BranchValuer._continue`,
+    which currently returns accrued reward with no tail. The missing 40% of the
+    ordering at +20 is exactly what the critic exists to supply.
+  - Raise `nmccPiMaxBranches` from 6 to at least 9 at later decisions, or
+    accept that top-1 there cannot exceed 0.44: the v25 prior places the true
+    best cell inside its top 6 only 44% of the time and its top 8 56%.
+  - Do not pursue a single-component or re-weighted label. Measured and
+    negative: hazard_exposure carries 3% of the cell-effect variance with a
+    worse SNR than the scalar (0.85 vs 0.94), and a least-squares re-weighting
+    of all four components gains 0.021 Spearman with a lower top-1 rate.
+  - Acceptance criteria:
+    - the allocation is configuration-driven, with the per-decision step cost
+      recorded in the run diagnostics;
+    - a pilot at the new allocation reports the label's own Spearman against a
+      held-out tape at a sample of decision states per epoch, so a failure to
+      fit is distinguishable from an unfittable target;
+    - held-out within-state top-1 and mean regret improve against the v26
+      pilot at matched simulator cost;
+    - `LOG.md` and `TODO.md` updated, and the earlier model versions remain
+      reproducible.
+
+- [ ] **Improve the candidate prior before improving the label.**
+  - The v25 prior correlates 0.338 with the terminal cell effect; every subset
+    branching scheme inherits that as a ceiling. A prior at 0.6 would let a
+    6-cell subset reach the recall a 12-cell subset reaches today, halving the
+    branch cost.
+  - Acceptance criteria: `corr(prior, a_full)` measured on held-out states by
+    `exposure_budget_allocation.py`, improved over 0.338, with the recall curve
+    reported.
 
 - [x] **Implement and backtest model v25 staged NMCC candidate scoring.**
   - Exact CRN candidate branches now retain paired natural and action-caused
@@ -644,6 +988,27 @@ This list is ordered by correctness and research-validity risk. Check an item on
 
 ## P2 — Reliability and maintainability
 
+- [ ] **Complete and evaluate the Seattle population-adaptive foresight run.**
+  - The 2026-09-30 launch was stopped on request and its partial artifacts were
+    preserved under `runs/seattle_population_foresight_long_20260930`; it is
+    not an active process. Start a fresh run only after the revised exact-NMCC
+    smoke check passes in the supported training environment.
+  - Stage boundaries are fixed: environment-only episodes 1--24,
+    decision-interval action learning 25--72, and continuation/foresight
+    learning 73--160. Do not relabel a stage from curriculum names alone;
+    verify `nmcc_training_phase_index`, continuation loss, branch horizon,
+    M-step fit KL, exact top-1, and optimizer counters at each boundary.
+  - After training, run matched held-out Seattle evaluation against at least
+    the objective-greedy heuristic, the simpler heuristic, and random policy,
+    with the same ten shelters, capacity, population origins, hazards, and
+    installation times. Compare the resulting scale/congestion behavior with
+    the registered State College evaluation before claiming that a larger
+    network benefits RL.
+  - Produce population-stratified reward, M-step convergence, continuation
+    explained-variance, congestion, action-location, evacuation, and benchmark
+    comparison plots. Treat a single Seattle seed as engineering evidence, not
+    a general city-size conclusion.
+
 - [ ] **Make all runtime paths project-relative or explicitly configurable.**
   - Resolve the CSV, run root, cache root, and checkpoint root from one project/config object.
   - Add a smoke test that launches from a working directory outside the repository.
@@ -670,3 +1035,268 @@ This list is ordered by correctness and research-validity risk. Check an item on
 - [ ] **Expand project documentation.**
   - Document architecture, configuration fields and units, outcome definitions, action timing, reward equations, seeding, checkpoint behavior, and expected artifacts.
   - Add a short quick-start and a small offline example that does not require a full 68-replication launch.
+
+## Current priority — validate coherent counterfactual PPO v41 (2026-10-03)
+
+- [x] Use one coherent Bellman system: NMCC estimates matched action
+  advantages, PPO is the sole actor optimizer, and the shared critic supplies
+  both the PPO baseline and NMCC endpoint continuation value.
+- [x] Replace the random-site/WAIT learning reward with the potential-based
+  reduction in controllable forecast hazard-weighted evacuation debt; keep
+  random-site comparison as a diagnostic only.
+- [x] Exclude panic and casualty from action credit while retaining them as
+  separately reported outcomes. Align physical NMCC branches with that same
+  action-responsive cohort.
+- [x] Reduce the policy input contract and express wind as signed east/north
+  velocity. Add expected danger, spread momentum, escalation probability, and
+  uncertainty as the concise hazard-distribution forecast.
+- [x] Correct the effective experiment metadata and checkpoint contract for
+  the 4x4, 2,500-person v41 curriculum.
+- [x] Complete the 20-episode v41 engineering pilot and four-scenario matched
+  evaluation. Immediate matched NMCC credit and PPO policy updates work, and
+  RL is competitive with objective-greedy, but this is not convergence or a
+  multi-seed superiority result.
+- [ ] Improve continuation-value data efficiency before treating Stage F as
+  successful. The pilot ended with validation explained variance 0.0020,
+  0.36% continuation share, and zero branch-best changes. Diagnose target
+  scale/normalization and increase backward continuation observations without
+  adding a heuristic target, gate, or fallback controller.
+- [ ] Run the registered 96-episode v41 State College curriculum, followed by
+  deterministic matched-scenario evaluation against objective-greedy,
+  risk-reduction, route-saving, random, static, and initial-only comparators.
+  Treat heuristic agreement as descriptive only.
+- [ ] Before claiming superiority, require: nonzero NMCC advantage dispersion;
+  retained PPO policy movement; improving held-out controllable exposure cost;
+  positive continuation-value rank contribution in Stage F; identical
+  exogenous tapes/capacity/schedule across policies; and confidence intervals
+  over multiple independent policy seeds.
+
+## Current priority — v43 performance validation after wiring repair (2026-10-04)
+
+- [x] Correct the critic target so a uniform-site-centered NMCC actor contrast
+  cannot redefine the on-policy value baseline.
+- [x] Remove attenuation of small Stage-F advantages, make reported objective
+  score/cost positive and unambiguous, and add direct expected-NMCC-advantage
+  movement diagnostics.
+- [x] Reuse persistent isolated exact-branch workers across all eight decisions
+  and verify serial/parallel physical parity and clean worker shutdown.
+- [x] Tune the cheap actor fitting budget on training diagnostics only. Keep 24
+  PPO epochs: 8 was effectively stationary and 64 overshot; the final smoke
+  stayed below the 0.015 descriptive KL boundary without a gate or rollback.
+- [x] Complete the 250-person 4x4 E/A/F smoke and matched evaluation. Mechanics,
+  continuation learning, schedules, reward sign, branch coverage, and actor
+  motion pass; the ten-episode policy is still inferior to objective-greedy.
+- [ ] Run a preregistered longer v43 curriculum with multiple training seeds.
+  Do not tune further on the two smoke evaluation scenarios. Require held-out
+  objective improvement across seeds, not merely entropy reduction or NMCC
+  training-table gain, before claiming that policy quality is restored.
+
+## Current priority — v44 complete-ledger NMCC validation (2026-10-04)
+
+- [x] Replace the controllable-only learning ledger with one complete
+  time-to-safety ledger. Panicked pedestrians continue to accrue active and
+  exposure time; casualties carry unresolved plain-time debt; neither outcome
+  can improve a shelter action by disappearing from its label.
+- [x] Replace the repeated fixed 180-minute unassigned charge with remaining
+  episode time, and use the same debt definition in factual rewards, physical
+  NMCC branches, Stage-F continuation composition, and evaluation.
+- [x] Correct Stage F to compare
+  `C_wait-C_action + gamma^dt(D_wait'-D_action')` before adding the shared
+  critic continuation difference.
+- [x] Use every physically branched candidate in one dense clipped-PPO actor
+  update; leave unbranched candidates at zero NMCC advantage rather than
+  inventing labels.
+- [x] Compute exact full-categorical NMCC policy KL against the stored behavior
+  distribution. Retain sampled-action approximate KL only for ordinary PPO
+  transitions without a stored categorical behavior policy.
+- [x] Pass all 277 repository tests and complete the ten-episode 250-person
+  E/A/F smoke plus two matched evaluation scenarios. All eight actor updates
+  increased expected matched NMCC advantage; final continuation validation EV
+  was 0.778 and final normalized entropy was 0.926.
+- [x] Complete the 96-episode, 2,500-person single-seed E/A/F run and 20-scenario
+  matched evaluation. RL reduced mean HWTTS by 19,585 person-minutes versus
+  max-active-population but was statistically tied with objective-greedy; the
+  final checkpoint was still moving and is not a convergence claim.
+- [x] Make complete-ledger objective-greedy the primary comparator and score it
+  with the same positive realized-objective transformation used by evaluation.
+  Register random, max-population, and scheduled initial-only as floor,
+  practice-rule, and feedback controls; retain weaker one-line policies only as
+  optional appendix diagnostics. All 278 tests pass.
+- [ ] Run a multi-seed, longer v44 curriculum before making a superiority or
+  convergence claim. Use objective-greedy—not max active population—as the
+  primary paired comparator, and report weaker rules only in secondary tables.
+- [ ] Add a separately registered simulation-optimization reference and a
+  rolling-horizon capacitated location-allocation benchmark before claiming
+  proximity to an online optimizer. Do not relabel time-zero predeployment or
+  any one-line heuristic as that OR benchmark.
+
+## Current priority — v45 uniform-reference policy improvement (2026-10-04)
+
+- [x] Replace the no-more-shelters potential with the fixed uniform feasible-site
+  policy value `V_mu`; use `V_mu(s)-C-V_mu(s')` as the signed factual reward.
+- [x] Make Stage E collect exact uniform-policy data and learn `V_mu`; freeze
+  that reference in Stages A/F so the reward zero does not drift with the actor.
+- [x] Align NMCC, PPO critic, and actor labels with the same random-relative
+  Bellman decomposition, including the dedicated Stage-F policy-savings value
+  `W_pi`.
+- [x] Verify signed bad-action penalties, zero-in-expectation random credit,
+  reward telescoping, backward value targets, branch decomposition, exact
+  accounting, and end-to-end checkpoint/replay transfer. All 282 tests pass.
+- [x] Complete the corrected 250-person smoke and the 96-episode 2,500-person
+  State College curriculum plus 20 matched deterministic evaluation scenarios.
+- [x] Confirm the core reward claim: RL significantly beats uniform random;
+  random siting no longer earns scheduled-capacity credit. Confirm that
+  continuation has actual ranking influence late in Stage F.
+- [ ] Do not claim superiority yet. RL is statistically tied with
+  objective-greedy and slightly, nonsignificantly worse than the strongest
+  simple online heuristics. Repeat with multiple independently trained policy
+  seeds before changing reward or features again.
+- [ ] Diagnose actor update scale using the existing dense NMCC records. Tail
+  KL exceeded the descriptive target in 85% of updates even though late KL
+  occasionally settled. Prefer a justified optimizer/schedule adjustment over
+  a KL gate, rollback, or fallback controller.
+- [ ] Profile the intermittent branch-worker memory-compression stalls seen in
+  the long run. Prove whether retained simulator object graphs survive between
+  persistent batches before changing worker lifecycle; preserve exact branch
+  parity and do not add partial-result fallback behavior.
+- [ ] Treat `static_greedy` and `rl_precommit` as explicit time-zero/offline
+  references only. The fair feedback comparator is scheduled `initial_only`;
+  all online policies must retain the common 15-minute installation schedule.
+
+## Current priority — v48 NMCC actor-scale validation (2026-10-05)
+
+- [x] Restore stage-local decay for categorical uniform exploration and action
+  temperature, and retain independent actor/critic learning-rate decay.
+- [x] Replace raw advantage-difference regression with the complete NMCC
+  E-step target and train the actor head by a replayed full-distribution
+  `KL(q || pi_theta)` M-step over all feasible cells.
+- [x] Increase actual actor optimization capacity to a `0.001` initial learning
+  rate and 24 replay passes without adding a KL gate, rollback, fallback,
+  gradient clipping, or action correction.
+- [x] Require a direct integration test to show that an actor update reduces
+  KL to the NMCC policy target; pass all 290 tests and the 250-person staged
+  smoke/evaluation.
+- [ ] Run the 96-episode, 2,500-person v48 curriculum with multiple independent
+  policy seeds before drawing a performance conclusion. The smoke policy now
+  moves and beats random/max-active, but still trails objective-greedy.
+- [ ] On the long run, report target-KL reduction, NMCC expected-advantage
+  gain, entropy, deterministic action diversity, and held-out objective cost
+  together. None is sufficient alone to claim convergence or foresight.
+
+## Current priority — v49 coherent NMCC policy iteration (2026-10-06)
+
+- [x] Align the NMCC E-step prior with the raw masked actor optimized by the
+  M-step; keep temperature and uniform mixing solely in behavior exploration.
+- [x] Delete persistent actor-target replay so targets generated by old actor
+  priors and continuation critics cannot train a new policy iteration.
+- [x] Delete the separate continuation replay learner and use the shared
+  current-policy critic consistently in Stage P.
+- [x] Pass all 290 tests and complete a fresh 2E + 6P staged smoke plus matched
+  evaluation. All six actor fits reduced target KL and increased expected
+  NMCC advantage; exploration decayed from `0.35` to `0.02`.
+- [ ] Run the 2,500-person 16E + 80P v49 curriculum with independent training
+  seeds. The smoke checkpoint remains below random and objective-greedy, so do
+  not claim policy improvement from optimizer diagnostics alone.
+- [ ] In the long run, require the current-policy continuation critic to gain
+  positive held-out/on-policy explained variance and material branch-ranking
+  influence. If it does not, diagnose the value target and sample efficiency;
+  do not restore stale continuation replay.
+- [ ] Reboot macOS before the next expensive campaign to reap the 25 historical
+  `UE` workers that PID 1 did not clear after exact TERM and KILL signals.
+
+## Current priority — v50 simulator-graded rollout policy iteration (2026-10-06)
+
+- [x] Replace the four-cell one-interval MPO/critic label with full-horizon,
+  same-snapshot, common-future simulator grading under a frozen continuation
+  actor.
+- [x] Initialize from the exact objective-greedy policy and learn only a neural
+  correction by inverse-variance-weighted paired regression.
+- [x] Give neglected feasible cells bounded, persistent coverage through two
+  least-evaluated panel slots; retain `nmccPiMaxBranches=0` as explicit
+  exhaustive evaluation rather than a hidden fallback.
+- [x] Preserve the random-reference reward, complete ledger, observations,
+  simulator and evaluation objective; evaluate the fixed random-policy
+  potential directly in the one-stage learner.
+- [x] Complete a 250-person smoke and verify nonzero actor/representation
+  gradients, `0.81–0.85` pairwise fit accuracy, positive rollout-score gains,
+  decayed exploration, zero critic updates, and 15/16 cell coverage (the last
+  cell had no feasible shelter candidate).
+- [ ] Run the 96-episode, 2,500-person v50 curriculum with at least three
+  independent training seeds, then perform matched deterministic evaluation
+  against objective-greedy, random, max-active and the online rollout teacher.
+- [ ] Report achieved improvement as `(J_random - J_RL) / (J_random -
+  J_rollout)` together with decision time, branch-panel coverage, pairwise
+  ranking accuracy and uncertainty. Do not infer policy quality from reward,
+  KL or fit accuracy alone.
+
+## Current priority — v51 residual correction and honest diagnostics (2026-10-06)
+
+- [x] Replace the saturating bounded residual with a zero-initialized,
+  unbounded linear correction to the fixed objective-greedy base score.
+- [x] Remove the obsolete categorical actor target and ensure every actor fit
+  uses all pair contrasts from only the current frozen-policy iteration.
+- [x] Report sampled behavior entropy separately from the raw temperature-one
+  actor entropy before and after fitting; apply no exploration transform during
+  deterministic evaluation.
+- [x] Report actual pairwise regression loss/accuracy before and after fitting,
+  raw residual magnitude, and exact actor-to-iteration-prior KL. Keep all of
+  these descriptive: no gate, rollback, fallback action, or safe controller.
+- [x] Remove the retired held-out controller gate and PPO KL threshold from
+  rollout-policy-iteration convergence and plots. Use complete branch coverage,
+  finite actor fits, complete rollout batches, and tail stationarity instead.
+- [x] Pass the full test suite and a fresh four-episode, 250-person integration
+  smoke with two loss-reducing actor updates, zero critic updates, no pending
+  actor transitions, and no persistent replay in the one-stage learner.
+- [ ] Run the 96-episode, 2,500-person v51 curriculum for at least three
+  independent policy seeds, then perform matched deterministic evaluation
+  against objective-greedy, uniform random, max-active, and the online rollout
+  teacher. The smoke is not evidence of benchmark superiority.
+- [ ] In the long run, plot behavior entropy, raw actor entropy, paired loss and
+  accuracy, residual RMS, actor KL, per-cell coverage, complete objective cost,
+  and deterministic action diversity together. Confirm that the residual
+  improves held-out cost beyond its objective-greedy base rather than merely
+  fitting noisy branch panels.
+
+## Current priority — v53 decision-aligned rollout policy iteration (2026-10-07)
+
+- [x] Preserve raw complete-cost magnitude across states with one
+  iteration-wide scale.
+- [x] Include the executed and objective-greedy base actions in every branch
+  panel and use four shared futures in the production curriculum.
+- [x] Replace unstable minimum-variance precision weights with regret divided
+  by median-stabilized paired standard error, so clear consequential wins drive
+  the actor.
+- [x] Bound worker protocol reads and close all partially constructed or
+  interrupted worker pools; verify repaired runs create no new orphans.
+- [x] Pass 166 focused tests and a matched smoke whose expected physical
+  rollout advantage moves in the correct direction.
+- [ ] Restart macOS to clear the historical uninterruptible workers before the
+  expensive campaign.
+- [ ] Run the 128-episode, 2,500-person curriculum in
+  `config/state_college_training_curriculum_2500_rollout_pi_v53.json` with at
+  least three independent policy seeds.
+- [ ] Evaluate deterministically on at least 30 matched scenarios against
+  objective-greedy, random, max-active, and the online rollout teacher. Report
+  forward-looking ablations at later decisions; do not infer foresight from
+  feature presence or one-update optimizer diagnostics.
+
+## Current priority — v55 categorical rollout policy iteration (2026-10-08)
+
+- [x] Replace pairwise regression as the primary actor loss with the complete
+  categorical `KL(q || pi_theta)` M-step.
+- [x] Keep objective-greedy as the zero-residual initial policy and constrain
+  each simulator-graded improvement target to `KL(q || pi_old) <= 0.05`.
+- [x] Use four-episode policy iterations and discard actor targets immediately
+  after each iteration; do not serialize or restore stale actor replay.
+- [x] Grade the objective-greedy base, executed action, strongest base-score
+  contenders, and uniformly sampled feasible extras on four shared, complete-
+  horizon futures; exhaustively grade the first two installations.
+- [x] Make paired contrast uncertainty set the target temperature floor and
+  keep pairwise ranking accuracy diagnostic-only.
+- [x] Pass all 305 repository tests and validate both v55 curricula.
+- [ ] Complete the background 12-episode smoke and six matched scenarios
+  against every available benchmark.
+- [ ] If the smoke succeeds, complete the chained 128-episode, 2,500-person
+  training and 20-scenario deterministic matched evaluation. Assess held-out
+  cost, improvement over objective-greedy, forward-looking branch changes,
+  action diversity, target-fit KL, and retained-policy KL together.

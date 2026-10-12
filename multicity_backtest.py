@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pooled five-city PPO training and matched, city-stratified backtesting.
+"""Pooled multicity learner training and matched, city-stratified backtesting.
 
 One residual policy is trained on a balanced interleaving of city maps. Every
 city uses the identical observation fields, 8x8 regional context graph,
@@ -28,6 +28,7 @@ from TrainingCurriculum import (
     load_training_curriculum,
 )
 from PolicyCache import PolicyCache, source_fingerprint
+from RuntimeEnvironment import training_environment
 
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -42,28 +43,52 @@ DEFAULT_POOLED_LEARNING_RATE = 3e-4
 DEFAULT_TARGET_KL = 0.015
 POLICY_DYNAMICS_SOURCES = (
     "CAProcessor.py",
+    "Cell.py",
+    "CellPartitioning.py",
+    "CityProfiles.py",
     "Core.py",
+    "CounterfactualBranch.py",
     "DecisionInterface.py",
+    "Edge.py",
     "GNN.py",
+    "Guidance.py",
+    "GuidanceDatabase.py",
+    "Hazard.py",
     "HazardDatabase.py",
     "MapDatabase.py",
+    "NMCCPIConfig.py",
+    "NMCCPolicyImprovement.py",
     "NetworkCongestion.py",
+    "NetworkOptimization.py",
+    "Node.py",
     "OSMProcessor.py",
+    "Pedestrian.py",
     "PedestrianDatabase.py",
+    "Route.py",
     "RLBridge.py",
     "RewardProcessor.py",
+    "RuntimeEnvironment.py",
+    "Shelter.py",
+    "ShelterDatabase.py",
+    "ShelterTypes.py",
     "SocialForce.py",
+    "TrainingCurriculum.py",
+    "TrainingLogger.py",
 )
 DYNAMIC_STRATEGIES = (
     "rl",
+    "objective_greedy",
     "risk_reduction",
+    "route_saving",
     "heuristic",
     "hazard_weighted",
     "accessibility_deficit",
     "random",
+    "initial_only",
 )
-STATIC_STRATEGIES = ("initial_only", "static_greedy", "rl_precommit")
+STATIC_STRATEGIES = ("static_greedy", "rl_precommit")
 LEARNED_STRATEGIES = ("rl", "rl_precommit")
+PRIMARY_BENCHMARK_STRATEGY = "objective_greedy"
 
 
 def _curriculum_is_monotone_extension(previous: object, requested: object) -> bool:
@@ -253,6 +278,21 @@ def balanced_rollout_episodes(
     return city_count * int(math.ceil(minimum_episodes / city_count))
 
 
+def validate_curriculum_rollout(curriculum, rollout_episodes: int) -> None:
+    """Require an optional curriculum declaration to match runner batching."""
+    if curriculum is None:
+        return
+    declared = curriculum.learner_overrides.get("ppoRolloutEpisodes")
+    if declared is None:
+        return
+    if int(declared) != int(rollout_episodes):
+        raise ValueError(
+            "Curriculum ppoRolloutEpisodes "
+            f"({int(declared)}) does not match the runner-owned "
+            f"{int(rollout_episodes)}-episode rollout"
+        )
+
+
 def _city_overrides(
     suite: CitySuite,
     city: CityProfile,
@@ -394,17 +434,70 @@ def _equal_city_training_blocks(
                     "episode_return": float(
                         np.mean([float(row["episode_return"]) for row in block])
                     ),
-                    "entropy": float(
-                        np.mean([float(row["entropy"]) for row in block])
+                    "behavior_policy_entropy": float(
+                        np.mean(
+                            [
+                                float(row["behavior_policy_entropy"])
+                                for row in block
+                            ]
+                        )
                     ),
                     "approximate_kl": (
-                        float(update["approximate_kl"]) if update else 0.0
+                        float(update.get("approximate_kl", 0.0))
+                        if update
+                        else 0.0
                     ),
                     "gradient_norm": (
-                        float(update["gradient_norm"]) if update else 0.0
+                        float(update.get("gradient_norm", 0.0))
+                        if update
+                        else 0.0
+                    ),
+                    "actor_gradient_norm": (
+                        float(
+                            update.get(
+                                "actor_gradient_norm",
+                                update.get("gradient_norm", 0.0),
+                            )
+                        )
+                        if update
+                        else 0.0
                     ),
                     "policy_loss": float(update["policy_loss"]) if update else 0.0,
-                    "value_loss": float(update["value_loss"]) if update else 0.0,
+                    "value_loss": (
+                        float(update.get("value_loss", 0.0))
+                        if update
+                        else 0.0
+                    ),
+                    "rollout_pi_actor_enabled": (
+                        float(update.get("rollout_pi_actor_enabled", 0.0))
+                        if update
+                        else 0.0
+                    ),
+                    "rollout_pi_actor_kl": (
+                        float(update.get("rollout_pi_actor_kl", 0.0))
+                        if update
+                        else 0.0
+                    ),
+                    "rollout_pi_target_kl_before": (
+                        float(update.get("rollout_pi_target_kl_before", 0.0))
+                        if update
+                        else 0.0
+                    ),
+                    "rollout_pi_target_kl_after": (
+                        float(update.get("rollout_pi_target_kl_after", 0.0))
+                        if update
+                        else 0.0
+                    ),
+                    "rollout_pi_target_coverage": (
+                        float(update.get("rollout_pi_target_coverage", 0.0))
+                        if update
+                        else 0.0
+                    ),
+                    "actor_policy_entropy_after": (
+                        float(update.get("actor_policy_entropy_after", 0.0))
+                        if update
+                        else 0.0
+                    ),
                     "optimizer_updated": float(update is not None),
                     "rollout_episodes_pending": float(
                         block[-1].get("rollout_episodes_pending", 0.0)
@@ -424,7 +517,7 @@ def _multicity_training_convergence(
     shift_threshold: float,
     target_kl: float,
 ) -> dict:
-    """Audit stationarity on equal-city means while retaining PPO diagnostics."""
+    """Audit stationarity on equal-city means with learner-specific diagnostics."""
     from backtest import _training_convergence
 
     blocks = _equal_city_training_blocks(rows, cities)
@@ -449,10 +542,21 @@ def _multicity_training_convergence(
         policy["training_episodes"] = int(episode_counts[policy_id])
         policy["window_equal_city_blocks"] = int(policy.pop("window_episodes"))
         policy["episodes"] = int(episode_counts[policy_id])
+    rollout_pi = any(
+        policy.get("convergence_mode")
+        == "rollout_policy_iteration_tail_stationarity"
+        for policy in result["policies"]
+    )
     result["definition"] = (
-        "Every policy has the minimum episode count, finite PPO diagnostics, a "
-        "complete on-policy rollout, stationary equal-city block-mean tail return, "
-        "and no more than 10% tail optimizer events above target KL."
+        "Every policy has the minimum episode count, finite diagnostics, a complete "
+        "rollout and stationary equal-city block-mean tail return. Simulator-graded "
+        "rollout policy iteration additionally requires complete branch targets and "
+        "finite pairwise actor fits; its KL is descriptive and is not a gate."
+        if rollout_pi
+        else
+        "Every policy has the minimum episode count, finite PPO diagnostics, a complete "
+        "on-policy rollout, stationary equal-city block-mean tail return, and no more "
+        "than 10% tail optimizer events above target KL."
     )
     result["thresholds"]["minimum_equal_city_blocks"] = minimum_blocks
     result["thresholds"]["minimum_episodes"] = int(minimum_episodes)
@@ -483,10 +587,10 @@ def _stratified_paired_analysis(
     scenarios_per_city = None
     for city in cities:
         city_rows = [row for row in rows if row.get("city_id") == city.city_id]
-        heuristic = {
+        benchmark = {
             int(row["city_scenario_replication"]): row
             for row in city_rows
-            if row["deployment_strategy"] == "heuristic"
+            if row["deployment_strategy"] == PRIMARY_BENCHMARK_STRATEGY
         }
         rl = {
             (
@@ -497,7 +601,7 @@ def _stratified_paired_analysis(
             if row["deployment_strategy"] == "rl"
         }
         city_policy_ids = sorted({key[0] for key in rl})
-        city_scenarios = sorted(heuristic)
+        city_scenarios = sorted(benchmark)
         if not city_policy_ids or not city_scenarios:
             raise RuntimeError(f"Missing paired evaluation rows for {city.city_id}")
         if policy_ids is None:
@@ -513,7 +617,7 @@ def _stratified_paired_analysis(
         ]
         if missing:
             raise RuntimeError(f"Incomplete evaluation matrix for {city.city_id}: {missing[:3]}")
-        city_matrices[city.city_id] = (heuristic, rl, city_scenarios)
+        city_matrices[city.city_id] = (benchmark, rl, city_scenarios)
 
     output = []
     fixed_policy_inference = len(policy_ids) == 1
@@ -526,9 +630,9 @@ def _stratified_paired_analysis(
     for metric_index, (metric, direction) in enumerate(metrics.items()):
         improvements = []
         rl_city_means = []
-        heuristic_city_means = []
+        benchmark_city_means = []
         for city in cities:
-            heuristic, rl, scenarios = city_matrices[city.city_id]
+            benchmark, rl, scenarios = city_matrices[city.city_id]
             rl_values = np.asarray(
                 [
                     [
@@ -539,17 +643,17 @@ def _stratified_paired_analysis(
                 ],
                 dtype=float,
             )
-            heuristic_values = np.asarray(
+            benchmark_values = np.asarray(
                 [
-                    _evaluation_metric(heuristic[scenario], metric)
+                    _evaluation_metric(benchmark[scenario], metric)
                     for scenario in scenarios
                 ],
                 dtype=float,
             )
-            difference = rl_values - heuristic_values[None, :]
+            difference = rl_values - benchmark_values[None, :]
             improvements.append(difference if direction == "higher" else -difference)
             rl_city_means.append(float(rl_values.mean()))
-            heuristic_city_means.append(float(heuristic_values.mean()))
+            benchmark_city_means.append(float(benchmark_values.mean()))
 
         cube = np.stack(improvements, axis=0)  # city, policy, scenario
         rng = np.random.default_rng(_seed(launch_seed, 191, metric_index))
@@ -587,8 +691,9 @@ def _stratified_paired_analysis(
                 "inferentially_eligible": inferentially_eligible,
                 "inference_scope": inference_scope,
                 "paired_replications": int(cube.size),
+                "benchmark_strategy": PRIMARY_BENCHMARK_STRATEGY,
                 "rl_mean": float(np.mean(rl_city_means)),
-                "heuristic_mean": float(np.mean(heuristic_city_means)),
+                "benchmark_mean": float(np.mean(benchmark_city_means)),
                 "mean_rl_improvement": float(cube.mean()),
                 "bootstrap_95_ci_low": float(lower),
                 "bootstrap_95_ci_high": float(upper),
@@ -641,7 +746,74 @@ def _all_paired_analysis(
             row["city_id"] = city.city_id
             row["city_scale_rank"] = city.scale_rank
         result.extend(analysis)
+    populations = sorted(
+        {
+            int(row["evaluation_population"])
+            for row in rows
+            if str(row.get("evaluation_population", "")).strip()
+        }
+    )
+    for population_index, population in enumerate(populations):
+        population_rows = [
+            row
+            for row in rows
+            if int(row.get("evaluation_population", -1)) == population
+        ]
+        population_analysis = _paired_analysis(
+            population_rows,
+            _seed(launch_seed, 193, population_index),
+            draws,
+        )
+        for row in population_analysis:
+            row["scope"] = "population"
+            row["city_id"] = "ALL"
+            row["evaluation_population"] = int(population)
+        result.extend(population_analysis)
     return result
+
+
+def _all_benchmark_analysis(
+    rows: list[dict],
+    *,
+    launch_seed: int,
+    draws: int,
+    benchmark_strategies: tuple[str, ...],
+) -> list[dict]:
+    """Compare deterministic RL with every comparator overall and by population."""
+    from backtest import _benchmark_analysis
+
+    output = _benchmark_analysis(
+        rows,
+        _seed(launch_seed, 194),
+        draws,
+        benchmark_strategies=benchmark_strategies,
+    )
+    for row in output:
+        row["scope"] = "all_evaluation_scenarios"
+    populations = sorted(
+        {
+            int(row["evaluation_population"])
+            for row in rows
+            if str(row.get("evaluation_population", "")).strip()
+        }
+    )
+    for population_index, population in enumerate(populations):
+        population_rows = [
+            row
+            for row in rows
+            if int(row.get("evaluation_population", -1)) == population
+        ]
+        analysis = _benchmark_analysis(
+            population_rows,
+            _seed(launch_seed, 195, population_index),
+            draws,
+            benchmark_strategies=benchmark_strategies,
+        )
+        for row in analysis:
+            row["scope"] = "population"
+            row["evaluation_population"] = int(population)
+        output.extend(analysis)
+    return output
 
 
 def _learning_assessment(
@@ -655,39 +827,45 @@ def _learning_assessment(
         for row in analysis
         if row.get("scope") == "macro_all_cities"
     }
-    city_returns = [
+    primary_metric = "objective_normalized_cost"
+    casualty_metric = "expected_casualties"
+    city_objectives = [
         row
         for row in analysis
-        if row.get("scope") == "city" and row.get("metric") == "episode_return"
+        if row.get("scope") == "city" and row.get("metric") == primary_metric
     ]
-    city_casualties = [
+    city_expected_casualties = [
         row
         for row in analysis
-        if row.get("scope") == "city" and row.get("metric") == "casualty"
+        if row.get("scope") == "city" and row.get("metric") == casualty_metric
     ]
     training_converged = bool(convergence.get("all_policies_converged", False))
-    evaluated = "episode_return" in macro
+    evaluated = primary_metric in macro
     inferentially_eligible = bool(performance.get("inferentially_eligible", False))
-    return_improvement = (
-        float(macro["episode_return"]["mean_rl_improvement"])
+    objective_improvement = (
+        float(macro[primary_metric]["mean_rl_improvement"])
         if evaluated
         else None
     )
-    casualty_improvement = (
-        float(macro["casualty"]["mean_rl_improvement"])
-        if "casualty" in macro
+    expected_casualty_improvement = (
+        float(macro[casualty_metric]["mean_rl_improvement"])
+        if casualty_metric in macro
         else None
     )
-    all_city_returns_nonnegative = bool(
-        city_returns
-        and all(float(row["mean_rl_improvement"]) >= 0.0 for row in city_returns)
+    all_city_objectives_nonnegative = bool(
+        city_objectives
+        and all(float(row["mean_rl_improvement"]) >= 0.0 for row in city_objectives)
     )
-    all_city_casualties_nonworsening = bool(
-        city_casualties
-        and all(float(row["mean_rl_improvement"]) >= 0.0 for row in city_casualties)
+    all_city_expected_casualties_nonworsening = bool(
+        city_expected_casualties
+        and all(
+            float(row["mean_rl_improvement"]) >= 0.0
+            for row in city_expected_casualties
+        )
     )
-    aggregate_casualty_nonworsening = bool(
-        casualty_improvement is not None and casualty_improvement >= 0.0
+    aggregate_expected_casualty_nonworsening = bool(
+        expected_casualty_improvement is not None
+        and expected_casualty_improvement >= 0.0
     )
 
     if not training_converged:
@@ -697,7 +875,7 @@ def _learning_assessment(
     elif not inferentially_eligible:
         status = (
             "descriptively_promising_not_confirmed"
-            if return_improvement is not None and return_improvement > 0.0
+            if objective_improvement is not None and objective_improvement > 0.0
             else "learning_not_demonstrated"
         )
     else:
@@ -705,9 +883,9 @@ def _learning_assessment(
 
     qualifies_as_learning_well = bool(
         status == "rl_superior"
-        and all_city_returns_nonnegative
-        and aggregate_casualty_nonworsening
-        and all_city_casualties_nonworsening
+        and all_city_objectives_nonnegative
+        and aggregate_expected_casualty_nonworsening
+        and all_city_expected_casualties_nonworsening
     )
     return {
         "status": status,
@@ -715,17 +893,25 @@ def _learning_assessment(
         "evaluation_available": evaluated,
         "inferentially_eligible": inferentially_eligible,
         "inference_scope": performance.get("inference_scope"),
-        "mean_return_improvement": return_improvement,
-        "mean_casualty_improvement": casualty_improvement,
-        "all_city_return_point_estimates_nonnegative": all_city_returns_nonnegative,
-        "aggregate_casualty_point_estimate_nonworsening": aggregate_casualty_nonworsening,
-        "all_city_casualty_point_estimates_nonworsening": all_city_casualties_nonworsening,
+        "mean_objective_cost_improvement": objective_improvement,
+        "mean_expected_casualty_improvement": expected_casualty_improvement,
+        "all_city_objective_improvements_nonnegative": (
+            all_city_objectives_nonnegative
+        ),
+        "aggregate_expected_casualty_nonworsening": (
+            aggregate_expected_casualty_nonworsening
+        ),
+        "all_city_expected_casualty_improvements_nonnegative": (
+            all_city_expected_casualties_nonworsening
+        ),
         "qualifies_as_learning_well_cross_city": qualifies_as_learning_well,
         "criterion": (
             "A 'learning well cross-city' conclusion requires converged training, a "
-            "superior return under the declared inference scope, nonnegative return "
-            "point estimates in every city, and nonworsening aggregate and city "
-            "casualty point estimates. With one policy, this conclusion is explicitly "
+            "superior normalized objective cost under the declared inference scope, "
+            "nonnegative objective improvements in every city, and nonworsening "
+            "expected-casualty intensity in aggregate and every city. Realized "
+            "casualties remain a separately reported stochastic outcome. With one "
+            "policy, this conclusion is explicitly "
             "conditional on that frozen trained checkpoint."
         ),
     }
@@ -946,7 +1132,7 @@ def _parse_args(argv=None):
     )
     parser.add_argument(
         "--strategies",
-        default="rl,risk_reduction,heuristic,hazard_weighted,accessibility_deficit,random",
+        default="rl,objective_greedy,heuristic,random,initial_only",
     )
     parser.add_argument(
         "--hazard-mode",
@@ -963,7 +1149,10 @@ def _parse_args(argv=None):
     parser.add_argument("--convergence-trend-threshold", type=float, default=0.50)
     parser.add_argument("--convergence-shift-threshold", type=float, default=0.50)
     parser.add_argument("--visualize-eval-pairs-per-city", type=int, default=1)
-    parser.add_argument("--visualization-strategies", default="rl,heuristic")
+    parser.add_argument(
+        "--visualization-strategies",
+        default="rl,objective_greedy",
+    )
     parser.add_argument("--visualization-policy-replication", type=int, default=1)
     parser.add_argument("--visualization-milestones", default="quartiles")
     parser.add_argument("--override", action="append", default=[], metavar="NAME=VALUE")
@@ -1020,8 +1209,8 @@ def _parse_args(argv=None):
     if invalid:
         parser.error(f"unsupported strategies: {invalid}")
     if not args.train_only and not args.validate_profiles_only and not args.preflight_maps_only:
-        if not {"rl", "heuristic"}.issubset(strategies):
-            parser.error("evaluation requires rl and heuristic")
+        if not {"rl", PRIMARY_BENCHMARK_STRATEGY}.issubset(strategies):
+            parser.error("evaluation requires rl and objective_greedy")
     args.strategies = strategies
     args.visualization_strategies = tuple(
         item.strip().lower()
@@ -1065,7 +1254,25 @@ def main(argv=None) -> int:
             "ppoRolloutEpisodes is determined by the number of selected cities; "
             "do not set it with --override"
         )
-    rollout_episodes = balanced_rollout_episodes(len(cities))
+    training_curriculum = (
+        load_training_curriculum(args.training_curriculum)
+        if args.training_curriculum
+        else None
+    )
+    declared_rollout = (
+        None
+        if training_curriculum is None
+        else training_curriculum.learner_overrides.get("ppoRolloutEpisodes")
+    )
+    rollout_episodes = (
+        balanced_rollout_episodes(len(cities))
+        if declared_rollout is None
+        else int(declared_rollout)
+    )
+    if rollout_episodes <= 0 or rollout_episodes % len(cities) != 0:
+        raise ValueError(
+            "Curriculum ppoRolloutEpisodes must contain complete city blocks"
+        )
     overrides_by_city = {
         city.city_id: _city_overrides(suite, city, user_overrides, args.hazard_mode)
         for city in cities
@@ -1073,10 +1280,21 @@ def main(argv=None) -> int:
     for overrides in overrides_by_city.values():
         overrides["ppoRolloutEpisodes"] = rollout_episodes
         overrides["learningRate"] = float(args.learning_rate)
-    training_curriculum = (
-        load_training_curriculum(args.training_curriculum)
-        if args.training_curriculum
-        else None
+    validate_curriculum_rollout(training_curriculum, rollout_episodes)
+    final_evaluation_variants = (
+        ()
+        if training_curriculum is None
+        else tuple(training_curriculum.stages[-1].variants)
+    )
+    final_evaluation_cycle = tuple(
+        variant
+        for variant in final_evaluation_variants
+        for _ in range(int(variant.weight))
+    )
+    interface_variant_overrides = (
+        {}
+        if not final_evaluation_variants
+        else dict(final_evaluation_variants[0].overrides)
     )
     evaluation_overrides_by_city = {
         city_id: {
@@ -1086,6 +1304,7 @@ def main(argv=None) -> int:
                 if training_curriculum is not None
                 else {}
             ),
+            **interface_variant_overrides,
         }
         for city_id, overrides in overrides_by_city.items()
     }
@@ -1101,6 +1320,9 @@ def main(argv=None) -> int:
         )
     map_or_profile_only = bool(
         args.validate_profiles_only or args.preflight_maps_only
+    )
+    runtime_environment = (
+        None if map_or_profile_only else training_environment()
     )
     schedule = (
         ()
@@ -1122,7 +1344,7 @@ def main(argv=None) -> int:
     if not map_or_profile_only and total_train_episodes % rollout_episodes != 0:
         raise ValueError(
             f"Total training episodes ({total_train_episodes}) must be a multiple of "
-            f"the {rollout_episodes}-episode city-balanced PPO rollout"
+            f"the {rollout_episodes}-episode city-balanced learner batch"
         )
 
     launch_id = args.launch_id or f"multicity_backtest_seed_{args.launch_seed}"
@@ -1283,12 +1505,11 @@ def main(argv=None) -> int:
         GLOBAL_FEATURE_NAMES,
         MOMENTUM_FEATURE_NAMES,
     )
-    from GNN import HEURISTIC_PRIOR_SCALE, RESIDUAL_LOGIT_BOUND
     from RLBridge import DEFAULT_ENTROPY_COEF, DEFAULT_ROLLOUT_EPISODES
 
     if int(DEFAULT_ROLLOUT_EPISODES) != MINIMUM_ROLLOUT_EPISODES:
         raise RuntimeError(
-            "multicity runner and RL bridge disagree on the minimum PPO rollout length"
+            "multicity runner and RL bridge disagree on the learner batch length"
         )
 
     training_summary_path = os.path.join(launch_dir, "training_episode_summary.csv")
@@ -1301,7 +1522,10 @@ def main(argv=None) -> int:
     }
     diagnostics_paths = {
         policy: os.path.join(
-            launch_dir, "policies", f"policy_{policy:03d}", "ppo_diagnostics.csv"
+            launch_dir,
+            "policies",
+            f"policy_{policy:03d}",
+            "learner_diagnostics.csv",
         )
         for policy in range(1, args.policy_replicates + 1)
     }
@@ -1359,7 +1583,8 @@ def main(argv=None) -> int:
         os.path.abspath(__file__),
         *(argv or sys.argv[1:]),
     ]
-    manifest = {
+    effective_learner = next(iter(evaluation_overrides_by_city.values()))
+    active_manifest = {
         "schema_version": 1,
         "status": "running",
         **_manifest_time_fields(previous_manifest),
@@ -1388,43 +1613,86 @@ def main(argv=None) -> int:
             )
             for scheduled in schedule
         ],
+        "evaluation_variant_schedule": [
+            {
+                "variant_id": variant.variant_id,
+                "weight": int(variant.weight),
+                "overrides": dict(variant.overrides),
+            }
+            for variant in final_evaluation_variants
+        ],
+        "evaluation_policy": (
+            "deterministic_argmax_on_matched_final_stage_scenarios"
+        ),
         "reward_equation": (
-            "r_k=(Delta safe_k-3 Delta casualty_k)/P"
-            "-active_person_time_k/(P H)"
-            "-hazard_exposure_person_time_k/(P H)"
+            "r_k=[V_uniform(s_k)-gamma^dt V_uniform(s_{k+1})-C_complete,k]"
+            "/(P H_minutes)"
         ),
         "evaluation_objective_equation": (
-            "R=(safe_completed-3 casualty)/P"
-            "-full_episode_active_person_time/(P H)"
-            "-full_episode_hazard_exposure_person_time/(P H)"
+            "cost=[plain_time+hazard_exposure_time+expected_casualty_"
+            "person_time+clearance_tail_person_time+terminal_residual]"
+            "/(P H_minutes); lower_is_better; display_score=1/(1+cost)"
+        ),
+        "terminal_residual_in_learning_reward": (
+            "complete_population_ledger_in_final_interval_cost"
+        ),
+        "casualty_role": (
+            "expected_casualty_intensity_is_priced_in_the_objective;_"
+            "realized_casualties_are_reported_as_a_secondary_stochastic_outcome"
         ),
         "policy_design": {
             "pooled_across_cities": bool(len(cities) > 1),
             "city_identifier_observed_by_policy": False,
             "actor": (
-                "shared bounded active-population-prior residual exact-candidate "
-                "scorer with relational graph context and an episode-level LSTM"
+                "shared neural candidate scorer with relational graph context "
+                "and an episode-level LSTM"
             ),
             "action_space": "exact feasible shelter candidate",
-            "heuristic_prior_logit_scale": float(HEURISTIC_PRIOR_SCALE),
-            "residual_logit_bound": float(RESIDUAL_LOGIT_BOUND),
+            "heuristic_prior_logit_scale": float(
+                effective_learner.get(
+                    "actorPriorScale", 0.0
+                )
+            ),
+            "residual_correction": "unbounded_linear_actor_readout",
             "decision_interval_timesteps": int(
-                next(iter(overrides_by_city.values()))["shelterActionInterval"]
+                effective_learner["shelterActionInterval"]
             ),
             "transition_boundary": "next_executed_action_or_true_environment_terminal",
             "final_action_accounting": "complete_to_environment_terminal",
             "recurrent_sequence_sampling": "whole_episode",
-            "critic_factorization": "safe_casualty_time_exposure_heads",
-            "rollout_episodes": int(rollout_episodes),
+            "critic_role": (
+                "not_used_in_policy_improvement; Stage E fits only the fixed "
+                "random-reference value and environment-momentum models"
+            ),
+            "learner_batch_episodes": int(rollout_episodes),
             "rollout_city_blocks": int(rollout_episodes // len(cities)),
             "every_optimizer_batch_is_city_balanced": True,
-            "learning_rate": float(args.learning_rate),
-            "entropy_coefficient": float(DEFAULT_ENTROPY_COEF),
+            "actor_learning_rate": float(
+                effective_learner.get("actorLearningRate", args.learning_rate)
+            ),
+            "critic_learning_rate": float(
+                effective_learner.get("criticLearningRate", args.learning_rate)
+            ),
+            "entropy_coefficient_start": float(
+                effective_learner.get("entropyCoefficientStart", DEFAULT_ENTROPY_COEF)
+            ),
+            "entropy_coefficient_end": float(
+                effective_learner.get("entropyCoefficientEnd", DEFAULT_ENTROPY_COEF)
+            ),
             "entropy_normalization": "log_feasible_action_count",
-            "kl_control": "full_rollout_epoch_stop_and_adaptive_learning_rate",
+            "actor_optimizer": (
+                "categorical_cross_entropy_to_simulator_graded_"
+                "kl_constrained_rollout_target"
+            ),
+            "actor_target_replay": "none_iteration_local_targets_only",
+            "policy_kl_role": "descriptive_full_categorical_policy_change",
         },
         "estimand": {
-            "primary": "equal-city macro mean RL improvement over heuristic",
+            "primary": (
+                "equal-city macro mean RL improvement over complete-ledger "
+                "objective-greedy"
+            ),
+            "primary_benchmark_strategy": PRIMARY_BENCHMARK_STRATEGY,
             "cities_fixed_not_resampled": True,
             "policy_seeds_resampled": bool(args.policy_replicates > 1),
             "scenarios_resampled_within_city": True,
@@ -1441,18 +1709,42 @@ def main(argv=None) -> int:
         "git": _git_metadata(),
         "python": {"version": sys.version, "executable": sys.executable},
         "dependencies": _dependency_versions(),
+        "runtime_environment": runtime_environment,
         "policy_cache": {
             "enabled": not bool(args.no_policy_cache),
             "root": os.path.abspath(args.policy_cache_dir),
             "events": cache_events,
         },
     }
+    if args.eval_only:
+        # Evaluation is a second transaction over an already-complete training
+        # artifact.  Never replace the training status with ``running`` before
+        # evaluation succeeds: a failed rollout must not make a valid frozen
+        # checkpoint look like unfinished training.
+        if previous_manifest is None:
+            raise RuntimeError("Evaluation-only execution requires a training manifest")
+        manifest = dict(previous_manifest)
+        evaluation_attempt_path = os.path.join(
+            launch_dir, "evaluation_attempt_manifest.json"
+        )
+        evaluation_attempt = {
+            **active_manifest,
+            "status": "running",
+            "training_manifest_status": previous_manifest.get("status"),
+            "training_completed_utc": previous_manifest.get("completed_utc"),
+        }
+        _json_dump(evaluation_attempt_path, evaluation_attempt)
+    else:
+        manifest = active_manifest
+        evaluation_attempt_path = None
+        evaluation_attempt = None
     if continuation_provenance is not None:
         manifest["training_continuation"] = continuation_provenance
         continuation_history.append(continuation_provenance)
     if continuation_history:
         manifest["training_continuation_history"] = continuation_history
-    _json_dump(manifest_path, manifest)
+    if not args.eval_only:
+        _json_dump(manifest_path, manifest)
 
     training_rows = (
         _read_csv(training_summary_path)
@@ -1507,6 +1799,42 @@ def main(argv=None) -> int:
                 )
                 if isinstance(scheduled, CurriculumEpisode):
                     episode_overrides.update(scheduled.stage_overrides)
+                    stage_definition = training_curriculum.stages[
+                        int(scheduled.stage_index) - 1
+                    ]
+                    stage_total_episodes = int(
+                        stage_definition.episodes_per_city * len(cities)
+                    )
+                    stage_total_updates = stage_total_episodes // int(
+                        rollout_episodes
+                    )
+                    episode_overrides.update(
+                        {
+                            "trainingStageId": str(scheduled.stage_id),
+                            "trainingStageUpdateIndex": int(
+                                (int(scheduled.stage_replication) - 1)
+                                // int(rollout_episodes)
+                            ),
+                            "trainingStageTotalUpdates": int(
+                                stage_total_updates
+                            ),
+                        }
+                    )
+                else:
+                    episode_overrides.update(
+                        {
+                            "trainingStageId": "joint",
+                            "trainingStageUpdateIndex": int(
+                                (episode - 1) // int(rollout_episodes)
+                            ),
+                            "trainingStageTotalUpdates": int(
+                                total_train_episodes // int(rollout_episodes)
+                            ),
+                        }
+                    )
+                # The runner owns rollout batching. A curriculum may declare
+                # the same value for auditability but cannot replace it.
+                episode_overrides["ppoRolloutEpisodes"] = rollout_episodes
                 phase_parts = [
                     launch_id,
                     "training",
@@ -1625,6 +1953,7 @@ def main(argv=None) -> int:
 
     evaluation_rows = []
     analysis = []
+    benchmark_analysis = []
     scale_trends = []
     parity = None
     performance = {"status": "not_evaluated"}
@@ -1633,6 +1962,18 @@ def main(argv=None) -> int:
         for city in cities:
             for city_replication in range(1, args.eval_replications_per_city + 1):
                 global_replication += 1
+                evaluation_variant = (
+                    None
+                    if not final_evaluation_cycle
+                    else final_evaluation_cycle[
+                        (city_replication - 1) % len(final_evaluation_cycle)
+                    ]
+                )
+                evaluation_overrides = dict(
+                    evaluation_overrides_by_city[city.city_id]
+                )
+                if evaluation_variant is not None:
+                    evaluation_overrides.update(evaluation_variant.overrides)
                 scenario_seed = _seed(args.launch_seed, 500 + city.scale_rank, city_replication)
                 evaluation_policy_seed = _seed(
                     args.launch_seed, 600 + city.scale_rank, city_replication
@@ -1682,7 +2023,7 @@ def main(argv=None) -> int:
                             policy_seed=evaluation_policy_seed,
                             checkpoint_path=checkpoint_paths[checkpoint_index],
                             diagnostics_path=diagnostics_paths[checkpoint_index],
-                            overrides=evaluation_overrides_by_city[city.city_id],
+                            overrides=evaluation_overrides,
                             visualization_enabled=visualize,
                             visualization_milestones=args.visualization_milestones,
                         )
@@ -1692,6 +2033,14 @@ def main(argv=None) -> int:
                                 "city_id": city.city_id,
                                 "city_scale_rank": city.scale_rank,
                                 "city_scenario_replication": city_replication,
+                                "evaluation_variant_id": (
+                                    ""
+                                    if evaluation_variant is None
+                                    else evaluation_variant.variant_id
+                                ),
+                                "evaluation_population": int(
+                                    evaluation_overrides["pedVol"]
+                                ),
                             }
                         )
                         evaluation_rows.append(row)
@@ -1703,6 +2052,18 @@ def main(argv=None) -> int:
             evaluation_rows, cities, args.launch_seed, args.bootstrap_draws
         )
         _write_csv(os.path.join(launch_dir, "paired_comparison_by_city.csv"), analysis)
+        benchmark_analysis = _all_benchmark_analysis(
+            evaluation_rows,
+            launch_seed=args.launch_seed,
+            draws=args.bootstrap_draws,
+            benchmark_strategies=tuple(
+                strategy for strategy in args.strategies if strategy != "rl"
+            ),
+        )
+        _write_csv(
+            os.path.join(launch_dir, "benchmark_comparison_by_population.csv"),
+            benchmark_analysis,
+        )
         macro = [row for row in analysis if row["scope"] == "macro_all_cities"]
         _write_paper_table(os.path.join(launch_dir, "paired_comparison_macro.md"), macro)
         performance = _performance_assessment(
@@ -1747,13 +2108,21 @@ def main(argv=None) -> int:
             "artifacts": {
                 "city_profile_snapshot": profile_snapshot_path,
                 "training_summary": training_summary_path,
-                "ppo_diagnostics": diagnostics_paths,
+                "learner_diagnostics": diagnostics_paths,
                 "training_convergence": convergence_path,
                 "learning_assessment": learning_assessment_path,
                 "evaluation_summary": evaluation_summary_path if evaluation_rows else None,
                 "paired_comparison": (
                     os.path.join(launch_dir, "paired_comparison_by_city.csv")
                     if analysis
+                    else None
+                ),
+                "benchmark_comparison": (
+                    os.path.join(
+                        launch_dir,
+                        "benchmark_comparison_by_population.csv",
+                    )
+                    if benchmark_analysis
                     else None
                 ),
                 "paper_table": (
@@ -1771,6 +2140,17 @@ def main(argv=None) -> int:
         }
     )
     _json_dump(manifest_path, manifest)
+    if evaluation_attempt_path is not None and evaluation_attempt is not None:
+        evaluation_attempt.update(
+            {
+                "status": "complete",
+                "completed_utc": manifest["completed_utc"],
+                "performance_assessment": performance,
+                "learning_assessment": learning_assessment,
+                "artifacts": manifest["artifacts"],
+            }
+        )
+        _json_dump(evaluation_attempt_path, evaluation_attempt)
     print(f"[COMPLETE] artifacts={launch_dir}", flush=True)
     return 0
 

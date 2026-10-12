@@ -41,15 +41,13 @@ EXACT_FIELDS = (
 
 FLOAT_FIELDS = (
     "episode_return",
-    "objective_episode_return",
-    "safe_completion_reward",
-    "casualty_penalty",
-    "risk_time_penalty",
-    "normalized_risk_weighted_person_time",
+    "objective_normalized_cost",
+    "objective_episode_score",
+    "expected_casualties",
     "restricted_mean_time_to_safety",
     "mean_safe_completion_time",
     "mean_evacuation_time",
-    "risk_weighted_person_time",
+    "realized_hazard_weighted_time_to_safety",
 )
 
 
@@ -201,7 +199,12 @@ def run_audit(
         policy_replication = int(original.get("policy_replication", 0))
         checkpoint_index = policy_replication if strategy == "rl" else 1
         checkpoint = launch_dir / "policies" / f"policy_{checkpoint_index:03d}" / "regional_policy.pt"
-        diagnostics = launch_dir / "policies" / f"policy_{checkpoint_index:03d}" / "ppo_diagnostics.csv"
+        diagnostics = (
+            launch_dir
+            / "policies"
+            / f"policy_{checkpoint_index:03d}"
+            / "learner_diagnostics.csv"
+        )
         rerun = _run_episode(
             replication=int(original["replication"]),
             machine="reproduction",

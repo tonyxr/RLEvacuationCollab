@@ -1,0 +1,116 @@
+{
+  "schema_version": 2,
+  "curriculum_id": "state_college_n2500_random_centered_foresight_v37_160",
+  "description": "State College 160-episode staged curriculum with exactly 2500 individual pedestrians. Stage E learns natural environment dynamics, stage A learns decision-interval installation effects, and stage F jointly learns the dedicated NMCC continuation value by backward returns across all eight sequential installations. Every episode starts with two shelters, installs eight equal 270-person shelters at t=15,30,...,120, continues through t=180, and provides 2700 total places. Exploration, entropy, temperature, and actor/critic learning rates reset and decay independently within every stage. The signed learning reward compares the chosen shelter with the uniform feasible random-site average; deterministic matched evaluation uses realised hazard-weighted time to safety.",
+  "learner_overrides": {
+    "cellPartitionMode": "population_density_adaptive",
+    "cellPartitionMinWidthFraction": 0.0001,
+    "stopTime": 181,
+    "shelterActionInterval": 15,
+    "requirePopulationMatchedShelterCapacity": true,
+    "shelterCapacitySurplus": 200,
+    "ppoRolloutEpisodes": 4,
+    "nmccEnabled": false,
+    "nmccPolicyImprovement": true,
+    "nmccCounterfactualHorizon": 0,
+    "nmccCounterfactualWeight": 1.0,
+    "nmccJointCounterfactualWeight": 1.0,
+    "nmccInterventionCost": 0.0,
+    "nmccPiEpsilon": 0.25,
+    "nmccPiEtaMin": 0.02,
+    "nmccPiTapes": 2,
+    "nmccPiWorkers": 4,
+    "nmccPiBranchHorizon": 15,
+    "nmccPiContinuationEnabled": true,
+    "nmccPiContinuationLossCoefficient": 1.0,
+    "nmccPiActorEpochs": 256,
+    "nmccPiFitTolerance": 0.01,
+    "nmccNaturalLossCoefficient": 1.0,
+    "actorPrior": "none",
+    "actorPriorScale": 0.0,
+    "representationMode": "shared_multitask",
+    "actorLearningRate": 0.001,
+    "criticLearningRate": 0.001,
+    "actorPpoEpochs": 4,
+    "criticPpoEpochs": 8,
+    "learningRewardScale": 10.0,
+    "learningRateSchedule": "cosine",
+    "learningRateWarmupUpdates": 0,
+    "learningRateDecayUpdates": 34,
+    "actorLearningRateMinimumFraction": 0.1,
+    "criticLearningRateMinimumFraction": 0.1,
+    "entropyCoefficientStart": 0.01,
+    "entropyCoefficientEnd": 0.001,
+    "explorationDecayUpdates": 8,
+    "explorationSchedule": "exponential_half_life",
+    "explorationRateStart": 0.3,
+    "explorationRateEnd": 0.02,
+    "actionTemperatureStart": 1.25,
+    "actionTemperatureEnd": 0.8
+  },
+  "stages": [
+    {
+      "stage_id": "E",
+      "label": "environment_dynamics_pretraining",
+      "episodes_per_city": 24,
+      "variants": [
+        {
+          "variant_id": "state_college_n2500_environment",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 2500,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "initShelterVol": 2,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 270
+          }
+        }
+      ]
+    },
+    {
+      "stage_id": "A",
+      "label": "decision_interval_action_learning",
+      "episodes_per_city": 48,
+      "variants": [
+        {
+          "variant_id": "state_college_n2500_action",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 2500,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "initShelterVol": 2,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 270
+          }
+        }
+      ]
+    },
+    {
+      "stage_id": "F",
+      "label": "backward_continuation_foresight_learning",
+      "episodes_per_city": 88,
+      "variants": [
+        {
+          "variant_id": "state_college_n2500_foresight",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 2500,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "initShelterVol": 2,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 270
+          }
+        }
+      ]
+    }
+  ]
+}

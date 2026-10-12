@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "curriculum_id": "state_college_2500_hwt_candidate_pair_v31_pilot32",
+  "description": "Thirty-two-episode prefix-equivalent pilot for version-31 direct recurrent PPO with hazard-weighted time-to-safety and exact common-noise candidate-pair credit. Learner, exploration, and optimization schedules match the first four rollout updates of the 104-episode training curriculum; only the stopping point is shortened for an empirical policy-movement test.",
+  "stages": [
+    {
+      "stage_id": "S1",
+      "label": "direct_recurrent_ppo_hwt_candidate_pair_credit_pilot",
+      "episodes_per_city": 32,
+      "variants": [
+        {
+          "variant_id": "state_college_2500_long_horizon_hwt_candidate_pair",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 2500,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "stopTime": 121,
+            "shelterActionInterval": 15,
+            "maxAdditionalShelters": 8,
+            "shelterCapacityToken": 350,
+            "ppoRolloutEpisodes": 8,
+            "nmccEnabled": true,
+            "nmccCounterfactualHorizon": 15,
+            "nmccCounterfactualWeight": 1.0,
+            "nmccJointCounterfactualWeight": 1.0,
+            "nmccInterventionCost": 0.0,
+            "nmccNaturalLossCoefficient": 0.0,
+            "nmccCausalLossCoefficient": 0.0,
+            "nmccDuelingLossCoefficient": 0.0,
+            "nmccGuidanceMaximum": 0.0,
+            "nmccTeacherCoefficient": 0.0,
+            "nmccNaturalPretrainRollouts": 0,
+            "nmccCausalPretrainRollouts": 0,
+            "nmccControllerWarmupRollouts": 0,
+            "actorPrior": "none",
+            "actorPriorScale": 0.0,
+            "representationMode": "actor_owned",
+            "actorLearningRate": 0.001,
+            "criticLearningRate": 0.001,
+            "actorPpoEpochs": 4,
+            "criticPpoEpochs": 4,
+            "learningRateSchedule": "cosine",
+            "learningRateWarmupUpdates": 0,
+            "learningRateDecayUpdates": 12,
+            "actorLearningRateMinimumFraction": 0.1,
+            "criticLearningRateMinimumFraction": 0.1,
+            "entropyCoefficientStart": 0.01,
+            "entropyCoefficientEnd": 0.0005,
+            "explorationDecayUpdates": 12,
+            "actionTemperatureStart": 1.5,
+            "actionTemperatureEnd": 0.35
+          }
+        }
+      ]
+    }
+  ]
+}

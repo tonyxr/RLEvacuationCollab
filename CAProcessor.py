@@ -11,7 +11,53 @@
 from Cell import Cell
 import numpy as np
 
+
+def authoritative_grid_shape(core, *, require_initialized=True):
+    """Return the one cell-grid shape shared by simulation and decisions.
+
+    ``cellX``/``cellY`` are configuration inputs.  Once a ``CellTracker`` is
+    constructed, its shape is authoritative for every cell-indexed subsystem.
+    Keeping this check at the boundary prevents a same-cell-count mismatch
+    such as 2x8 versus 4x4 from silently reinterpreting hazard or action data.
+    """
+    tracker = getattr(core, "cellTracker", None)
+    if tracker is None:
+        raise RuntimeError("The cell grid is unavailable before CellTracker initialization")
+    try:
+        shape = (int(tracker.cellXNum), int(tracker.cellYNum))
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise RuntimeError("CellTracker must declare cellXNum and cellYNum") from exc
+    configured = (int(getattr(core, "cellX", 0)), int(getattr(core, "cellY", 0)))
+    if configured != shape:
+        raise RuntimeError(
+            "Configured cell grid and CellTracker disagree: "
+            f"configured={configured}, tracker={shape}"
+        )
+    validate = getattr(tracker, "assert_grid_coherent", None)
+    if callable(validate):
+        validate(require_initialized=require_initialized)
+    hazard_store = getattr(core, "hazardDS", None)
+    hazard_tracker = getattr(hazard_store, "cellTracker", None)
+    if hazard_tracker is not None and hazard_tracker is not tracker:
+        raise RuntimeError("HazardDS and the simulator do not share the same CellTracker")
+    hazard_validate = getattr(hazard_store, "assert_grid_coherent", None)
+    if callable(hazard_validate) and hazard_tracker is tracker:
+        hazard_validate(require_initialized=require_initialized)
+    return shape
+
+
 class CellTracker:
+    # One authoritative cellular-neighborhood contract for hazard evolution,
+    # forecasting, visualization, and the decision graph.  Keeping the
+    # offsets here prevents those subsystems from silently using different
+    # topologies on the same nominal grid.
+    MOORE_NEIGHBOR_OFFSETS = tuple(
+        (di, dj)
+        for di in (-1, 0, 1)
+        for dj in (-1, 0, 1)
+        if (di, dj) != (0, 0)
+    )
+
     def __init__(self, cellXNum, cellYNum):
         # (i, j) -> dict(state, center, heat, smoke, corners)
         self.cellList = {}
@@ -25,8 +71,9 @@ class CellTracker:
         self.cellWiseShelters = None
         
         self.cellXNum = int(cellXNum)
-        
         self.cellYNum = int(cellYNum)
+        if self.cellXNum <= 0 or self.cellYNum <= 0:
+            raise ValueError("cellXNum and cellYNum must be positive integers")
         
         self.cellXLen = 0.0
         
@@ -47,11 +94,133 @@ class CellTracker:
         self.smokeByCell = np.zeros(self.cellXNum * self.cellYNum, dtype=float)
         self.dangerLevelByCell = np.zeros(self.cellXNum * self.cellYNum, dtype=float)
         # active pedestrians / remaining shelter capacity in the cell
+        self.shelterFulfillByCell = np.zeros(self.cellXNum * self.cellYNum, dtype=float)
         self.shelterPressureByCell = np.zeros(self.cellXNum * self.cellYNum, dtype=float)
         self.guidanceInterByCell = np.zeros(self.cellXNum * self.cellYNum, dtype=float)
         self.wellnessPenaltyByCell = np.zeros(self.cellXNum * self.cellYNum, dtype=float)
         
         self.last_snapshot = None
+
+    @property
+    def grid_shape(self):
+        return self.cellXNum, self.cellYNum
+
+    @property
+    def number_of_cells(self):
+        return self.cellXNum * self.cellYNum
+
+    def cell_ids(self):
+        """Yield cells in the sole flattened-array order used by the model."""
+        for index in range(self.number_of_cells):
+            yield self.unflatten_cell(index)
+
+    def _cell_id(self, cellID):
+        if isinstance(cellID, list):
+            cellID = tuple(cellID)
+        if not isinstance(cellID, tuple) or len(cellID) != 2:
+            raise ValueError("cellID must be an (x, y) pair")
+        cell = (int(cellID[0]), int(cellID[1]))
+        if not (
+            0 <= cell[0] < self.cellXNum
+            and 0 <= cell[1] < self.cellYNum
+        ):
+            raise ValueError(f"Cell {cell} is outside grid {self.grid_shape}")
+        return cell
+
+    def flatten_cell(self, cellID):
+        i, j = self._cell_id(cellID)
+        return i * self.cellYNum + j
+
+    def unflatten_cell(self, cell_index):
+        index = int(cell_index)
+        if not 0 <= index < self.number_of_cells:
+            raise ValueError(
+                f"Cell index {index} is outside grid {self.grid_shape}"
+            )
+        return divmod(index, self.cellYNum)
+
+    def assert_grid_coherent(self, *, require_initialized=True):
+        """Validate every cell-indexed container against this exact shape."""
+        expected_cells = {
+            (i, j)
+            for i in range(self.cellXNum)
+            for j in range(self.cellYNum)
+        }
+        if require_initialized and set(self.cellList) != expected_cells:
+            raise RuntimeError(
+                "CellTracker cellList does not match its declared grid shape "
+                f"{self.grid_shape}"
+            )
+        if require_initialized:
+            for cell_id, cell in self.cellList.items():
+                stored_id = tuple(getattr(cell, "cellID", cell_id))
+                if stored_id != cell_id:
+                    raise RuntimeError(
+                        "CellTracker cell identity disagrees with its grid key: "
+                        f"key={cell_id}, cellID={stored_id}"
+                    )
+        for axis, edges, size in (
+            ("x", self.xEdges, self.cellXNum),
+            ("y", self.yEdges, self.cellYNum),
+        ):
+            if require_initialized and (
+                edges is None or np.asarray(edges).shape != (size + 1,)
+            ):
+                raise RuntimeError(
+                    f"CellTracker {axis}Edges do not match grid shape {self.grid_shape}"
+                )
+        if require_initialized and (
+            self.cutBorders is None
+            or len(self.cutBorders) != self.cellXNum
+            or any(len(column) != self.cellYNum for column in self.cutBorders)
+        ):
+            raise RuntimeError(
+                "CellTracker cutBorders do not match grid shape "
+                f"{self.grid_shape}"
+            )
+        for name in (
+            "countByCell",
+            "avgVelocityByCell",
+            "heatByCell",
+            "smokeByCell",
+            "dangerLevelByCell",
+            "shelterFulfillByCell",
+            "shelterPressureByCell",
+            "guidanceInterByCell",
+            "wellnessPenaltyByCell",
+        ):
+            values = np.asarray(getattr(self, name, ())).reshape(-1)
+            if values.size != self.number_of_cells:
+                raise RuntimeError(
+                    f"CellTracker {name} has {values.size} entries; "
+                    f"grid {self.grid_shape} requires {self.number_of_cells}"
+                )
+        for name in (
+            "cellWiseGuidanceCan",
+            "cellWiseShelterCan",
+            "cellWiseGuidances",
+            "cellWiseShelters",
+        ):
+            grid = getattr(self, name, None)
+            if grid is None:
+                if require_initialized:
+                    raise RuntimeError(f"CellTracker {name} is not initialized")
+                continue
+            if len(grid) != self.cellXNum or any(
+                len(column) != self.cellYNum for column in grid
+            ):
+                raise RuntimeError(
+                    f"CellTracker {name} does not match grid shape {self.grid_shape}"
+                )
+        if self.last_snapshot is not None and (
+            len(self.last_snapshot) != self.cellXNum
+            or any(len(column) != self.cellYNum for column in self.last_snapshot)
+        ):
+            raise RuntimeError(
+                "CellTracker last_snapshot does not match grid shape "
+                f"{self.grid_shape}"
+            )
+        return self.grid_shape
     
     """Primary functions"""
     def getCut(self):
@@ -91,6 +260,12 @@ class CellTracker:
             self.cellYLen = float(networkYLength) / self.cellYNum
             self.yEdges = [j * self.cellYLen for j in range(self.cellYNum)] + [float(networkYLength)]
         
+        # ``initialCut`` is the episode boundary for every cell-indexed
+        # container.  Clear any earlier realization before rebuilding the
+        # configured shape so an accidental tracker reuse cannot retain stale
+        # cellular state.
+        self.cellList.clear()
+        self.last_snapshot = None
         cutBorders = [[None for _ in range(self.cellYNum)] for _ in range(self.cellXNum)]
         
         # Step 2: (Double for loop) Create a 2D list that contains the [northwest, northeast, southwest, southeast] coordinates of each cell, identifiable via cell\_dim[i][j] for $c_{ij}$
@@ -132,7 +307,19 @@ class CellTracker:
         self.cellWiseShelterCan  = [[[] for _ in range(self.cellYNum)] for _ in range(self.cellXNum)]
         self.cellWiseGuidances   = [[[] for _ in range(self.cellYNum)] for _ in range(self.cellXNum)]
         self.cellWiseShelters    = [[[] for _ in range(self.cellYNum)] for _ in range(self.cellXNum)]
-        
+        for name in (
+            "countByCell",
+            "avgVelocityByCell",
+            "heatByCell",
+            "smokeByCell",
+            "dangerLevelByCell",
+            "shelterFulfillByCell",
+            "shelterPressureByCell",
+            "guidanceInterByCell",
+            "wellnessPenaltyByCell",
+        ):
+            setattr(self, name, np.zeros(self.number_of_cells, dtype=float))
+        self.assert_grid_coherent(require_initialized=True)
         return cutBorders
     
     """
@@ -325,6 +512,7 @@ class CellTracker:
         if save_snapshot:
             self.last_snapshot = snapshot
         
+        self.assert_grid_coherent(require_initialized=True)
         return snapshot
     
     def update_all_cells(self, *args, **kwargs):
@@ -360,30 +548,32 @@ class CellTracker:
     
     """return the 8-direction neighbors of given cell ID (i, j) pair"""
     def getNeighborCells(self, cellID):
-        if isinstance(cellID, list):
-            cellID = tuple(cellID)
-        XID, YID = cellID
+        XID, YID = self._cell_id(cellID)
         neighbors = []
-        for deltaI in (-1, 0, 1):
-            for deltaJ in (-1, 0, 1):
-                # ignore the given cell
-                if deltaI == 0 and deltaJ == 0:
-                    continue
-                ni, nj = XID + deltaI, YID + deltaJ
-                if 0 <= ni < self.cellXNum and 0 <= nj < self.cellYNum:
-                    neighbors.append((ni, nj))
+        for deltaI, deltaJ in self.MOORE_NEIGHBOR_OFFSETS:
+            ni, nj = XID + deltaI, YID + deltaJ
+            if 0 <= ni < self.cellXNum and 0 <= nj < self.cellYNum:
+                neighbors.append((ni, nj))
         
         return neighbors
+
+    def state_vector(self, *, max_state=5, normalized=False):
+        """Return CA states in the same flattened order used by decisions."""
+        values = np.asarray(
+            [self.getCellState(cell_id) for cell_id in self.cell_ids()],
+            dtype=np.float64,
+        )
+        if normalized:
+            values = np.clip(values / float(max(1, int(max_state))), 0.0, 1.0)
+        return values
     
     def getCellState(self, cellID):
-        if isinstance(cellID, list):
-            cellID = tuple(cellID)
+        cellID = self._cell_id(cellID)
         cell = self.cellList[cellID]
         return cell.getState() if hasattr(cell, "getState") else getattr(cell, "impactedLevel", 0)
     
     def setCellState(self, cellID, newState):
-        if isinstance(cellID, list):
-            cellID = tuple(cellID)
+        cellID = self._cell_id(cellID)
         cell = self.cellList[cellID]
         if hasattr(cell, "setState"):
             cell.setState(newState)

@@ -17,6 +17,7 @@ beyond demand-only heuristic rankings.
 """
 
 from dataclasses import dataclass
+import math
 from typing import Optional, Sequence, Union
 
 import numpy as np
@@ -24,34 +25,22 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from RewardProcessor import (
-    DEFAULT_CASUALTY_WEIGHT,
-    DEFAULT_EVACUATION_TIME_WEIGHT,
-    DEFAULT_HAZARD_EXPOSURE_WEIGHT,
-    DEFAULT_SAFE_COMPLETION_WEIGHT,
-)
-
 
 HEURISTIC_PRIOR_SCALE = 1.0
-# ``risk_time_reduction`` is the v28 operational prior. The older route-time
-# name remains loadable only for historical experiment definitions.
+# ``risk_time_reduction`` is the backward-compatible name for the operational
+# hazard-exposure-reduction prior. The older route-time name remains loadable
+# only for historical experiment definitions.
 ACTOR_PRIORS = (
     "active_population",
     "risk_time_reduction",
     "route_time_saving",
+    "objective_greedy",
     "none",
 )
-RESIDUAL_LOGIT_BOUND = 4.0
 DEFAULT_EMBED_DIM = 32
 DEFAULT_MESSAGE_LAYERS = 2
 DEFAULT_TEMPORAL_DIM = 96
-DEFAULT_NMCC_ENSEMBLE_SIZE = 3
-VALUE_COMPONENT_NAMES = (
-    "safe_completion",
-    "casualty",
-    "evacuation_time",
-    "hazard_exposure",
-)
+VALUE_COMPONENT_NAMES = ("forward_hazard_weighted_progress",)
 NMCC_OUTCOME_NAMES = (
     "safe_completions",
     "casualties",
@@ -78,14 +67,12 @@ class GNNInput:
 
 @dataclass
 class NMCCPolicyOutput:
-    """Complete hybrid-NMCC output for one recurrent observation.
+    """Outputs used by staged NMCC for one recurrent observation.
 
-    ``natural_outcomes`` predicts the normalized finite-horizon outcome under
-    ``WAIT``. ``causal_outcome_samples`` are independently initialized residual
-    heads for every candidate; their disagreement supplies the conservative
-    optimization penalty. The first four outcome coordinates are transformed
-    exactly into the registered reward components, preserving an auditable
-    dueling decomposition ``Q = V_wait + D``.
+    ``natural_outcomes`` is the candidate-conditioned prediction of the six
+    observable one-decision-interval momentum rates.  The name is retained in
+    the tensor contract so historical checkpoints fail by model version rather
+    than by an ambiguous field migration.
     """
 
     logits: torch.Tensor
@@ -95,17 +82,8 @@ class NMCCPolicyOutput:
     learned_residual: torch.Tensor
     recurrent_state: tuple[torch.Tensor, torch.Tensor]
     natural_outcomes: torch.Tensor
-    natural_components: torch.Tensor
-    causal_outcome_samples: torch.Tensor
-    causal_component_samples: torch.Tensor
-    causal_component_mean: torch.Tensor
-    causal_component_std: torch.Tensor
-    robust_causal_score: torch.Tensor
-    teacher_logits: torch.Tensor
-    # NMCC-PI intervention-value ensemble: one scalar per member and candidate,
-    # predicting the within-state, policy-centered full-horizon advantage.
-    # Only its within-state differences are identified.
-    improvement_value_samples: Optional[torch.Tensor] = None
+    nmcc_continuation_value: torch.Tensor
+    random_reference_value: torch.Tensor
 
 
 def _validated_batch(batch: Optional[torch.Tensor], node_count: int, device) -> torch.Tensor:
@@ -296,7 +274,7 @@ def fit_gnn(
 
 
 def grid_edge_index(nx: int, ny: int) -> np.ndarray:
-    """Return a directed four-neighbor edge list with shape ``(2, E)``."""
+    """Return the hazard CA's directed Moore-neighbor graph, shape ``(2, E)``."""
     nx = int(nx)
     ny = int(ny)
     if nx <= 0 or ny <= 0:
@@ -305,12 +283,13 @@ def grid_edge_index(nx: int, ny: int) -> np.ndarray:
     for i in range(nx):
         for j in range(ny):
             u = i * ny + j
-            if i + 1 < nx:
-                v = (i + 1) * ny + j
-                edges.extend(((u, v), (v, u)))
-            if j + 1 < ny:
-                v = i * ny + (j + 1)
-                edges.extend(((u, v), (v, u)))
+            for di in (-1, 0, 1):
+                for dj in (-1, 0, 1):
+                    if (di, dj) == (0, 0):
+                        continue
+                    ni, nj = i + di, j + dj
+                    if 0 <= ni < nx and 0 <= nj < ny:
+                        edges.append((u, ni * ny + nj))
     if not edges:
         return np.empty((2, 0), dtype=np.int64)
     return np.asarray(edges, dtype=np.int64).T
@@ -399,7 +378,6 @@ class EvacPolicy(nn.Module):
     """
 
     HEURISTIC_PRIOR_SCALE = HEURISTIC_PRIOR_SCALE
-    RESIDUAL_LOGIT_BOUND = RESIDUAL_LOGIT_BOUND
 
     def __init__(
         self,
@@ -412,12 +390,11 @@ class EvacPolicy(nn.Module):
         message_layers: int = DEFAULT_MESSAGE_LAYERS,
         d_momentum: int = 0,
         temporal_dim: int = DEFAULT_TEMPORAL_DIM,
-        residual_logit_bound: float = RESIDUAL_LOGIT_BOUND,
-        nmcc_ensemble_size: int = DEFAULT_NMCC_ENSEMBLE_SIZE,
         verbose: bool = False,
-        actor_prior: str = "active_population",
-        actor_prior_scale: float = HEURISTIC_PRIOR_SCALE,
+        actor_prior: str = "none",
+        actor_prior_scale: float = 0.0,
         actor_prior_feature_index: int = 7,
+        auxiliary_models_enabled: bool = True,
     ):
         super().__init__()
         dimensions = {
@@ -428,7 +405,6 @@ class EvacPolicy(nn.Module):
             "embed_dim": embed_dim,
             "message_layers": message_layers,
             "temporal_dim": temporal_dim,
-            "nmcc_ensemble_size": nmcc_ensemble_size,
         }
         for name, value in dimensions.items():
             if int(value) <= 0:
@@ -441,14 +417,11 @@ class EvacPolicy(nn.Module):
         self.d_candidate = int(d_candidate)
         self.d_momentum = int(d_momentum)
         self.temporal_dim = int(temporal_dim)
-        self.residual_logit_bound = float(residual_logit_bound)
-        self.nmcc_ensemble_size = int(nmcc_ensemble_size)
+        self.auxiliary_models_enabled = bool(auxiliary_models_enabled)
         if self.d_global < 0:
             raise ValueError("d_global must be non-negative")
         if self.d_momentum < 0:
             raise ValueError("d_momentum must be non-negative")
-        if not np.isfinite(self.residual_logit_bound) or self.residual_logit_bound <= 0.0:
-            raise ValueError("residual_logit_bound must be finite and positive")
         self.actor_prior = str(actor_prior)
         if self.actor_prior not in ACTOR_PRIORS:
             raise ValueError(f"actor_prior must be one of {ACTOR_PRIORS}, got {actor_prior!r}")
@@ -456,7 +429,11 @@ class EvacPolicy(nn.Module):
         if not np.isfinite(self.actor_prior_scale) or self.actor_prior_scale < 0.0:
             raise ValueError("actor_prior_scale must be finite and non-negative")
         self.actor_prior_feature_index = int(actor_prior_feature_index)
-        if self.actor_prior in {"risk_time_reduction", "route_time_saving"} and not (
+        if self.actor_prior in {
+            "risk_time_reduction",
+            "route_time_saving",
+            "objective_greedy",
+        } and not (
             0 <= self.actor_prior_feature_index < self.d_candidate
         ):
             raise ValueError("actor_prior_feature_index must index a candidate feature")
@@ -496,6 +473,23 @@ class EvacPolicy(nn.Module):
             nn.Linear(actor_dim, actor_dim),
         )
         self.candidate_actor = _MLPBranch(self.d_candidate, actor_dim)
+        # Candidate-conditioned attention lets each site compare itself with
+        # the complete current spatial/route graph, rather than relying only
+        # on a fixed number of local message-passing hops plus one pooled
+        # summary.  All inputs remain administrator-observable features.
+        self.candidate_attention_query = nn.Linear(model_dim, actor_dim)
+        self.candidate_attention_feature_query = nn.Linear(
+            self.d_candidate, actor_dim, bias=False
+        )
+        self.candidate_attention_key = nn.Linear(model_dim, actor_dim, bias=False)
+        self.candidate_attention_value = nn.Linear(model_dim, actor_dim, bias=False)
+        self.candidate_attention_output = nn.Sequential(
+            nn.Linear(actor_dim, actor_dim),
+            nn.GELU(),
+            nn.LayerNorm(actor_dim),
+            nn.Linear(actor_dim, actor_dim, bias=False),
+        )
+        nn.init.zeros_(self.candidate_attention_output[-1].weight)
         self.global_actor_context = nn.Linear(decision_context_dim, actor_dim)
         self.temporal_actor_context = nn.Linear(self.temporal_dim, actor_dim, bias=False)
         nn.init.zeros_(self.temporal_actor_context.weight)
@@ -533,111 +527,66 @@ class EvacPolicy(nn.Module):
             nn.init.zeros_(head[-1].weight)
             nn.init.zeros_(head[-1].bias)
 
-        # NMCC's natural model and intervention residual are deliberately
-        # separate heads. The natural model cannot consume a candidate action;
-        # the residual ensemble must consume one. This prevents the much larger
-        # natural trajectory from absorbing the sparse intervention effect.
-        self.natural_outcome_head = nn.Sequential(
+        # Learned correction g_phi in V_mu(s)=D(s)+g_phi(s). D(s) is the exact
+        # capacity-valid remaining-debt scalar carried by ObservationFrame and
+        # is added by RLBridge. The correction is fitted only in Stage E and
+        # then frozen while the ordinary critic learns policy savings relative
+        # to the uniform-feasible-site reference.
+        self.random_reference_trunk = nn.Sequential(
+            nn.Linear(critic_input_dim, 2 * actor_dim),
+            nn.GELU(),
+            nn.LayerNorm(2 * actor_dim),
+            nn.Linear(2 * actor_dim, actor_dim),
+            nn.GELU(),
+            nn.LayerNorm(actor_dim),
+        )
+        self.random_reference_head = nn.Sequential(
             nn.Linear(actor_dim, actor_dim),
             nn.GELU(),
-            nn.Linear(actor_dim, len(NMCC_OUTCOME_NAMES)),
+            nn.Linear(actor_dim, 1),
         )
-        nn.init.zeros_(self.natural_outcome_head[-1].weight)
-        nn.init.zeros_(self.natural_outcome_head[-1].bias)
-        self.causal_outcome_heads = nn.ModuleList(
-            nn.Sequential(
-                nn.Linear(actor_dim, actor_dim),
-                nn.GELU(),
-                nn.Linear(actor_dim, len(NMCC_OUTCOME_NAMES)),
-            )
-            for _ in range(self.nmcc_ensemble_size)
-        )
-        # Independent small initializations give the ensemble a real epistemic
-        # disagreement signal without perturbing the established actor.
-        for index, head in enumerate(self.causal_outcome_heads):
-            generator = torch.Generator(device="cpu")
-            generator.manual_seed(17_101 + index)
-            with torch.no_grad():
-                head[-1].weight.copy_(
-                    1e-3
-                    * torch.randn(
-                        head[-1].weight.shape,
-                        generator=generator,
-                        dtype=head[-1].weight.dtype,
-                    )
-                )
-                head[-1].bias.zero_()
+        nn.init.zeros_(self.random_reference_head[-1].weight)
+        nn.init.zeros_(self.random_reference_head[-1].bias)
 
-        # Intervention-value ensemble for NMCC policy improvement.  Separate
-        # from the finite-horizon outcome heads above: those predict the
-        # physical L-step residual used by the natural/causal decomposition;
-        # these predict the controller-relevant quantity, each cell's
-        # full-horizon value relative to the other cells at the same state.
-        self.improvement_value_heads = nn.ModuleList(
-            nn.Sequential(
-                nn.Linear(actor_dim, actor_dim),
-                nn.GELU(),
-                nn.Linear(actor_dim, 1),
+        # The staged learner adds one supervised one-interval dynamics head.
+        # NMCC continuation is read from the ordinary actor-critic value head,
+        # so policy evaluation, PPO credit, and branch continuation cannot
+        # drift into three different value systems.
+        if self.auxiliary_models_enabled:
+            self._build_auxiliary_models(
+                actor_dim=actor_dim,
+                model_dim=model_dim,
+                decision_context_dim=decision_context_dim,
             )
-            for _ in range(self.nmcc_ensemble_size)
-        )
-        # Low-variance wide path.  Exact branch datasets are deliberately
-        # small and expensive; a purely deep readout can memorize episode
-        # embeddings before learning stable physical coefficients.  These
-        # linear heads see the same administrator-interpretable local,
-        # candidate, scenario and momentum features while the parallel deep
-        # path retains the full relational GNN/LSTM capacity.
-        improvement_direct_dim = (
-            self.d_ped
-            + self.d_hazard
-            + self.d_infra
-            + self.d_candidate
-            + self.d_global
-            + self.d_momentum
-        )
-        self.improvement_direct_heads = nn.ModuleList(
-            nn.Linear(improvement_direct_dim, 1)
-            for _ in range(self.nmcc_ensemble_size)
-        )
-        for index, head in enumerate(self.improvement_value_heads):
-            generator = torch.Generator(device="cpu")
-            generator.manual_seed(29_311 + index)
-            with torch.no_grad():
-                for layer in (head[0], head[-1]):
-                    layer.weight.copy_(
-                        (0.05 if layer is head[0] else 1e-3)
-                        * torch.randn(
-                            layer.weight.shape,
-                            generator=generator,
-                            dtype=layer.weight.dtype,
-                        )
-                    )
-                    layer.bias.zero_()
-
-        # The fitted-policy-iteration value branch must not depend on the
-        # streaming actor projections.  In v25 its heads consumed
-        # ``candidate_hidden`` even though those projections were actor-owned
-        # and therefore frozen during the critic/world-model pass.  These
-        # dedicated modules let exact replay labels train a complete
-        # graph/candidate/temporal value function while retaining the same full
-        # relational GNN and LSTM representation.
-        self.improvement_node = nn.Sequential(
-            nn.Linear(model_dim, actor_dim),
-            nn.GELU(),
-            nn.Linear(actor_dim, actor_dim),
-        )
-        self.improvement_candidate = _MLPBranch(self.d_candidate, actor_dim)
-        self.improvement_global_context = nn.Linear(decision_context_dim, actor_dim)
-        self.improvement_temporal_context = nn.Linear(
-            self.temporal_dim, actor_dim, bias=False
-        )
-        self.reset_improvement_model(seed=29_311)
 
         if self.verbose:
             print(
                 f"[EvacPolicy] resolution-flexible model_dim={model_dim} "
                 f"message_layers={len(self.message_layers)}"
             )
+
+    def _build_auxiliary_models(
+        self,
+        *,
+        actor_dim: int,
+        model_dim: int,
+        decision_context_dim: int,
+    ) -> None:
+        """Build the auxiliary transition head used by the staged learner."""
+        dynamics_input_dim = (
+            model_dim
+            + self.d_candidate
+            + decision_context_dim
+            + self.temporal_dim
+        )
+        self.natural_outcome_head = nn.Sequential(
+            nn.Linear(dynamics_input_dim, actor_dim),
+            nn.GELU(),
+            nn.LayerNorm(actor_dim),
+            nn.Linear(actor_dim, self.d_momentum),
+        )
+        nn.init.zeros_(self.natural_outcome_head[-1].weight)
+        nn.init.zeros_(self.natural_outcome_head[-1].bias)
 
     # Module ownership used by the learner.  The representation is everything
     # that turns an observation history into region/decision embeddings; the
@@ -655,6 +604,11 @@ class EvacPolicy(nn.Module):
     ACTOR_HEAD_MODULES = (
         "node_actor",
         "candidate_actor",
+        "candidate_attention_query",
+        "candidate_attention_feature_query",
+        "candidate_attention_key",
+        "candidate_attention_value",
+        "candidate_attention_output",
         "global_actor_context",
         "temporal_actor_context",
         "actor_cell",
@@ -662,86 +616,10 @@ class EvacPolicy(nn.Module):
     CRITIC_HEAD_MODULES = (
         "critic_trunk",
         "critic_heads",
+        "random_reference_trunk",
+        "random_reference_head",
         "natural_outcome_head",
-        "causal_outcome_heads",
-        "improvement_node",
-        "improvement_candidate",
-        "improvement_global_context",
-        "improvement_temporal_context",
-        "improvement_value_heads",
-        "improvement_direct_heads",
     )
-
-    def improvement_named_parameters(self) -> list[tuple[str, nn.Parameter]]:
-        """Parameters refitted on the persistent exact-branch dataset."""
-        prefixes = (
-            "improvement_node.",
-            "improvement_candidate.",
-            "improvement_global_context.",
-            "improvement_temporal_context.",
-            "improvement_value_heads.",
-            "improvement_direct_heads.",
-        )
-        return [
-            (name, parameter)
-            for name, parameter in self.named_parameters()
-            if name.startswith(prefixes)
-        ]
-
-    def reset_improvement_model(self, *, seed: int) -> None:
-        """Reinitialize only the fitted intervention-value model.
-
-        The shared GNN/LSTM retains system knowledge; the candidate-value
-        projection and ensemble are refit against the complete retained label
-        set so a small new rollout cannot overwrite earlier scenarios.
-        """
-        modules = (
-            self.improvement_node,
-            self.improvement_candidate,
-            self.improvement_global_context,
-            self.improvement_temporal_context,
-            self.improvement_value_heads,
-            self.improvement_direct_heads,
-        )
-        with torch.random.fork_rng(devices=[]):
-            torch.manual_seed(int(seed))
-            visited = set()
-            for root in modules:
-                for module in root.modules():
-                    if id(module) in visited:
-                        continue
-                    visited.add(id(module))
-                    reset = getattr(module, "reset_parameters", None)
-                    if callable(reset):
-                        reset()
-            # Keep initial value corrections conservative without making the
-            # upstream fitted branch identical across ensemble members.
-            for index, head in enumerate(self.improvement_value_heads):
-                generator = torch.Generator(device="cpu")
-                generator.manual_seed(int(seed) + 101 * index)
-                with torch.no_grad():
-                    head[-1].weight.copy_(
-                        1e-3
-                        * torch.randn(
-                            head[-1].weight.shape,
-                            generator=generator,
-                            dtype=head[-1].weight.dtype,
-                        )
-                    )
-                    head[-1].bias.zero_()
-            for index, head in enumerate(self.improvement_direct_heads):
-                generator = torch.Generator(device="cpu")
-                generator.manual_seed(int(seed) + 211 * index)
-                with torch.no_grad():
-                    head.weight.copy_(
-                        1e-3
-                        * torch.randn(
-                            head.weight.shape,
-                            generator=generator,
-                            dtype=head.weight.dtype,
-                        )
-                    )
-                    head.bias.zero_()
 
     def parameter_roles(self) -> dict[str, list[tuple[str, nn.Parameter]]]:
         """Partition every parameter into representation / actor / critic."""
@@ -825,7 +703,8 @@ class EvacPolicy(nn.Module):
             torch.zeros(shape, device=device, dtype=dtype),
         )
 
-    def _encode_graph(self, g: GNNInput):
+    def _encode_state(self, g: GNNInput):
+        """Encode the regional state without constructing action embeddings."""
         batch = _validated_batch(g.batch, int(g.x_ped.size(0)), g.x_ped.device)
         ped = F.gelu(self.ped_encoder(g.x_ped))
         hazard = F.gelu(self.hazard_encoder(g.x_hazard))
@@ -853,6 +732,12 @@ class EvacPolicy(nn.Module):
             decision_context = torch.cat((graph_embed, global_features), dim=-1)
         else:
             decision_context = graph_embed
+
+        return batch, decision_context, contextual
+
+    def _encode_graph(self, g: GNNInput):
+        batch, decision_context, contextual = self._encode_state(g)
+        graph_count = int(decision_context.size(0))
 
         counts = graph_node_counts(batch)
         if g.candidate_cell_index is None:
@@ -897,47 +782,19 @@ class EvacPolicy(nn.Module):
         return (
             batch,
             decision_context,
+            contextual,
             candidate_regions,
             candidate_features,
             global_candidate_index,
         )
 
-    @staticmethod
-    def _outcomes_to_components(outcomes: torch.Tensor) -> torch.Tensor:
-        """Map normalized physical outcomes to signed reward components."""
-        return torch.stack(
-            (
-                DEFAULT_SAFE_COMPLETION_WEIGHT * outcomes[..., 0],
-                -DEFAULT_CASUALTY_WEIGHT * outcomes[..., 1],
-                -DEFAULT_EVACUATION_TIME_WEIGHT * outcomes[..., 2],
-                -DEFAULT_HAZARD_EXPOSURE_WEIGHT * outcomes[..., 3],
-            ),
-            dim=-1,
-        )
-
-    def forward_nmcc_recurrent(
+    def _advance_temporal_state(
         self,
-        g: GNNInput,
-        recurrent_state: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
-        momentum_features: Optional[torch.Tensor] = None,
-        *,
-        causal_guidance_weight: float = 0.0,
-        uncertainty_penalty: float = 1.0,
-    ) -> NMCCPolicyOutput:
-        """Evaluate one observation while advancing the episode LSTM state.
-
-        Graph encoding remains resolution-independent.  The recurrent state is
-        reset only by the caller at a true environmental episode boundary.
-        Component critic values are signed and sum exactly to the scalar value
-        used by PPO's actor advantage.
-        """
-        (
-            batch,
-            decision_context,
-            candidate_regions,
-            candidate_features,
-            global_candidate_index,
-        ) = self._encode_graph(g)
+        decision_context: torch.Tensor,
+        recurrent_state: Optional[tuple[torch.Tensor, torch.Tensor]],
+        momentum_features: Optional[torch.Tensor],
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Advance the shared LSTM once for a packed state batch."""
         graph_count = int(decision_context.size(0))
         if momentum_features is None:
             momentum = torch.zeros(
@@ -973,16 +830,38 @@ class EvacPolicy(nn.Module):
             torch.cat((decision_context, momentum), dim=-1),
             (hidden, memory),
         )
+        return hidden, memory, momentum
 
+    def _actor_from_encoded(
+        self,
+        g: GNNInput,
+        *,
+        batch: torch.Tensor,
+        decision_context: torch.Tensor,
+        contextual: torch.Tensor,
+        candidate_regions: torch.Tensor,
+        candidate_features: torch.Tensor,
+        global_candidate_index: torch.Tensor,
+        hidden: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return actor logits and the shared candidate representation."""
         candidate_hidden = (
             self.node_actor(candidate_regions)
             + self.candidate_actor(candidate_features)
+            + self._candidate_graph_attention(
+                contextual,
+                batch,
+                candidate_regions,
+                candidate_features,
+            )
             + F.gelu(self.global_actor_context(decision_context)).unsqueeze(1)
             + self.temporal_actor_context(hidden).unsqueeze(1)
         )
-        learned_residual = self.residual_logit_bound * torch.tanh(
-            self.actor_cell(F.gelu(candidate_hidden)).squeeze(-1)
-        )
+        raw_actor_logits = self.actor_cell(F.gelu(candidate_hidden)).squeeze(-1)
+        # The simulator grades complete rollout costs and converts them into a
+        # conservative categorical target. Keep the residual logit linear so
+        # that the M-step can represent that distribution without saturation.
+        learned_residual = raw_actor_logits
 
         active_population = g.x_ped[:, 0]
         candidate_active = active_population[global_candidate_index]
@@ -1002,9 +881,201 @@ class EvacPolicy(nn.Module):
                 saving / saving_maximum.clamp_min(1e-8),
                 torch.zeros_like(saving),
             )
+        elif self.actor_prior == "objective_greedy":
+            gain = candidate_features[..., self.actor_prior_feature_index]
+            centered = gain - gain.mean(dim=1, keepdim=True)
+            rms = torch.sqrt(
+                torch.mean(centered.square(), dim=1, keepdim=True)
+            )
+            prior_feature = torch.where(
+                rms > torch.finfo(gain.dtype).eps,
+                centered / rms.clamp_min(torch.finfo(gain.dtype).eps),
+                torch.zeros_like(gain),
+            )
         else:
             prior_feature = torch.zeros_like(relative_active)
-        base_logits = self.actor_prior_scale * prior_feature + learned_residual
+        prior_logits = self.actor_prior_scale * prior_feature
+        return (
+            prior_logits + learned_residual,
+            prior_logits,
+            learned_residual,
+            candidate_hidden,
+        )
+
+    def _candidate_graph_attention(
+        self,
+        contextual: torch.Tensor,
+        batch: torch.Tensor,
+        candidate_regions: torch.Tensor,
+        candidate_features: torch.Tensor,
+    ) -> torch.Tensor:
+        """Attend from every candidate to all regions in its own graph."""
+        query = (
+            self.candidate_attention_query(candidate_regions)
+            + self.candidate_attention_feature_query(candidate_features)
+        )
+        key = self.candidate_attention_key(contextual)
+        value = self.candidate_attention_value(contextual)
+        contexts = []
+        scale = math.sqrt(float(max(1, query.size(-1))))
+        for graph_index in range(query.size(0)):
+            graph_nodes = batch == graph_index
+            scores = torch.matmul(query[graph_index], key[graph_nodes].T) / scale
+            weights = torch.softmax(scores, dim=-1)
+            contexts.append(torch.matmul(weights, value[graph_nodes]))
+        return self.candidate_attention_output(torch.stack(contexts, dim=0))
+
+    def forward_nmcc_actor_recurrent(
+        self,
+        g: GNNInput,
+        recurrent_state: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+        momentum_features: Optional[torch.Tensor] = None,
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        tuple[torch.Tensor, torch.Tensor],
+    ]:
+        """Evaluate only the actor path for PPO replay and policy diagnostics.
+
+        The full forward also evaluates the shared critic and interval-dynamics
+        head; neither is needed when measuring the actor's retained policy KL.
+        """
+        (
+            batch,
+            decision_context,
+            contextual,
+            candidate_regions,
+            candidate_features,
+            global_candidate_index,
+        ) = self._encode_graph(g)
+        hidden, memory, _ = self._advance_temporal_state(
+            decision_context,
+            recurrent_state,
+            momentum_features,
+        )
+        logits, prior_logits, learned_residual, candidate_hidden = (
+            self._actor_from_encoded(
+                g,
+                batch=batch,
+                decision_context=decision_context,
+                contextual=contextual,
+                candidate_regions=candidate_regions,
+                candidate_features=candidate_features,
+                global_candidate_index=global_candidate_index,
+                hidden=hidden,
+            )
+        )
+        del candidate_hidden
+        return (
+            logits,
+            prior_logits,
+            learned_residual,
+            (hidden, memory),
+        )
+
+    def forward_nmcc_continuation_recurrent(
+        self,
+        g: GNNInput,
+        recurrent_state: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+        momentum_features: Optional[torch.Tensor] = None,
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+        """Evaluate the shared actor-critic value at an NMCC branch endpoint."""
+        _, decision_context, _ = self._encode_state(g)
+        hidden, memory, _ = self._advance_temporal_state(
+            decision_context,
+            recurrent_state,
+            momentum_features,
+        )
+        critic_hidden = self.critic_trunk(
+            torch.cat((decision_context, hidden), dim=-1)
+        )
+        value = torch.stack(
+            tuple(
+                self.critic_heads[name](critic_hidden).squeeze(-1)
+                for name in VALUE_COMPONENT_NAMES
+            ),
+            dim=-1,
+        ).sum(dim=-1)
+        return value, (hidden, memory)
+
+    def forward_nmcc_endpoint_values_recurrent(
+        self,
+        g: GNNInput,
+        recurrent_state: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+        momentum_features: Optional[torch.Tensor] = None,
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        tuple[torch.Tensor, torch.Tensor],
+    ]:
+        """Return ``(V_mu, W_pi)`` for matched NMCC branch endpoints."""
+        _, decision_context, _ = self._encode_state(g)
+        hidden, memory, _ = self._advance_temporal_state(
+            decision_context,
+            recurrent_state,
+            momentum_features,
+        )
+        critic_hidden = self.critic_trunk(
+            torch.cat((decision_context, hidden), dim=-1)
+        )
+        random_reference_hidden = self.random_reference_trunk(
+            torch.cat((decision_context, hidden), dim=-1)
+        )
+        random_reference_value = self.random_reference_head(
+            random_reference_hidden
+        ).squeeze(-1)
+        policy_savings_value = torch.stack(
+            tuple(
+                self.critic_heads[name](critic_hidden).squeeze(-1)
+                for name in VALUE_COMPONENT_NAMES
+            ),
+            dim=-1,
+        ).sum(dim=-1)
+        return random_reference_value, policy_savings_value, (hidden, memory)
+
+    def forward_nmcc_recurrent(
+        self,
+        g: GNNInput,
+        recurrent_state: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+        momentum_features: Optional[torch.Tensor] = None,
+    ) -> NMCCPolicyOutput:
+        """Evaluate one observation while advancing the episode LSTM state.
+
+        Graph encoding remains resolution-independent.  The recurrent state is
+        reset only by the caller at a true environmental episode boundary.
+        Component critic values are signed and sum exactly to the scalar value
+        used by PPO's actor advantage.
+        """
+        (
+            batch,
+            decision_context,
+            contextual,
+            candidate_regions,
+            candidate_features,
+            global_candidate_index,
+        ) = self._encode_graph(g)
+        graph_count = int(decision_context.size(0))
+        hidden, memory, _ = self._advance_temporal_state(
+            decision_context,
+            recurrent_state,
+            momentum_features,
+        )
+        (
+            base_logits,
+            prior_logits,
+            learned_residual,
+            candidate_hidden,
+        ) = self._actor_from_encoded(
+            g,
+            batch=batch,
+            decision_context=decision_context,
+            contextual=contextual,
+            candidate_regions=candidate_regions,
+            candidate_features=candidate_features,
+            global_candidate_index=global_candidate_index,
+            hidden=hidden,
+        )
         critic_hidden = self.critic_trunk(
             torch.cat((decision_context, hidden), dim=-1)
         )
@@ -1016,129 +1087,68 @@ class EvacPolicy(nn.Module):
             dim=-1,
         )
         value = component_values.sum(dim=-1)
+        random_reference_hidden = self.random_reference_trunk(
+            torch.cat((decision_context, hidden), dim=-1)
+        )
+        random_reference_value = self.random_reference_head(
+            random_reference_hidden
+        ).squeeze(-1)
 
-        natural_raw = self.natural_outcome_head(critic_hidden)
-        # Hard population conservation: over the branch horizon, every person
-        # who is active at the decision is either newly safe, newly a casualty,
-        # or still active. A softmax allocation enforces that identity exactly
-        # instead of asking an auxiliary loss to discover it. Person-time and
-        # exposure remain bounded independent forecasts. Final normalized risk
-        # is constrained to [0.5 * final_active, final_active], matching
-        # risk_mass = active * (1 + danger) divided by 2P.
-        active_fraction = torch.zeros(
-            graph_count,
-            dtype=g.x_ped.dtype,
-            device=g.x_ped.device,
-        )
-        active_fraction.index_add_(0, batch, g.x_ped[:, 0])
-        active_fraction = active_fraction.clamp(0.0, 1.0)
-        terminal_allocation = torch.softmax(
-            natural_raw[:, (0, 1, 4)],
-            dim=-1,
-        ) * active_fraction.unsqueeze(-1)
-        final_active = terminal_allocation[:, 2]
-        final_risk = final_active * (
-            0.5 + 0.5 * torch.sigmoid(natural_raw[:, 5])
-        )
-        natural_outcomes = torch.stack(
-            (
-                terminal_allocation[:, 0],
-                terminal_allocation[:, 1],
-                torch.sigmoid(natural_raw[:, 2]),
-                torch.sigmoid(natural_raw[:, 3]),
-                final_active,
-                final_risk,
-            ),
-            dim=-1,
-        )
-        natural_components = self._outcomes_to_components(natural_outcomes)
+        if not self.auxiliary_models_enabled:
+            outcome_count = self.d_momentum
+            action_count = candidate_hidden.size(1)
+            natural_outcomes = value.new_zeros(
+                (graph_count, action_count, outcome_count)
+            )
+            return NMCCPolicyOutput(
+                logits=base_logits,
+                prior_logits=prior_logits,
+                value=value,
+                value_components=component_values,
+                learned_residual=learned_residual,
+                recurrent_state=(hidden, memory),
+                natural_outcomes=natural_outcomes,
+                nmcc_continuation_value=value,
+                random_reference_value=random_reference_value,
+            )
 
-        causal_outcome_samples = torch.stack(
-            tuple(
-                torch.tanh(head(F.gelu(candidate_hidden)))
-                for head in self.causal_outcome_heads
-            ),
-            dim=1,
-        )
-        causal_component_samples = self._outcomes_to_components(
-            causal_outcome_samples
-        )
-        causal_component_mean = causal_component_samples.mean(dim=1)
-        causal_component_std = causal_component_samples.std(
-            dim=1,
-            unbiased=False,
-        )
-        causal_scalar_samples = causal_component_samples.sum(dim=-1)
-        causal_scalar_mean = causal_scalar_samples.mean(dim=1)
-        causal_scalar_std = causal_scalar_samples.std(dim=1, unbiased=False)
-        robust_causal_score = causal_scalar_mean - float(uncertainty_penalty) * causal_scalar_std
-        centered_score = robust_causal_score - robust_causal_score.mean(
-            dim=1,
-            keepdim=True,
-        )
-        score_scale = robust_causal_score.std(
-            dim=1,
-            keepdim=True,
-            unbiased=False,
-        ).clamp_min(1e-6)
-        teacher_logits = centered_score / score_scale
-        logits = base_logits + float(causal_guidance_weight) * teacher_logits
-        improvement_hidden = F.gelu(
-            self.improvement_node(candidate_regions)
-            + self.improvement_candidate(candidate_features)
-            + F.gelu(self.improvement_global_context(decision_context)).unsqueeze(1)
-            + self.improvement_temporal_context(hidden).unsqueeze(1)
-        )
-        direct_features = torch.cat(
+        # Stage E learns the physical one-interval transition through the
+        # shared graph/LSTM representation, but not through the actor adapter.
+        # Stage P can therefore fit a nonlinear actor without invalidating
+        # the environment model.  The target is exactly the six bounded,
+        # observable momentum rates; no hidden quantity enters pretraining.
+        action_count = candidate_hidden.size(1)
+        dynamics_input = torch.cat(
             (
-                g.x_ped[global_candidate_index],
-                g.x_hazard[global_candidate_index],
-                g.x_infra[global_candidate_index],
+                candidate_regions,
                 candidate_features,
-                (
-                    decision_context[:, -self.d_global :]
-                    if self.d_global > 0
-                    else decision_context.new_zeros((graph_count, 0))
-                ).unsqueeze(1).expand(-1, candidate_features.size(1), -1),
-                momentum.unsqueeze(1).expand(-1, candidate_features.size(1), -1),
+                decision_context.unsqueeze(1).expand(-1, action_count, -1),
+                hidden.unsqueeze(1).expand(-1, action_count, -1),
             ),
             dim=-1,
         )
-        improvement_value_samples = torch.stack(
-            tuple(
-                (
-                    deep_head(improvement_hidden)
-                    + direct_head(direct_features)
-                ).squeeze(-1)
-                for deep_head, direct_head in zip(
-                    self.improvement_value_heads,
-                    self.improvement_direct_heads,
-                )
-            ),
-            dim=1,
+        natural_outcomes = torch.tanh(
+            self.natural_outcome_head(dynamics_input)
         )
+        # One critic, one cost-to-go. NMCC consumes the same value learned by
+        # the actor-critic instead of maintaining a separately wired head.
+        nmcc_continuation_value = value
 
         if self.verbose:
             print(
                 f"[EvacPolicy.forward] graphs={graph_count} nodes={g.x_ped.size(0)} "
-                f"actions={logits.size(1)}"
+                f"actions={base_logits.size(1)}"
             )
         return NMCCPolicyOutput(
-            logits=logits,
-            prior_logits=self.actor_prior_scale * prior_feature,
+            logits=base_logits,
+            prior_logits=prior_logits,
             value=value,
             value_components=component_values,
             learned_residual=learned_residual,
             recurrent_state=(hidden, memory),
             natural_outcomes=natural_outcomes,
-            natural_components=natural_components,
-            causal_outcome_samples=causal_outcome_samples,
-            causal_component_samples=causal_component_samples,
-            causal_component_mean=causal_component_mean,
-            causal_component_std=causal_component_std,
-            robust_causal_score=robust_causal_score,
-            teacher_logits=teacher_logits,
-            improvement_value_samples=improvement_value_samples,
+            nmcc_continuation_value=nmcc_continuation_value,
+            random_reference_value=random_reference_value,
         )
 
     def forward_recurrent(

@@ -19,7 +19,11 @@ CSV_COLUMNS = [
     "reward_casualty",
     "reward_evacuation_time",
     "reward_hazard_exposure",
+    "reward_reference_potential",
+    "reward_terminal_residual",
+    "reward_terminal_clearance",
     "reward_risk_time",
+    "reward_remaining_risk_time_reduction",
     "reward_shelter_service",
     "new_safe_completions",
     "new_casualties",
@@ -27,6 +31,18 @@ CSV_COLUMNS = [
     "risk_weighted_person_time",
     "active_person_time",
     "hazard_exposure_person_time",
+    "terminal_residual_person_time",
+    "clearance_tail_person_time",
+    "remaining_risk_time_before",
+    "remaining_risk_time_after",
+    "raw_remaining_risk_time_reduction",
+    "remaining_risk_time_reduction",
+    "plain_time_wait",
+    "plain_time_action",
+    "raw_plain_time_reduction",
+    "hazard_exposure_wait",
+    "hazard_exposure_action",
+    "raw_hazard_exposure_reduction",
     "decision_made",
     "selected_candidate",
     "heuristic_candidate",
@@ -158,7 +174,11 @@ class trainingLog:
             float(metrics.get("reward_casualty", 0.0)),
             float(metrics.get("reward_evacuation_time", 0.0)),
             float(metrics.get("reward_hazard_exposure", 0.0)),
+            float(metrics.get("reward_reference_potential", 0.0)),
+            float(metrics.get("reward_terminal_residual", 0.0)),
+            float(metrics.get("reward_terminal_clearance", 0.0)),
             float(metrics.get("reward_risk_time", 0.0)),
+            float(metrics.get("reward_remaining_risk_time_reduction", 0.0)),
             float(metrics.get("reward_shelter_service", 0.0)),
             int(metrics.get("new_safe_completions", 0)),
             int(metrics.get("new_casualties", 0)),
@@ -166,6 +186,18 @@ class trainingLog:
             float(metrics.get("risk_weighted_person_time", 0.0)),
             float(metrics.get("active_person_time", 0.0)),
             float(metrics.get("hazard_exposure_person_time", 0.0)),
+            float(metrics.get("terminal_residual_person_time", 0.0)),
+            float(metrics.get("clearance_tail_person_time", 0.0)),
+            float(metrics.get("remaining_risk_time_before", 0.0)),
+            float(metrics.get("remaining_risk_time_after", 0.0)),
+            float(metrics.get("raw_remaining_risk_time_reduction", 0.0)),
+            float(metrics.get("remaining_risk_time_reduction", 0.0)),
+            float(metrics.get("plain_time_wait", 0.0)),
+            float(metrics.get("plain_time_action", 0.0)),
+            float(metrics.get("raw_plain_time_reduction", 0.0)),
+            float(metrics.get("hazard_exposure_wait", 0.0)),
+            float(metrics.get("hazard_exposure_action", 0.0)),
+            float(metrics.get("raw_hazard_exposure_reduction", 0.0)),
             int(metrics.get("decision_made", 0)),
             int(metrics.get("selected_candidate", -1)),
             int(metrics.get("heuristic_candidate", -1)),
@@ -217,7 +249,15 @@ class trainingLog:
             self.tb.add_scalar("reward/casualty", float(metrics.get("reward_casualty", 0.0)), global_step=t)
             self.tb.add_scalar("reward/evacuation_time", float(metrics.get("reward_evacuation_time", 0.0)), global_step=t)
             self.tb.add_scalar("reward/hazard_exposure", float(metrics.get("reward_hazard_exposure", 0.0)), global_step=t)
+            self.tb.add_scalar("reward/reference_potential", float(metrics.get("reward_reference_potential", 0.0)), global_step=t)
+            self.tb.add_scalar("reward/terminal_residual", float(metrics.get("reward_terminal_residual", 0.0)), global_step=t)
+            self.tb.add_scalar("reward/terminal_clearance", float(metrics.get("reward_terminal_clearance", 0.0)), global_step=t)
             self.tb.add_scalar("reward/risk_time", float(metrics.get("reward_risk_time", 0.0)), global_step=t)
+            self.tb.add_scalar(
+                "reward/remaining_risk_time_reduction",
+                float(metrics.get("reward_remaining_risk_time_reduction", 0.0)),
+                global_step=t,
+            )
             self.tb.add_scalar("reward/shelter_service", float(metrics.get("reward_shelter_service", 0.0)), global_step=t)
 
             self.tb.add_scalar("ped/arrival", arrival, global_step=t)

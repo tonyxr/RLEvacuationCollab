@@ -1,0 +1,64 @@
+{
+  "schema_version": 2,
+  "curriculum_id": "state_college_n2500_rollout_pi_v54_tail_128",
+  "description": "Simulator-graded residual rollout policy iteration on the complete evacuation ledger, augmented by one explicitly declared CVaR-style clearance term: the slowest 10 percent of safety times receive unit extra weight. Uniform-random reference shaping keeps random siting neutral while the same objective grades every branch and benchmark.",
+  "learner_overrides": {
+    "cellX": 4,
+    "cellY": 4,
+    "cellPartitionMode": "population_density_adaptive",
+    "cellPartitionMinWidthFraction": 0.0001,
+    "stopTime": 181,
+    "shelterActionInterval": 15,
+    "requirePopulationMatchedShelterCapacity": true,
+    "shelterCapacitySurplus": 200,
+    "casualtyPriorityKappa": 2.0,
+    "clearanceTailFraction": 0.10,
+    "clearanceTailExtraWeight": 1.0,
+    "hazardSpreadSpeedMPerMinute": 33.333333333333336,
+    "ppoRolloutEpisodes": 16,
+    "nmccPolicyImprovement": true,
+    "nmccPiTapes": 4,
+    "nmccPiMaxBranches": 6,
+    "nmccPiWorkers": 4,
+    "randomReferenceRollouts": 1,
+    "nmccPiReplayEpochs": 48,
+    "actorPrior": "objective_greedy",
+    "actorPriorScale": 1.0,
+    "representationMode": "actor_owned",
+    "actorLearningRate": 0.001,
+    "learningRewardScale": 10.0,
+    "learningRateSchedule": "cosine",
+    "learningRateWarmupUpdates": 1,
+    "learningRateDecayUpdates": 8,
+    "actorLearningRateMinimumFraction": 0.1,
+    "entropyCoefficientStart": 0.0,
+    "entropyCoefficientEnd": 0.0,
+    "explorationDecayUpdates": 3,
+    "explorationSchedule": "exponential_half_life",
+    "explorationRateStart": 0.25,
+    "explorationRateEnd": 0.02,
+    "actionTemperatureStart": 1.0,
+    "actionTemperatureEnd": 1.0
+  },
+  "stages": [
+    {
+      "stage_id": "P",
+      "label": "complete_ledger_tail_clearance_rollout_policy_iteration",
+      "episodes_per_city": 128,
+      "variants": [{
+        "variant_id": "state_college_n2500_rollout_pi_tail_v54",
+        "weight": 1,
+        "overrides": {
+          "pedVol": 2500,
+          "pedestrianGroupSize": 1,
+          "hazardVol": 3,
+          "hazardCasualtyRate": [40, 9],
+          "panicRate": 0.5,
+          "initShelterVol": 2,
+          "maxAdditionalShelters": 8,
+          "shelterCapacityToken": 270
+        }
+      }]
+    }
+  ]
+}

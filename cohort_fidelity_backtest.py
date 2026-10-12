@@ -18,24 +18,22 @@ from multicity_backtest import _city_overrides, _seed
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 METRICS = {
-    "objective_episode_return": 0.10,
+    "objective_normalized_cost": 0.10,
     "safe_completion_fraction": 0.10,
-    "casualty_fraction": 0.05,
-    "normalized_risk_weighted_person_time": 0.10,
+    "expected_casualty_fraction": 0.05,
+    "realized_casualty_fraction": 0.05,
 }
 
 
 def _normalized_metrics(row: dict) -> dict[str, float]:
     population = float(row["initial_population"])
-    horizon = float(row["horizon_transitions"])
     return {
-        "objective_episode_return": float(row["objective_episode_return"]),
+        "objective_normalized_cost": float(row["objective_normalized_cost"]),
         "safe_completion_fraction": float(row["safe_completed"]) / population,
-        "casualty_fraction": float(row["casualty"]) / population,
-        "normalized_risk_weighted_person_time": (
-            float(row["objective_risk_weighted_person_time"])
-            / (population * horizon)
+        "expected_casualty_fraction": (
+            float(row["expected_casualties"]) / population
         ),
+        "realized_casualty_fraction": float(row["casualty"]) / population,
     }
 
 

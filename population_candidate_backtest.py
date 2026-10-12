@@ -85,12 +85,12 @@ def _write_csv(path: Path, rows: Sequence[Mapping]) -> None:
         "scenario_seed",
         "policy_seed",
         "episode_return",
-        "objective_episode_return",
+        "objective_normalized_cost",
         "safe_completed",
         "casualty",
         "unfinished",
         "restricted_mean_time_to_safety",
-        "normalized_risk_weighted_person_time",
+        "expected_casualties",
         "initial_population",
         "actual_candidate_count",
         "simulation_runtime_s",
@@ -564,7 +564,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             "same_regional_observation_action_interface": True,
             "exact_candidate_actions_without_lower_level_substitution": True,
             "common_random_numbers": True,
-            "primary_metric": "objective_episode_return",
+            "primary_metric": "objective_normalized_cost",
             "horizon_note": "60 one-minute transitions are encoded as stopTime=61",
             "decision_cadence": (
                 "one regional shelter decision every "

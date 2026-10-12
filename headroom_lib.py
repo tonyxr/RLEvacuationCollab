@@ -9,7 +9,8 @@ import numpy as np
 import CounterfactualBranch as CB
 import nmcc_testbed as T
 from DecisionInterface import (RegionalObservationBuilder, ActivePopulationHeuristic,
-                               AccessibilityDeficitHeuristic, RegionalShelterExecutor)
+                               AccessibilityDeficitHeuristic, RegionalShelterExecutor,
+                               estimate_remaining_hazard_weighted_travel_time)
 from RewardProcessor import RewardProcessor
 
 FIRST_DECISION = 1
@@ -40,13 +41,8 @@ class Episode:
         self.t += 1
         CB.advance_one_timestep(self.core)
         cur = CB.outcome_snapshot(self.core)
-        r = self.reward_model.evaluate(before=self.prev, after=cur,
-                                       active_person_time=cur.active_population,
-                                       hazard_exposure_person_time=cur.hazard_exposure_mass,
-                                       initial_population=self.population, horizon=self.horizon)
-        self.ret += float(r.total)
         self.prev = cur
-        return float(r.total)
+        return 0.0
 
     def observe(self):
         return self.builder.build(decision_index=self.deployed, simulation_time=self.t,
@@ -54,7 +50,24 @@ class Episode:
 
     def install(self, obs, action):
         from types import SimpleNamespace
+        before = estimate_remaining_hazard_weighted_travel_time(
+            self.core,
+            episode_horizon=self.horizon,
+        )
         receipt = self.executor.execute(obs, SimpleNamespace(action_index=int(action)))
+        after = estimate_remaining_hazard_weighted_travel_time(
+            self.core,
+            episode_horizon=self.horizon,
+        )
+        reward = self.reward_model.evaluate(
+            before=obs.outcome,
+            after=obs.outcome,
+            remaining_risk_time_before=before,
+            remaining_risk_time_after=after,
+            initial_population=self.population,
+            horizon=self.horizon,
+        )
+        self.ret += float(reward.total)
         self.deployed += 1
         return receipt
 
@@ -118,18 +131,23 @@ def build_core(seed, **kw):
     return T.build(scenario_seed=int(seed), **params)
 
 
-# --- greedy marginal-gain heuristics built from features the observation
-# already exposes (candidate_risk_time_reduction, candidate_reroutable_population)
+# --- coarse dashboard-only comparison policies (no candidate oracle values)
 def route_saving(ep, obs, rng):
-    """Greedy p-median add: the cell whose resolved site saves the most
-    demand-weighted route time (already capacity-capped in the feature)."""
+    """Capacity-capped local demand weighted by local observed hazard."""
     feas = np.flatnonzero(obs.action_mask)
-    score = np.asarray(obs.candidate_risk_time_reduction)[feas]
+    cells = obs.candidate_cell_indices[feas]
+    score = np.minimum(
+        obs.active_by_cell[cells], obs.candidate_capacities[feas]
+    ) * (1.0 + np.maximum(
+        obs.danger_by_cell[cells], obs.candidate_forecast_danger[feas]
+    ))
     return int(feas[int(np.argmax(score))])
 
 def reroutable(ep, obs, rng):
-    """Greedy coverage add: the cell whose site would capture the most people
-    who are currently routed farther away."""
+    """Capacity-capped active demand in the candidate's own region."""
     feas = np.flatnonzero(obs.action_mask)
-    score = np.asarray(obs.candidate_reroutable_population)[feas]
+    cells = obs.candidate_cell_indices[feas]
+    score = np.minimum(
+        obs.active_by_cell[cells], obs.candidate_capacities[feas]
+    )
     return int(feas[int(np.argmax(score))])

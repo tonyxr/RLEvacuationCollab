@@ -254,7 +254,7 @@ def analyze(
     seed: int = 20260922,
 ) -> dict[str, object]:
     summary_path = launch_dir / "training_episode_summary.csv"
-    diagnostics_path = launch_dir / "policies" / "policy_001" / "ppo_diagnostics.csv"
+    diagnostics_path = launch_dir / "policies" / "policy_001" / "learner_diagnostics.csv"
     manifest_path = launch_dir / "experiment_manifest.json"
     convergence_path = launch_dir / "training_convergence_diagnostics.json"
     with summary_path.open("r", encoding="utf-8", newline="") as handle:
@@ -482,7 +482,7 @@ def main(argv: list[str] | None = None) -> int:
     ) as handle:
         rows = list(csv.DictReader(handle))
     with (
-        launch_dir / "policies" / "policy_001" / "ppo_diagnostics.csv"
+        launch_dir / "policies" / "policy_001" / "learner_diagnostics.csv"
     ).open("r", encoding="utf-8", newline="") as handle:
         diagnostics = list(csv.DictReader(handle))
     updates = [row for row in diagnostics if _finite(row.get("optimizer_updated"), 0.0) > 0.5]

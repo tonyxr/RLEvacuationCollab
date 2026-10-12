@@ -150,18 +150,20 @@ RL and the heuristic receive the same regional observation, exact-candidate
 mask, action timing, maximum budget, and direct candidate executor. Their exact
 chosen shelter is exported at every decision as the OSM
 node identifier, local coordinates, candidate cell, capacity, decision time,
-and decision order. Static placement is not presented as an online policy: its
-additional candidates are explicitly marked as anticipative choices made at
-`t=0` under the same maximum shelter budget.
+and decision order. The `initial_only` benchmark commits its additional
+candidate order at `t=0`, but its maps show physical implementation at the
+same sequential epochs as RL. The separate `static_greedy` and `rl_precommit`
+diagnostics still place their full additional sets at `t=0`.
 
 A separate decision-epoch comparison captures every online action rather than
 sampling those actions at coarse evacuation milestones. Each panel displays
 one red point for every active pedestrian agent, the continuous normalized
 danger of every cell on a common 0--1 heatmap, the exact selected OSM candidate
 and its host region, active population, and decision time.
-Static predeployment is omitted from this dynamic panel because it has no
-online decision epochs; its simultaneous choices remain in the shelter
-implementation comparison.
+Time-zero predeployment diagnostics are omitted from this dynamic panel
+because they have no online implementation epochs; their simultaneous choices
+remain in the shelter implementation comparison. The open-loop
+`initial_only` schedule remains in the dynamic panel at its execution epochs.
 
 The visual encoding is identical in the milestone maps. Individual decision
 coordinates are retained in a compressed audit table rather than inferred

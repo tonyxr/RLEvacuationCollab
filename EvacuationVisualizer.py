@@ -19,6 +19,8 @@ from typing import Iterable, Optional
 
 import numpy as np
 
+from CAProcessor import authoritative_grid_shape
+
 
 SCHEMA_VERSION = 4
 
@@ -244,19 +246,20 @@ class EvacuationVisualizer:
 
     def _cell_rows(self, simulation_time: int, pedestrians: tuple[dict, ...]) -> tuple[dict, ...]:
         tracker = self.core.cellTracker
-        active = np.zeros(int(self.core.cellX * self.core.cellY), dtype=int)
+        nx, ny = authoritative_grid_shape(self.core)
+        active = np.zeros(tracker.number_of_cells, dtype=int)
         for row in pedestrians:
             i, j = int(row["cell_i"]), int(row["cell_j"])
-            if 0 <= i < int(self.core.cellX) and 0 <= j < int(self.core.cellY):
-                active[i * int(self.core.cellY) + j] += int(row["group_size"])
+            if 0 <= i < nx and 0 <= j < ny:
+                active[tracker.flatten_cell((i, j))] += int(row["group_size"])
         danger = np.asarray(
             getattr(tracker, "dangerLevelByCell", np.zeros_like(active, dtype=float)),
             dtype=float,
         ).reshape(-1)
         rows = []
-        for i in range(int(self.core.cellX)):
-            for j in range(int(self.core.cellY)):
-                index = i * int(self.core.cellY) + j
+        for i in range(nx):
+            for j in range(ny):
+                index = tracker.flatten_cell((i, j))
                 cell = tracker.cellList[(i, j)]
                 rows.append(
                     {
@@ -466,8 +469,8 @@ class EvacuationVisualizer:
         if snapshot.latest_decision is not None:
             selected = int(snapshot.latest_decision["selected_cell"])
             if selected >= 0:
-                i, j = divmod(selected, int(self.core.cellY))
                 tracker = self.core.cellTracker
+                i, j = tracker.unflatten_cell(selected)
                 axis.add_patch(
                     Rectangle(
                         (tracker.xEdges[i], tracker.yEdges[j]),
@@ -722,7 +725,7 @@ class EvacuationVisualizer:
         strategy = str(self.core.rl.deployment_strategy)
         timing = (
             "all additional sites at t=0"
-            if strategy in {"none", "initial_only", "static_greedy", "rl_precommit"}
+            if strategy in {"none", "static_greedy", "rl_precommit"}
             else "numbers show decision order"
         )
         axis.set_title(
@@ -732,7 +735,7 @@ class EvacuationVisualizer:
         legend = [
             Line2D([0], [0], marker="^", color="none", markerfacecolor="#2166ac", label="Common initial shelter", markersize=8),
         ]
-        if strategy in {"none", "initial_only", "static_greedy", "rl_precommit"}:
+        if strategy in {"none", "static_greedy", "rl_precommit"}:
             legend.append(
                 Line2D([0], [0], marker="s", color="none", markerfacecolor="#35b779", markeredgecolor="#111111", label="Static predeployment", markersize=7)
             )
@@ -773,7 +776,6 @@ class EvacuationVisualizer:
 
         static = str(self.core.rl.deployment_strategy) in {
             "none",
-            "initial_only",
             "static_greedy",
             "rl_precommit",
         }
@@ -1012,7 +1014,6 @@ class EvacuationVisualizer:
         decision_cell_rows = []
         static_strategy = str(self.core.rl.deployment_strategy) in {
             "none",
-            "initial_only",
             "static_greedy",
             "rl_precommit",
         }
@@ -1107,7 +1108,7 @@ class EvacuationVisualizer:
                 ),
                 "network_type": "walk",
             },
-            "grid_shape": [int(self.core.cellX), int(self.core.cellY)],
+            "grid_shape": list(authoritative_grid_shape(self.core)),
             "cell_partition": {
                 **dict(getattr(self.core, "cellPartitionDiagnostics", {}) or {}),
                 "mode": str(

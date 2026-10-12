@@ -9,8 +9,9 @@ import json
 import os
 from pathlib import Path
 import subprocess
-import sys
 import tempfile
+
+from RuntimeEnvironment import preferred_python, validate_python_executable
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -116,7 +117,7 @@ def _parse_args(argv=None):
         "--factorial-launch-id", default="single_policy_full_factorial_20260915"
     )
     parser.add_argument("--launch-seed", type=int, default=20260915)
-    parser.add_argument("--python", default=sys.executable)
+    parser.add_argument("--python", default=preferred_python(PROJECT_ROOT))
     parser.add_argument(
         "--policy-replicates",
         type=int,
@@ -165,6 +166,7 @@ def _parse_args(argv=None):
 
 def main(argv=None) -> int:
     args = _parse_args(argv)
+    args.python = validate_python_executable(args.python, PROJECT_ROOT)
     if args.dry_run:
         from CityProfiles import load_city_suite
         from TrainingCurriculum import load_training_curriculum
@@ -208,7 +210,7 @@ def main(argv=None) -> int:
                         "replications_per_city": int(
                             args.behavior_gate_replications_per_city
                         ),
-                        "strategies": ["rl", "heuristic"],
+                        "strategies": ["rl", "objective_greedy"],
                         "total_episodes": (
                             len(suite.cities)
                             * int(args.behavior_gate_replications_per_city)
@@ -238,7 +240,7 @@ def main(argv=None) -> int:
 
     contract = {
         "launch_seed": int(args.launch_seed),
-        "python": str(Path(args.python).expanduser().resolve()),
+        "python": str(Path(args.python).expanduser().absolute()),
         "policy_replicates": int(args.policy_replicates),
         "train_episodes_per_city": int(args.train_episodes_per_city),
         "behavior_gate_replications_per_city": int(
@@ -318,7 +320,7 @@ def main(argv=None) -> int:
                 "--eval-replications-per-city",
                 str(args.behavior_gate_replications_per_city),
                 "--strategies",
-                "rl,heuristic",
+                "rl,objective_greedy",
                 "--train-only",
             ]
             if training_manifest.exists():
@@ -362,7 +364,7 @@ def main(argv=None) -> int:
                 "--eval-replications-per-city",
                 str(args.behavior_gate_replications_per_city),
                 "--strategies",
-                "rl,heuristic",
+                "rl,objective_greedy",
                 "--bootstrap-draws",
                 "5000",
                 "--visualize-eval-pairs-per-city",

@@ -9,7 +9,7 @@ are:
 
 * ``random``: the same online decision interface with a random feasible exact
   candidate-site action; and
-* ``initial_only``: the full shelter budget placed before evacuation begins.
+* ``initial_only``: a time-zero site ordering executed on the common schedule.
   This is a static, anticipative comparator, not an equal online competitor.
 
 Every derived table, map, and figure is recorded in a checksum manifest.
@@ -38,7 +38,7 @@ POLICY_LABEL = {
     "rl": "RL",
     "heuristic": "Active-population\nheuristic",
     "random": "Random feasible\nregion",
-    "initial_only": "Static\npredeployment",
+    "initial_only": "Static committed\nschedule",
 }
 POLICY_COLOR = {
     "rl": "#0072B2",
@@ -54,11 +54,11 @@ CITY_LABEL = {
     "chicago_il": "Chicago",
 }
 METRIC_DIRECTIONS = {
-    "policy_objective_return": 1.0,
+    "objective_normalized_cost": -1.0,
     "safe_fraction": 1.0,
+    "expected_casualty_fraction": -1.0,
     "casualty_fraction": -1.0,
     "restricted_mean_time_to_safety": -1.0,
-    "normalized_risk_weighted_person_time": -1.0,
 }
 
 
@@ -98,7 +98,8 @@ def _write_csv(path: Path, rows: Sequence[dict]) -> None:
         "casualty",
         "unfinished",
         "restricted_mean_time_to_safety",
-        "normalized_risk_weighted_person_time",
+        "objective_normalized_cost",
+        "expected_casualties",
         "initial_population",
         "visualization_manifest",
     )
@@ -138,10 +139,12 @@ def _scenario_key(row: dict) -> tuple[str, int, int]:
 
 
 def _metric(row: dict, name: str) -> float:
-    if name == "policy_objective_return":
-        return _f(row, "objective_episode_return")
     if name == "safe_fraction":
         return _f(row, "safe_completed") / max(1.0, _f(row, "initial_population"))
+    if name == "expected_casualty_fraction":
+        return _f(row, "expected_casualties") / max(
+            1.0, _f(row, "initial_population")
+        )
     if name == "casualty_fraction":
         return _f(row, "casualty") / max(1.0, _f(row, "initial_population"))
     if name == "unfinished_fraction":
@@ -314,11 +317,11 @@ def _run_policy_objective_evaluation(
         rows = _read_csv(output_path)
         _validate_matched_matrix(rows, POLICY_ORDER)
         required = (
-            "objective_episode_return",
-            "objective_safe_completion_reward",
-            "objective_casualty_penalty",
-            "objective_risk_time_penalty",
-            "objective_risk_weighted_person_time",
+            "objective_normalized_cost",
+            "objective_active_person_time",
+            "objective_hazard_exposure_person_time",
+            "objective_expected_casualty_person_time",
+            "expected_casualties",
         )
         if not all(all(str(row.get(key, "")).strip() for key in required) for row in rows):
             raise RuntimeError("Cached policy-objective evaluation uses an obsolete schema")
@@ -382,7 +385,7 @@ def _run_policy_objective_evaluation(
             rows.append(result)
             print(
                 f"[OBJECTIVE EVAL] {city} scenario={result['city_scenario_replication']} "
-                f"strategy={strategy} objective={float(result['objective_episode_return']):.4f}",
+                f"strategy={strategy} cost={float(result['objective_normalized_cost']):.4f}",
                 flush=True,
             )
     _write_csv(output_path, rows)
@@ -411,7 +414,8 @@ def _validate_visualized_rerun(result: dict, reference: dict) -> dict:
     numeric_fields = (
         "episode_return",
         "restricted_mean_time_to_safety",
-        "normalized_risk_weighted_person_time",
+        "objective_normalized_cost",
+        "expected_casualties",
     )
     for key in numeric_fields:
         if not math.isclose(
@@ -671,7 +675,7 @@ def _plot_training(
     axes[1, 1].set(title="Behavioral overlap with benchmark", xlabel="Equal-city training block", ylabel="Action agreement rate")
     fig.suptitle("PPO learning diagnostics")
     fig.tight_layout()
-    paths.extend(_save_figure(fig, output_dir, "02_training_ppo_diagnostics"))
+    paths.extend(_save_figure(fig, output_dir, "02_training_learner_diagnostics"))
     plt.close(fig)
     return paths
 
@@ -734,9 +738,14 @@ def _plot_evaluation(rows: Sequence[dict], output_dir: Path, launch_seed: int) -
     paths = []
     summary = []
     metrics = (
-        ("policy_objective_return", "Policy-objective return", "Higher is better", 1.0),
+        ("objective_normalized_cost", "Normalized objective cost", "Lower is better", 1.0),
         ("safe_fraction", "Safe completion", "Percent of population", 100.0),
-        ("casualty_fraction", "Casualty", "Percent of population", 100.0),
+        (
+            "expected_casualty_fraction",
+            "Expected casualty intensity",
+            "Percent of population",
+            100.0,
+        ),
         ("restricted_mean_time_to_safety", "Restricted mean time to safety", "Timesteps", 1.0),
     )
     fig, axes = plt.subplots(2, 2, figsize=(11.2, 7.6))
@@ -783,14 +792,14 @@ def _plot_evaluation(rows: Sequence[dict], output_dir: Path, launch_seed: int) -
         axis.set(title=title, xlabel=xlabel)
         if metric == "safe_fraction":
             axis.xaxis.set_major_formatter(lambda value, position: f"{value:.0f}%")
-        elif metric == "casualty_fraction":
+        elif metric == "expected_casualty_fraction":
             axis.xaxis.set_major_formatter(lambda value, position: f"{value:.1f}%")
     fig.suptitle("Matched held-out policy performance across five cities")
     fig.text(
         0.5,
         0.005,
         "Points are equal-city macro means; intervals bootstrap scenarios within city. "
-        "Static predeployment uses the full budget before t = 0.",
+        "The static schedule is committed at t = 0 and executed at the common epochs.",
         ha="center",
         fontsize=8.3,
     )
@@ -799,9 +808,12 @@ def _plot_evaluation(rows: Sequence[dict], output_dir: Path, launch_seed: int) -
     plt.close(fig)
 
     comparison_metrics = (
-        ("policy_objective_return", "Policy-objective return improvement"),
+        ("objective_normalized_cost", "Normalized objective-cost reduction"),
         ("safe_fraction", "Safe-completion improvement (percentage points)"),
-        ("casualty_fraction", "Casualty reduction (percentage points)"),
+        (
+            "expected_casualty_fraction",
+            "Expected casualty-intensity reduction (percentage points)",
+        ),
         ("restricted_mean_time_to_safety", "Time-to-safety reduction (timesteps)"),
     )
     comparators = ("rl", "random", "initial_only")
@@ -1012,7 +1024,10 @@ def _build_artifact_manifest(
             "rl": "learned online regional priority policy",
             "heuristic": "online region with most active pedestrians; equal RL benchmark",
             "random": "random feasible region using the same online action interface",
-            "initial_only": "full shelter budget predeployed before evacuation; static anticipative comparator",
+            "initial_only": (
+                "site order committed from the time-zero state and executed "
+                "at the common decision epochs"
+            ),
         },
         "representative_map_count": len(map_index),
         "artifacts": {
@@ -1078,7 +1093,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         _plot_training(
             training,
             output_dir,
-            launch_dir / "policies" / "policy_001" / "ppo_diagnostics.csv",
+            launch_dir / "policies" / "policy_001" / "learner_diagnostics.csv",
         )
     )
     evaluation_paths, statistical_summary = _plot_evaluation(

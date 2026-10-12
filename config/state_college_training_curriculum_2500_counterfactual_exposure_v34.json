@@ -1,0 +1,113 @@
+{
+  "schema_version": 2,
+  "curriculum_id": "state_college_clean_nmcc_pi_v35_staged_120",
+  "description": "Version-35 recurrent PPO followed by clean NMCC policy improvement. PPO learns from complete realized episode returns. At every visited decision state, NMCC simulates WAIT and every feasible equal-capacity shelter from one common-noise snapshot, forms a complete capacity-aware exposure-removal value table, and fits the actor to its KL-constrained improvement target. There is no heuristic continuation policy, correction gate, learned candidate fill, fallback controller, or privileged candidate-ranking observation. Panic and casualties remain reported outcomes but are absent from reward.",
+  "learner_overrides": {
+    "shelterCapacityToken": 350,
+    "stopTime": 121,
+    "shelterActionInterval": 15,
+    "ppoRolloutEpisodes": 8,
+    "nmccEnabled": false,
+    "nmccPolicyImprovement": true,
+    "nmccCounterfactualHorizon": 15,
+    "nmccCounterfactualWeight": 1.0,
+    "nmccJointCounterfactualWeight": 1.0,
+    "nmccInterventionCost": 0.0,
+    "nmccPiActorObjective": "kl_target",
+    "nmccPiEpsilon": 0.1,
+    "nmccPiEtaMin": 0.03,
+    "nmccPiTapes": 1,
+    "nmccPiBranchHorizon": 15,
+    "nmccPiBasePolicy": "none",
+    "nmccPiActorEpochs": 4,
+    "nmccPiFitTolerance": 0.2,
+    "nmccPiModelFill": false,
+    "nmccNaturalLossCoefficient": 0.0,
+    "nmccCausalLossCoefficient": 0.0,
+    "nmccDuelingLossCoefficient": 0.0,
+    "nmccGuidanceMaximum": 0.0,
+    "nmccTeacherCoefficient": 0.0,
+    "nmccNaturalPretrainRollouts": 0,
+    "nmccCausalPretrainRollouts": 0,
+    "nmccControllerWarmupRollouts": 0,
+    "actorPrior": "none",
+    "actorPriorScale": 0.0,
+    "representationMode": "actor_owned",
+    "actorLearningRate": 0.001,
+    "criticLearningRate": 0.001,
+    "actorPpoEpochs": 4,
+    "criticPpoEpochs": 4,
+    "learningRewardScale": 10.0,
+    "learningRateSchedule": "cosine",
+    "learningRateWarmupUpdates": 0,
+    "learningRateDecayUpdates": 15,
+    "actorLearningRateMinimumFraction": 0.1,
+    "criticLearningRateMinimumFraction": 0.1,
+    "entropyCoefficientStart": 0.01,
+    "entropyCoefficientEnd": 0.0005,
+    "explorationDecayUpdates": 15,
+    "explorationRateStart": 0.3,
+    "explorationRateEnd": 0.02,
+    "actionTemperatureStart": 1.5,
+    "actionTemperatureEnd": 0.35
+  },
+  "stages": [
+    {
+      "stage_id": "F1",
+      "label": "route_access_and_shortest_path_foundation",
+      "episodes_per_city": 16,
+      "variants": [
+        {
+          "variant_id": "state_college_1000_access_foundation",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 1000,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 1,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "maxAdditionalShelters": 8
+          }
+        }
+      ]
+    },
+    {
+      "stage_id": "F2",
+      "label": "capacity_congestion_and_hazard_interaction",
+      "episodes_per_city": 24,
+      "variants": [
+        {
+          "variant_id": "state_college_1750_interaction",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 1750,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 2,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "maxAdditionalShelters": 8
+          }
+        }
+      ]
+    },
+    {
+      "stage_id": "F3",
+      "label": "full_system_policy_optimization_and_convergence",
+      "episodes_per_city": 80,
+      "variants": [
+        {
+          "variant_id": "state_college_2500_full_system",
+          "weight": 1,
+          "overrides": {
+            "pedVol": 2500,
+            "pedestrianGroupSize": 1,
+            "hazardVol": 3,
+            "hazardCasualtyRate": [40, 9],
+            "panicRate": 0.5,
+            "maxAdditionalShelters": 8
+          }
+        }
+      ]
+    }
+  ]
+}

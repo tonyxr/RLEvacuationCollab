@@ -68,7 +68,7 @@ class TrainingShardAssemblyTests(unittest.TestCase):
         (policy_dir / "regional_policy.pt").write_bytes(
             f"checkpoint-{policy_index}".encode()
         )
-        (policy_dir / "ppo_diagnostics.csv").write_text(
+        (policy_dir / "learner_diagnostics.csv").write_text(
             "episode,optimizer_updated\n1,0\n2,1\n", encoding="utf-8"
         )
         return shard
