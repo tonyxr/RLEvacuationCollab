@@ -7,6 +7,10 @@ __pycache__/
 # Local assistant exports and generated scratch images.
 Claude outputs/
 Codex Image*.png
+_claude_tmp/
+
+# Generated publication evidence retained locally unless explicitly released.
+publication_graphs/v61_paper_evidence_20261018/
 
 # Regenerable simulation and experiment outputs. Intentionally published
 # evidence can be force-added under a dedicated release directory.
