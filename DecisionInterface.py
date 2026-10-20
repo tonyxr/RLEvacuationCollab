@@ -17,6 +17,7 @@ behavior rather than building-level tie-breaking.
 """
 
 from dataclasses import dataclass
+import hashlib
 from typing import Any, Optional, Protocol, Sequence
 
 import numpy as np
@@ -31,6 +32,8 @@ PED_FEATURE_NAMES = (
     "mean_route_time_fraction",
     "slow_tail_population_fraction",
     "slow_tail_time_fraction",
+    "long_route_population_fraction",
+    "exposed_population_fraction",
     "panicked_population_fraction",
     "remaining_evacuation_debt_fraction",
 )
@@ -41,13 +44,25 @@ HAZARD_FEATURE_NAMES = (
     "forecast_expected_danger",
     "forecast_escalation_probability",
     "forecast_uncertainty",
+    "forecast_overrun_probability",
+    "forecast_next_shelter_overrun_probability",
+    "forecast_overrun_lead_time_fraction",
+    "hazard_source_proximity",
+    "closure_warning_incidence_fraction",
 )
 
 INFRA_FEATURE_NAMES = (
     "remaining_shelter_capacity_fraction",
+    "operational_shelter_capacity_fraction",
     "shelter_utilization_fraction",
+    "sheltered_population_fraction",
+    "enroute_reserved_population_fraction",
+    "forecast_reevacuation_population_fraction",
+    "forecast_enroute_reroute_population_fraction",
     "deployable_capacity_fraction",
+    "remaining_candidate_share",
     "road_node_share",
+    "closed_road_incidence_fraction",
     "region_east_position_fraction",
     "region_north_position_fraction",
     "region_area_fraction",
@@ -74,9 +89,31 @@ GLOBAL_FEATURE_NAMES = (
     "forecast_hazard_growth_fraction",
     "population_network_density_fraction",
     "deployment_capacity_coverage_fraction",
+    "forecast_reevacuation_population_fraction",
+    "forecast_enroute_reroute_population_fraction",
+    "forecast_safe_capacity_coverage_fraction",
+    "next_shelter_overrun_probability",
+    "next_shelter_overrun_lead_time_fraction",
     "slow_tail_population_fraction",
     "slow_tail_time_fraction",
 )
+
+REGIME_GLOBAL_FEATURE_NAMES = (
+    "wind_forecast_cos",
+    "wind_forecast_sin",
+    "wind_forecast_speed_fraction",
+    "wind_warning",
+    "closure_warning_share",
+    "remaining_tokens_fraction",
+    "remaining_epochs_fraction",
+    "deadline_slack_fraction",
+)
+
+
+def _feasible_install_actions(observation) -> np.ndarray:
+    feasible = np.flatnonzero(observation.action_mask)
+    defer_index = int(getattr(observation, "defer_action_index", -1))
+    return feasible[feasible != defer_index]
 
 # Causal ordering is explicit: every momentum feature is computed only from
 # the current dashboard observation and an earlier cached observation. Positive
@@ -87,32 +124,151 @@ MOMENTUM_FEATURE_NAMES = (
     "congestion_delay_reduction_velocity",
     "route_time_reduction_velocity",
     "forecast_exposure_reduction_velocity",
+    "forecast_reevacuation_reduction_velocity",
+    "forecast_safe_capacity_growth_velocity",
 )
 
 CANDIDATE_FEATURE_NAMES = (
+    "is_defer_action",
     "candidate_capacity_fraction",
     "candidate_east_position_fraction",
     "candidate_north_position_fraction",
     "nearest_open_shelter_distance_fraction",
-    "exact_assignment_gain_fraction",
+    "current_danger",
+    "forecast_expected_danger",
+    "forecast_escalation_probability",
+    "forecast_uncertainty",
+    "forecast_overrun_probability",
+    "forecast_next_overrun_probability",
+    "forecast_overrun_lead_time_fraction",
+    "forecast_reevacuation_response_fraction",
+    "hazard_safety_margin",
+    "closure_warning_incidence_fraction",
+    "closed_road_incidence_fraction",
+    "public_regional_objective_score",
 )
+
+
+def public_regional_objective_values(
+    observation,
+    *,
+    clearance_tail_weight: float,
+    casualty_priority_kappa: float,
+) -> np.ndarray:
+    """Score candidates from only the public regional observation.
+
+    This is the single information contract used by both the actor's residual
+    base policy and the deployable objective-greedy comparator.  Scores are
+    normalized within the current feasible action set; this preserves the
+    ordering while giving the neural prior a stable, resolution-independent
+    scale.  No pedestrian record, route, reservation, simulator branch, or
+    latent regime value is read here.
+    """
+    values = np.full(observation.number_of_actions, -np.inf, dtype=np.float64)
+    feasible = _feasible_install_actions(observation)
+    if feasible.size == 0:
+        return values
+    cells = np.asarray(observation.candidate_cell_indices[feasible], dtype=np.int64)
+    population = float(max(1, int(observation.initial_population)))
+    active = np.asarray(observation.active_by_cell[cells], dtype=np.float64)
+    capacities = np.asarray(observation.candidate_capacities[feasible], dtype=np.float64)
+    coverage = np.minimum(active, capacities) / np.maximum(active, 1.0)
+    debt = np.asarray(
+        observation.remaining_evacuation_debt_by_cell[cells], dtype=np.float64
+    )
+    horizon_minutes = max(
+        float(observation.time_step_minutes),
+        float(observation.horizon) * float(observation.time_step_minutes),
+    )
+    tail = (
+        max(0.0, float(clearance_tail_weight))
+        * np.asarray(observation.slow_tail_time_by_cell[cells], dtype=np.float64)
+        / (population * horizon_minutes)
+    )
+    danger = np.maximum(
+        np.asarray(observation.danger_by_cell[cells], dtype=np.float64),
+        np.asarray(observation.candidate_forecast_danger[feasible], dtype=np.float64),
+    )
+    time_remaining = max(
+        0.0,
+        float(observation.horizon - observation.simulation_time)
+        / float(max(1, observation.horizon)),
+    )
+    expected_harm = (
+        max(0.0, float(casualty_priority_kappa))
+        * (active / population)
+        * danger
+        * time_remaining
+    )
+    displaced_access = np.asarray(
+        observation.candidate_forecast_reevacuation_response[feasible],
+        dtype=np.float64,
+    )
+    scores = coverage * (debt + tail + expected_harm) + displaced_access
+    if not np.isfinite(scores).all() or np.any(scores < 0.0):
+        raise FloatingPointError("Public regional objective scores must be finite and non-negative")
+    scale = max(float(np.max(scores)), 1e-12)
+    values[feasible] = scores / scale
+    return values
 
 BENCHMARK_POLICY_CONTRACTS = {
     "objective_greedy": {
         "role": "primary_myopic_comparator",
-        "label": "complete-ledger objective-matched myopic policy",
+        "label": "public-regional objective-matched myopic policy",
         "score": (
-            "positive evaluation score of capacity-capped same-state summed "
-            "plain remaining time plus forecast-danger-weighted remaining time "
-            "for every person not yet safe"
+            "capacity-covered share of actor-visible regional remaining debt, "
+            "clearance-tail burden, and current/forecast danger burden"
         ),
         "information": (
-            "exact current pedestrian routes, speeds, shelter reservations, "
-            "candidate capacity, and the public one-interval hazard forecast; "
-            "panicked people and casualties retain unresolved debt; no physical "
-            "rollout, recurrent history, or continuation value"
+            "the same public configured-n-by-n regional population, debt, tail, danger, "
+            "forecast and candidate-capacity summaries exposed to the actor; "
+            "no per-person routes, candidate rerouting branch, recurrent "
+            "history, or continuation value"
         ),
+        "actor_relation": "identical base score; RL adds only its learned residual",
         "timing": "dynamic",
+    },
+    "forecast_greedy": {
+        "role": "forecast_myopic_comparator",
+        "label": "forecast-ensemble weighted demand greedy",
+        "information": (
+            "actor-visible current regional demand, candidate capacity, and "
+            "public forecast-ensemble mean danger"
+        ),
+        "timing": "installs at every epoch",
+    },
+    "regime_oracle_greedy": {
+        "role": "information_value_reference",
+        "label": "realized-regime one-interval greedy",
+        "information": "realized regime tape through the next decision interval",
+        "timing": "installs at every epoch; not deployable",
+    },
+    "deadline_greedy": {
+        "role": "strongest_tuned_rule",
+        "label": "deadline-feasible threshold regional-objective greedy",
+        "information": (
+            "public regional objective summaries and budget/deadline slack; "
+            "no exact candidate rerouting"
+        ),
+        "timing": (
+            "may defer; threshold is selected on paired validation tapes and "
+            "retained only after at least a one-standard-error win over never-defer"
+        ),
+    },
+    "belief_rollout": {
+        "role": "public_information_planner",
+        "label": "belief-future rollout with greedy continuation",
+        "information": (
+            "the same public warnings and regional observation, plus futures "
+            "sampled from the documented belief model; no realized latent tape"
+        ),
+        "timing": "top six public-score regions plus defer in Gate 1",
+    },
+    "hindsight_rollout": {
+        "role": "clairvoyant_ceiling",
+        "label": "realized-tape rollout ceiling",
+        "information": "complete realized exogenous tape",
+        "timing": "region plus defer; never reported as a deployable policy",
     },
     "risk_reduction": {
         "role": "appendix_diagnostic",
@@ -156,18 +312,22 @@ BENCHMARK_POLICY_CONTRACTS = {
     },
     "random": {
         "role": "floor",
-        "label": "uniform random feasible candidate site",
+        "label": "uniform random feasible regional action",
         "score": "not applicable",
-        "timing": "dynamic",
+        "timing": "dynamic; includes defer when defer is feasible, exactly as V_mu",
     },
     "initial_only": {
         "role": "value_of_feedback",
         "label": "initial-state objective-greedy precommitment",
-        "score": (
-            "sequential immediate evacuation-debt reduction on a frozen "
-            "time-zero planning state"
-        ),
+        "score": "shared public-regional objective score on a frozen time-zero state",
         "timing": "fixed schedule at the common online decision epochs",
+    },
+    "static_greedy": {
+        "role": "static_demand_reference",
+        "label": "time-zero demand precommitment",
+        "information": "time-zero public regional active demand and candidate table only",
+        "score": "active population in the candidate region",
+        "timing": "all sites chosen before the episode; common installation schedule",
     },
 }
 
@@ -643,6 +803,7 @@ class RegionalObservation:
     candidate_count_by_cell: np.ndarray
     action_mask: np.ndarray
     outcome: OutcomeSnapshot
+    operational_shelter_capacity_by_cell: Optional[np.ndarray] = None
     congestion_speed_ratio_by_cell: Optional[np.ndarray] = None
     candidate_osm_node_ids: Optional[tuple[str, ...]] = None
     candidate_cell_indices: Optional[np.ndarray] = None
@@ -650,6 +811,13 @@ class RegionalObservation:
     candidate_east_positions: Optional[np.ndarray] = None
     candidate_north_positions: Optional[np.ndarray] = None
     shelter_utilization_by_cell: Optional[np.ndarray] = None
+    sheltered_population_by_cell: Optional[np.ndarray] = None
+    enroute_reserved_population_by_cell: Optional[np.ndarray] = None
+    forecast_overrun_probability_by_cell: Optional[np.ndarray] = None
+    forecast_next_shelter_overrun_probability_by_cell: Optional[np.ndarray] = None
+    forecast_overrun_lead_time_fraction_by_cell: Optional[np.ndarray] = None
+    forecast_reevacuation_population_by_cell: Optional[np.ndarray] = None
+    forecast_enroute_reroute_population_by_cell: Optional[np.ndarray] = None
     network_node_count_by_cell: Optional[np.ndarray] = None
     mean_route_time_by_cell: Optional[np.ndarray] = None
     slow_tail_population_by_cell: Optional[np.ndarray] = None
@@ -667,6 +835,8 @@ class RegionalObservation:
     forecast_escalation_probability_by_cell: Optional[np.ndarray] = None
     forecast_uncertainty_by_cell: Optional[np.ndarray] = None
     hazard_source_proximity_by_cell: Optional[np.ndarray] = None
+    closure_warning_by_cell: Optional[np.ndarray] = None
+    closed_road_by_cell: Optional[np.ndarray] = None
     region_east_positions: Optional[np.ndarray] = None
     region_north_positions: Optional[np.ndarray] = None
     region_area_fractions: Optional[np.ndarray] = None
@@ -676,10 +846,19 @@ class RegionalObservation:
     candidate_nearest_shelter_distances: Optional[np.ndarray] = None
     candidate_forecast_danger: Optional[np.ndarray] = None
     candidate_hazard_safety_margin: Optional[np.ndarray] = None
+    candidate_current_danger: Optional[np.ndarray] = None
+    candidate_forecast_escalation: Optional[np.ndarray] = None
+    candidate_forecast_uncertainty: Optional[np.ndarray] = None
+    candidate_forecast_overrun_probability: Optional[np.ndarray] = None
+    candidate_forecast_next_overrun_probability: Optional[np.ndarray] = None
+    candidate_forecast_overrun_lead_time_fraction: Optional[np.ndarray] = None
+    candidate_forecast_reevacuation_response: Optional[np.ndarray] = None
+    candidate_closure_warning: Optional[np.ndarray] = None
+    candidate_closed_road: Optional[np.ndarray] = None
     candidate_reroutable_population: Optional[np.ndarray] = None
     candidate_risk_time_reduction: Optional[np.ndarray] = None
     remaining_evacuation_debt_by_cell: Optional[np.ndarray] = None
-    candidate_assignment_gain: Optional[np.ndarray] = None
+    candidate_public_objective_score: Optional[np.ndarray] = None
     network_load_share: float = 0.0
     time_step_minutes: float = 1.0
     wind_speed_fraction: float = 0.0
@@ -690,6 +869,24 @@ class RegionalObservation:
     hazard_instance_fraction: float = 0.0
     configured_panic_fraction: float = 0.0
     deployment_capacity_coverage_fraction: float = 0.0
+    forecast_reevacuation_population_fraction: float = 0.0
+    forecast_enroute_reroute_population_fraction: float = 0.0
+    forecast_safe_capacity_coverage_fraction: float = 0.0
+    next_shelter_overrun_probability: float = 0.0
+    next_shelter_overrun_lead_time_fraction: float = 1.0
+    forecast_ensemble_mean: Optional[np.ndarray] = None
+    forecast_ensemble_dispersion: Optional[np.ndarray] = None
+    forecast_escalation: Optional[np.ndarray] = None
+    wind_forecast_cos: float = 0.0
+    wind_forecast_sin: float = 0.0
+    wind_forecast_speed: float = 0.0
+    wind_warning: float = 0.0
+    closure_warning_share: float = 0.0
+    remaining_tokens: int = 0
+    remaining_epochs: int = 0
+    deadline_slack: int = 0
+    regime_features_enabled: bool = False
+    defer_action_index: int = -1
 
     def __post_init__(self):
         population = int(self.initial_population)
@@ -771,6 +968,24 @@ class RegionalObservation:
             np.clip(shelter_utilization, 0.0, 1.0).astype(np.float32, copy=False),
         )
 
+        for name in (
+            "operational_shelter_capacity_by_cell",
+            "sheltered_population_by_cell",
+            "enroute_reserved_population_by_cell",
+            "forecast_reevacuation_population_by_cell",
+            "forecast_enroute_reroute_population_by_cell",
+        ):
+            value = getattr(self, name)
+            object.__setattr__(
+                self,
+                name,
+                (
+                    np.zeros(cell_count, dtype=np.float32)
+                    if value is None
+                    else _finite_vector(name, value, cell_count, nonnegative=True)
+                ),
+            )
+
         def bounded_cell_vector(name: str, default: float = 0.0) -> np.ndarray:
             value = getattr(self, name)
             if value is None:
@@ -778,6 +993,22 @@ class RegionalObservation:
             else:
                 result = _finite_vector(name, value, cell_count, nonnegative=True)
             return np.clip(result, 0.0, 1.0).astype(np.float32, copy=False)
+
+        object.__setattr__(
+            self,
+            "forecast_ensemble_mean",
+            bounded_cell_vector("forecast_ensemble_mean"),
+        )
+        object.__setattr__(
+            self,
+            "forecast_ensemble_dispersion",
+            bounded_cell_vector("forecast_ensemble_dispersion"),
+        )
+        object.__setattr__(
+            self,
+            "forecast_escalation",
+            bounded_cell_vector("forecast_escalation"),
+        )
 
         mean_route_time = (
             np.zeros(cell_count, dtype=np.float32)
@@ -830,9 +1061,24 @@ class RegionalObservation:
             "forecast_danger_by_cell",
             "forecast_escalation_probability_by_cell",
             "forecast_uncertainty_by_cell",
+            "forecast_overrun_probability_by_cell",
+            "forecast_next_shelter_overrun_probability_by_cell",
             "hazard_source_proximity_by_cell",
+            "closure_warning_by_cell",
+            "closed_road_by_cell",
         ):
             object.__setattr__(self, name, bounded_cell_vector(name))
+        # A lead-time fraction of one means "no threshold crossing inside the
+        # forecast window".  Zero means the cell is already overrun.  Using
+        # the generic zero default would therefore turn a missing optional
+        # forecast into the strongest possible warning.
+        object.__setattr__(
+            self,
+            "forecast_overrun_lead_time_fraction_by_cell",
+            bounded_cell_vector(
+                "forecast_overrun_lead_time_fraction_by_cell", default=1.0
+            ),
+        )
         danger_momentum = (
             np.zeros(cell_count, dtype=np.float32)
             if self.danger_momentum_by_cell is None
@@ -927,11 +1173,43 @@ class RegionalObservation:
             "hazard_instance_fraction",
             "configured_panic_fraction",
             "deployment_capacity_coverage_fraction",
+            "forecast_reevacuation_population_fraction",
+            "forecast_enroute_reroute_population_fraction",
+            "forecast_safe_capacity_coverage_fraction",
+            "next_shelter_overrun_probability",
+            "next_shelter_overrun_lead_time_fraction",
         ):
             value = float(getattr(self, name))
             if not np.isfinite(value) or not 0.0 <= value <= 1.0:
                 raise ValueError(f"{name} must be finite and in [0, 1]")
             object.__setattr__(self, name, value)
+        for name in (
+            "wind_forecast_cos",
+            "wind_forecast_sin",
+        ):
+            value = float(getattr(self, name))
+            if not np.isfinite(value) or not -1.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be finite and in [-1, 1]")
+            object.__setattr__(self, name, value)
+        for name in (
+            "wind_forecast_speed",
+            "wind_warning",
+            "closure_warning_share",
+        ):
+            value = float(getattr(self, name))
+            if not np.isfinite(value) or not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be finite and in [0, 1]")
+            object.__setattr__(self, name, value)
+        remaining_tokens = max(0, int(self.remaining_tokens))
+        remaining_epochs = max(0, int(self.remaining_epochs))
+        slack = int(self.deadline_slack)
+        if slack != remaining_epochs - remaining_tokens:
+            raise ValueError("deadline_slack must equal remaining_epochs - remaining_tokens")
+        object.__setattr__(self, "remaining_tokens", remaining_tokens)
+        object.__setattr__(self, "remaining_epochs", remaining_epochs)
+        object.__setattr__(self, "deadline_slack", slack)
+        object.__setattr__(self, "regime_features_enabled", bool(self.regime_features_enabled))
+        object.__setattr__(self, "defer_action_index", int(self.defer_action_index))
         for name in (
             "wind_east_direction_fraction",
             "wind_north_direction_fraction",
@@ -1026,32 +1304,62 @@ class RegionalObservation:
             "candidate_hazard_safety_margin",
             default=1.0,
         )
+        candidate_current_danger = bounded_candidate_vector(
+            "candidate_current_danger"
+        )
+        candidate_escalation = bounded_candidate_vector(
+            "candidate_forecast_escalation"
+        )
+        candidate_uncertainty = bounded_candidate_vector(
+            "candidate_forecast_uncertainty"
+        )
+        candidate_overrun_probability = bounded_candidate_vector(
+            "candidate_forecast_overrun_probability"
+        )
+        candidate_next_overrun_probability = bounded_candidate_vector(
+            "candidate_forecast_next_overrun_probability"
+        )
+        candidate_overrun_lead_time = bounded_candidate_vector(
+            "candidate_forecast_overrun_lead_time_fraction", default=1.0
+        )
+        candidate_reevacuation_response = bounded_candidate_vector(
+            "candidate_forecast_reevacuation_response"
+        )
+        candidate_closure_warning = bounded_candidate_vector(
+            "candidate_closure_warning"
+        )
+        candidate_closed_road = bounded_candidate_vector(
+            "candidate_closed_road"
+        )
         candidate_reroutable = bounded_candidate_vector(
             "candidate_reroutable_population"
         )
         candidate_risk_reduction = bounded_candidate_vector(
             "candidate_risk_time_reduction"
         )
-        candidate_assignment_gain = _finite_vector(
-            "candidate_assignment_gain",
+        candidate_public_score = _finite_vector(
+            "candidate_public_objective_score",
             (
                 np.zeros(action_count, dtype=np.float32)
-                if self.candidate_assignment_gain is None
-                else self.candidate_assignment_gain
+                if self.candidate_public_objective_score is None
+                else self.candidate_public_objective_score
             ),
             action_count,
+            nonnegative=True,
         )
-        if np.any(np.abs(candidate_assignment_gain) > 2.0 + 1e-6):
+        if np.any(candidate_public_score > 1.0 + 1e-6):
             raise ValueError(
-                "candidate_assignment_gain must lie in the complete-ledger "
-                "normalized range [-2, 2]"
+                "candidate_public_objective_score must lie in [0, 1]"
             )
-        candidate_assignment_gain = np.clip(
-            candidate_assignment_gain, -2.0, 2.0
-        ).astype(np.float32, copy=False)
+        candidate_public_score = np.clip(candidate_public_score, 0.0, 1.0).astype(
+            np.float32, copy=False
+        )
         if self.remaining_deployments <= 0 and mask.any():
             raise ValueError("action_mask cannot allow deployment after the budget is exhausted")
-        if np.any(mask & (candidate_capacities <= 0.0)):
+        install_feasible = mask.copy()
+        if 0 <= int(self.defer_action_index) < action_count:
+            install_feasible[int(self.defer_action_index)] = False
+        if np.any(install_feasible & (candidate_capacities <= 0.0)):
             raise ValueError("feasible candidates must have positive capacity")
         object.__setattr__(self, "candidate_osm_node_ids", candidate_ids)
         object.__setattr__(self, "candidate_cell_indices", candidate_cells)
@@ -1065,6 +1373,31 @@ class RegionalObservation:
         )
         object.__setattr__(self, "candidate_forecast_danger", candidate_forecast)
         object.__setattr__(self, "candidate_hazard_safety_margin", candidate_safety)
+        object.__setattr__(self, "candidate_current_danger", candidate_current_danger)
+        object.__setattr__(self, "candidate_forecast_escalation", candidate_escalation)
+        object.__setattr__(self, "candidate_forecast_uncertainty", candidate_uncertainty)
+        object.__setattr__(
+            self,
+            "candidate_forecast_overrun_probability",
+            candidate_overrun_probability,
+        )
+        object.__setattr__(
+            self,
+            "candidate_forecast_next_overrun_probability",
+            candidate_next_overrun_probability,
+        )
+        object.__setattr__(
+            self,
+            "candidate_forecast_overrun_lead_time_fraction",
+            candidate_overrun_lead_time,
+        )
+        object.__setattr__(
+            self,
+            "candidate_forecast_reevacuation_response",
+            candidate_reevacuation_response,
+        )
+        object.__setattr__(self, "candidate_closure_warning", candidate_closure_warning)
+        object.__setattr__(self, "candidate_closed_road", candidate_closed_road)
         object.__setattr__(
             self,
             "candidate_reroutable_population",
@@ -1077,8 +1410,8 @@ class RegionalObservation:
         )
         object.__setattr__(
             self,
-            "candidate_assignment_gain",
-            candidate_assignment_gain,
+            "candidate_public_objective_score",
+            candidate_public_score,
         )
         object.__setattr__(self, "action_mask", mask)
 
@@ -1139,6 +1472,8 @@ class RegionalObservation:
                     0.0,
                     1.0,
                 ),
+                self.long_route_share_by_cell,
+                self.exposed_wellness_by_cell,
                 self.panicked_wellness_by_cell,
                 np.clip(
                     self.remaining_evacuation_debt_by_cell,
@@ -1155,15 +1490,54 @@ class RegionalObservation:
                 self.forecast_danger_by_cell,
                 self.forecast_escalation_probability_by_cell,
                 self.forecast_uncertainty_by_cell,
+                self.forecast_overrun_probability_by_cell,
+                self.forecast_next_shelter_overrun_probability_by_cell,
+                self.forecast_overrun_lead_time_fraction_by_cell,
+                self.hazard_source_proximity_by_cell,
+                self.closure_warning_by_cell,
             ),
             axis=-1,
         )
         infrastructure_features = np.stack(
             (
                 np.clip(self.remaining_capacity_by_cell / population_scale, 0.0, 1.0),
+                np.clip(
+                    self.operational_shelter_capacity_by_cell / population_scale,
+                    0.0,
+                    1.0,
+                ),
                 self.shelter_utilization_by_cell,
+                np.clip(
+                    self.sheltered_population_by_cell / population_scale,
+                    0.0,
+                    1.0,
+                ),
+                np.clip(
+                    self.enroute_reserved_population_by_cell / population_scale,
+                    0.0,
+                    1.0,
+                ),
+                np.clip(
+                    self.forecast_reevacuation_population_by_cell
+                    / population_scale,
+                    0.0,
+                    1.0,
+                ),
+                np.clip(
+                    self.forecast_enroute_reroute_population_by_cell
+                    / population_scale,
+                    0.0,
+                    1.0,
+                ),
                 np.clip(self.deployable_capacity_by_cell / population_scale, 0.0, 1.0),
+                np.clip(
+                    self.candidate_count_by_cell
+                    / max(1.0, float(self.candidate_count_by_cell.sum())),
+                    0.0,
+                    1.0,
+                ),
                 np.clip(self.network_node_count_by_cell / road_node_total, 0.0, 1.0),
+                self.closed_road_by_cell,
                 self.region_east_positions,
                 self.region_north_positions,
                 self.region_area_fractions,
@@ -1210,6 +1584,11 @@ class RegionalObservation:
                 forecast_growth,
                 self.population_network_density_fraction,
                 self.deployment_capacity_coverage_fraction,
+                self.forecast_reevacuation_population_fraction,
+                self.forecast_enroute_reroute_population_fraction,
+                self.forecast_safe_capacity_coverage_fraction,
+                self.next_shelter_overrun_probability,
+                self.next_shelter_overrun_lead_time_fraction,
                 np.clip(
                     self.slow_tail_population_by_cell.sum() / population_scale,
                     0.0,
@@ -1224,6 +1603,26 @@ class RegionalObservation:
             ),
             dtype=np.float32,
         )
+        if self.regime_features_enabled:
+            epoch_scale = float(max(1, self.maximum_deployments, self.remaining_epochs))
+            global_features = np.concatenate(
+                (
+                    global_features,
+                    np.asarray(
+                        (
+                            self.wind_forecast_cos,
+                            self.wind_forecast_sin,
+                            self.wind_forecast_speed,
+                            self.wind_warning,
+                            self.closure_warning_share,
+                            self.remaining_tokens / epoch_scale,
+                            self.remaining_epochs / epoch_scale,
+                            np.clip(self.deadline_slack / epoch_scale, -1.0, 1.0),
+                        ),
+                        dtype=np.float32,
+                    ),
+                )
+            )
         if not np.isfinite(cell_features).all() or not np.isfinite(global_features).all():
             raise ValueError("Policy features contain non-finite values")
         return cell_features, global_features
@@ -1231,13 +1630,28 @@ class RegionalObservation:
     def candidate_features(self) -> np.ndarray:
         """Return one plainly interpretable feature vector per candidate site."""
         population_scale = float(max(1, self.initial_population))
+        defer = np.zeros(self.number_of_actions, dtype=np.float32)
+        if 0 <= int(self.defer_action_index) < self.number_of_actions:
+            defer[int(self.defer_action_index)] = 1.0
         features = np.stack(
             (
+                defer,
                 np.clip(self.candidate_capacities / population_scale, 0.0, 1.0),
                 self.candidate_east_positions,
                 self.candidate_north_positions,
                 self.candidate_nearest_shelter_distances,
-                self.candidate_assignment_gain,
+                self.candidate_current_danger,
+                self.candidate_forecast_danger,
+                self.candidate_forecast_escalation,
+                self.candidate_forecast_uncertainty,
+                self.candidate_forecast_overrun_probability,
+                self.candidate_forecast_next_overrun_probability,
+                self.candidate_forecast_overrun_lead_time_fraction,
+                self.candidate_forecast_reevacuation_response,
+                self.candidate_hazard_safety_margin,
+                self.candidate_closure_warning,
+                self.candidate_closed_road,
+                self.candidate_public_objective_score,
             ),
             axis=-1,
         ).astype(np.float32)
@@ -1270,6 +1684,7 @@ class RegionalActionReceipt:
     candidate_cell_j: int
     capacity_added: float
     rerouted_population: int
+    installed: bool = True
 
 
 class RegionalPolicy(Protocol):
@@ -1284,7 +1699,7 @@ class ActivePopulationHeuristic:
 
     def select(self, observation: RegionalObservation, *, deterministic: bool = True) -> PolicyDecision:
         del deterministic
-        feasible = np.flatnonzero(observation.action_mask)
+        feasible = _feasible_install_actions(observation)
         if feasible.size == 0:
             raise RuntimeError("The heuristic received an observation with no feasible action")
         cells = observation.candidate_cell_indices[feasible]
@@ -1312,7 +1727,7 @@ class RiskTimeReductionHeuristic:
         deterministic: bool = True,
     ) -> PolicyDecision:
         del deterministic
-        feasible = np.flatnonzero(observation.action_mask)
+        feasible = _feasible_install_actions(observation)
         if feasible.size == 0:
             raise RuntimeError(
                 "The risk-reduction heuristic received an observation with no feasible action"
@@ -1332,13 +1747,13 @@ class RiskTimeReductionHeuristic:
 
 
 class ObjectiveMatchedGreedyHeuristic:
-    """Choose the largest exact *immediate* gain under the RL objective.
+    """Choose the largest public-regional immediate objective proxy.
 
-    The bridge computes one value for every feasible action with the shared
-    zero-horizon assignment/route evaluator.  Keeping selection in this small
-    class makes the benchmark rule explicit while leaving physical route and
-    capacity accounting in the same authoritative implementation used by the
-    reward and NMCC.  This policy has no temporal memory or continuation value.
+    The bridge supplies one value per feasible action computed only from the
+    actor-visible regional dashboard.  The selector deliberately has no
+    access to per-person routes, exact candidate rerouting, temporal memory or
+    a continuation value.  This makes it an observation-matched heuristic,
+    while the learned actor may use history and simulator-graded training.
     """
 
     name = "objective_greedy"
@@ -1351,7 +1766,7 @@ class ObjectiveMatchedGreedyHeuristic:
         deterministic: bool = True,
     ) -> PolicyDecision:
         del deterministic
-        feasible = np.flatnonzero(observation.action_mask)
+        feasible = _feasible_install_actions(observation)
         if feasible.size == 0:
             raise RuntimeError(
                 "The objective-greedy heuristic received an observation with no feasible action"
@@ -1368,6 +1783,111 @@ class ObjectiveMatchedGreedyHeuristic:
         # np.argmax preserves stable action-table order for exact ties.
         action = int(feasible[int(np.argmax(values[feasible]))])
         return PolicyDecision(action_index=action, strategy=self.name)
+
+
+class ForecastGreedyHeuristic:
+    """Greedy public-forecast rule; timing is deliberately fixed."""
+
+    name = "forecast_greedy"
+
+    def scores(self, observation: RegionalObservation) -> np.ndarray:
+        scores = np.full(observation.number_of_actions, -np.inf, dtype=np.float64)
+        feasible = _feasible_install_actions(observation)
+        if feasible.size:
+            cells = observation.candidate_cell_indices[feasible]
+            demand = np.minimum(
+                observation.active_by_cell[cells],
+                observation.candidate_capacities[feasible],
+            )
+            scores[feasible] = demand * (
+                1.0 + observation.forecast_ensemble_mean[cells]
+            )
+        return scores
+
+    def select(
+        self,
+        observation,
+        *,
+        candidate_values=None,
+        deterministic=True,
+    ):
+        del deterministic
+        scores = (
+            self.scores(observation)
+            if candidate_values is None
+            else np.asarray(candidate_values, dtype=np.float64)
+        )
+        if scores.shape != (observation.number_of_actions,):
+            raise ValueError("forecast candidate_values must match the action table")
+        feasible = _feasible_install_actions(observation)
+        if feasible.size == 0:
+            raise RuntimeError("Forecast-greedy has no feasible installation")
+        action = int(feasible[int(np.argmax(scores[feasible]))])
+        return PolicyDecision(action_index=action, strategy=self.name)
+
+
+class DeadlineGreedyHeuristic(ForecastGreedyHeuristic):
+    """Forecast greedy with one tuned, deadline-feasible defer threshold."""
+
+    name = "deadline_greedy"
+
+    def __init__(self, threshold: float = -np.inf):
+        self.threshold = float(threshold)
+
+    def select(
+        self,
+        observation,
+        *,
+        candidate_values=None,
+        deterministic=True,
+    ):
+        del deterministic
+        scores = (
+            self.scores(observation)
+            if candidate_values is None
+            else np.asarray(candidate_values, dtype=np.float64)
+        )
+        if scores.shape != (observation.number_of_actions,):
+            raise ValueError("deadline candidate_values must match the action table")
+        feasible = _feasible_install_actions(observation)
+        defer = int(observation.defer_action_index)
+        if (
+            defer >= 0
+            and bool(observation.action_mask[defer])
+            and (
+                feasible.size == 0
+                or float(np.max(scores[feasible])) < self.threshold
+            )
+        ):
+            return PolicyDecision(action_index=defer, strategy=self.name)
+        if feasible.size == 0:
+            raise RuntimeError("Deadline-greedy has no feasible action")
+        action = int(feasible[int(np.argmax(scores[feasible]))])
+        return PolicyDecision(action_index=action, strategy=self.name)
+
+
+class BeliefRolloutPolicy:
+    """Select the minimum-cost action from externally computed belief rollouts."""
+
+    name = "belief_rollout"
+
+    def select(self, observation, *, candidate_costs, deterministic=True):
+        del deterministic
+        costs = np.asarray(candidate_costs, dtype=np.float64)
+        if costs.shape != (observation.number_of_actions,):
+            raise ValueError("candidate_costs must match the action table")
+        feasible = np.flatnonzero(observation.action_mask)
+        feasible = feasible[np.isfinite(costs[feasible])]
+        if feasible.size == 0:
+            raise RuntimeError("Belief rollout requires at least one graded feasible action")
+        action = int(feasible[int(np.argmin(costs[feasible]))])
+        return PolicyDecision(action_index=action, strategy=self.name)
+
+
+class HindsightRolloutPolicy(BeliefRolloutPolicy):
+    """Clairvoyant ceiling; evaluation must never report it as a policy."""
+
+    name = "hindsight_rollout"
 
 
 class RouteTimeSavingHeuristic(RiskTimeReductionHeuristic):
@@ -1392,7 +1912,7 @@ class HazardWeightedDemandHeuristic:
         deterministic: bool = True,
     ) -> PolicyDecision:
         del deterministic
-        feasible = np.flatnonzero(observation.action_mask)
+        feasible = _feasible_install_actions(observation)
         if feasible.size == 0:
             raise RuntimeError(
                 "The hazard-weighted heuristic received an observation with no feasible action"
@@ -1444,7 +1964,7 @@ class AccessibilityDeficitHeuristic:
             raise ValueError(
                 "cell_centers and RegionalObservation must contain the same number of cells"
             )
-        feasible = np.flatnonzero(observation.action_mask)
+        feasible = _feasible_install_actions(observation)
         if feasible.size == 0:
             raise RuntimeError(
                 "The accessibility-deficit heuristic received an observation with no feasible action"
@@ -1492,11 +2012,16 @@ class UniformRegionalPolicy:
 
     def select(self, observation: RegionalObservation, *, deterministic: bool = False) -> PolicyDecision:
         del deterministic
-        feasible = np.flatnonzero(observation.action_mask)
-        if feasible.size == 0:
-            raise RuntimeError("The random policy received an observation with no feasible action")
-        action = int(self.rng.choice(feasible))
+        action = uniform_feasible_action(observation, self.rng)
         return PolicyDecision(action_index=action, strategy=self.name)
+
+
+def uniform_feasible_action(observation: RegionalObservation, rng) -> int:
+    """Shared uniform-reference action rule used online and in V_mu rollouts."""
+    feasible = np.flatnonzero(observation.action_mask)
+    if feasible.size == 0:
+        raise RuntimeError("The uniform policy received an observation with no feasible action")
+    return int(rng.choice(feasible))
 
 
 class RegionalObservationBuilder:
@@ -1509,6 +2034,8 @@ class RegionalObservationBuilder:
         self.maximum_deployments = max(0, int(maximum_deployments))
         self.nx, self.ny = authoritative_grid_shape(core)
         self.number_of_cells = self.nx * self.ny
+        self.action_space = str(getattr(core, "actionSpace", "cell")).strip().lower()
+        self.defer_enabled = self.action_space == "region_defer"
         (
             self.region_east_positions,
             self.region_north_positions,
@@ -1741,7 +2268,7 @@ class RegionalObservationBuilder:
 
     @property
     def number_of_actions(self) -> int:
-        return self.number_of_cells
+        return self.number_of_cells + int(self.defer_enabled)
 
     def _candidate_action_mask(
         self,
@@ -2071,17 +2598,36 @@ class RegionalObservationBuilder:
 
     def _regional_capacity(
         self,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, list]:
+    ) -> tuple[
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        list,
+    ]:
         remaining = np.zeros(self.number_of_cells, dtype=np.float32)
         installed = np.zeros(self.number_of_cells, dtype=np.float32)
-        fulfilled = np.zeros(self.number_of_cells, dtype=np.float32)
+        sheltered = np.zeros(self.number_of_cells, dtype=np.float32)
+        reserved_enroute = np.zeros(self.number_of_cells, dtype=np.float32)
         deployable = np.zeros(self.number_of_cells, dtype=np.float32)
         candidate_count = np.zeros(self.number_of_cells, dtype=np.float32)
         preview_nodes: list = [None] * self.number_of_cells
         shelter_grid = getattr(self.core.shelterDS, "shelterByCell", None)
         candidate_grid = getattr(self.core.shelterDS, "shelterCanByCell", None)
         if shelter_grid is None or candidate_grid is None:
-            return remaining, fulfilled, deployable, candidate_count, preview_nodes
+            return (
+                remaining,
+                installed,
+                sheltered,
+                reserved_enroute,
+                np.zeros(self.number_of_cells, dtype=np.float32),
+                deployable,
+                candidate_count,
+                preview_nodes,
+            )
         reserved_population = getattr(
             self.core.shelterDS, "reservedPopulation", None
         )
@@ -2093,6 +2639,13 @@ class RegionalObservationBuilder:
             for j in range(self.ny):
                 index = i * self.ny + j
                 for shelter in shelter_grid[i][j]:
+                    status = int(getattr(shelter, "status", 0))
+                    if status == 2:
+                        # Installed-but-overrun capacity remains visible in
+                        # audit outputs, but it is not usable capacity and must
+                        # not dilute operational utilization in the actor's
+                        # observation.
+                        continue
                     capacity = max(0.0, float(getattr(shelter, "shelterCap", 0.0)))
                     flow = max(0.0, float(getattr(shelter, "shelterFlow", 0.0)))
                     reserved = max(
@@ -2102,8 +2655,12 @@ class RegionalObservationBuilder:
                         else 0.0,
                     )
                     installed[index] += capacity
-                    fulfilled[index] += min(flow + reserved, capacity)
-                    if int(getattr(shelter, "status", 0)) == 0:
+                    sheltered[index] += min(flow, capacity)
+                    reserved_enroute[index] += min(
+                        reserved,
+                        max(0.0, capacity - flow),
+                    )
+                    if status == 0:
                         remaining[index] += (
                             float(available_capacity(shelter))
                             if callable(available_capacity)
@@ -2131,13 +2688,186 @@ class RegionalObservationBuilder:
                             )
                         )
                         preview_nodes[index] = preview
+        committed = sheltered + reserved_enroute
         utilization = np.divide(
-            fulfilled,
+            committed,
             installed,
-            out=np.zeros_like(fulfilled),
+            out=np.zeros_like(committed),
             where=installed > 0.0,
         )
-        return remaining, utilization, deployable, candidate_count, preview_nodes
+        return (
+            remaining,
+            installed,
+            sheltered,
+            reserved_enroute,
+            utilization,
+            deployable,
+            candidate_count,
+            preview_nodes,
+        )
+
+    def _candidate_reevacuation_response(
+        self,
+        records: Sequence[tuple[str, int, float, float, float]],
+        forecast_reevacuation_population: np.ndarray,
+        overrun_lead_time_fraction: np.ndarray,
+        candidate_overrun_probability_by_cell: np.ndarray,
+    ) -> np.ndarray:
+        """Capacity-, timing-, and safety-aware access to re-evacuees."""
+        displaced = np.asarray(
+            forecast_reevacuation_population, dtype=np.float64
+        )
+        lead = np.asarray(overrun_lead_time_fraction, dtype=np.float64)
+        east = np.asarray(self.region_east_positions, dtype=np.float64)
+        north = np.asarray(self.region_north_positions, dtype=np.float64)
+        population = float(max(1, self.initial_population))
+        result = np.zeros(len(records), dtype=np.float32)
+        if not np.any(displaced > 0.0):
+            return result
+        normalizer = float(np.sqrt(2.0))
+        for action, (candidate_id, _cell, capacity, x_pos, y_pos) in enumerate(records):
+            if candidate_id == "__defer__":
+                continue
+            distances = np.hypot(east - float(x_pos), north - float(y_pos))
+            proximity = 1.0 - np.clip(distances / normalizer, 0.0, 1.0)
+            # Imminent failures receive more weight because the shelter placed
+            # now is the last capacity token guaranteed to exist beforehand.
+            timing = 1.0 - 0.5 * np.clip(lead, 0.0, 1.0)
+            reachable_displaced = min(
+                max(0.0, float(capacity)),
+                float(np.sum(displaced * proximity * timing)),
+            )
+            survival = 1.0 - float(
+                np.clip(
+                    candidate_overrun_probability_by_cell[int(_cell)],
+                    0.0,
+                    1.0,
+                )
+            )
+            result[action] = float(
+                np.clip(
+                    survival * reachable_displaced / population,
+                    0.0,
+                    1.0,
+                )
+            )
+        return result
+
+    def _reservation_arrivals_by_shelter_cell(
+        self,
+    ) -> tuple[tuple[tuple[int, int], ...], ...]:
+        """Return grouped reservation ETA records keyed by shelter cell.
+
+        Records are ``(arrival_steps, represented_population)``.  They use
+        the same grouped pedestrian objects as the simulator, so the work is
+        proportional to the number of cohorts rather than the represented
+        population.
+        """
+        records: list[list[tuple[int, int]]] = [
+            [] for _ in range(self.number_of_cells)
+        ]
+        shelter_store = getattr(self.core, "shelterDS", None)
+        pedestrian_store = getattr(self.core, "pedDS", None)
+        reservations = getattr(shelter_store, "reservationByPedestrian", {})
+        shelters = getattr(shelter_store, "shelterList", {})
+        pedestrians = getattr(pedestrian_store, "pedAgentList", {})
+        time_step = max(
+            1e-9, float(getattr(self.core, "timeStepMinutes", 1.0))
+        )
+        speed_floor = max(1e-6, 0.1 * float(self.core.maxSpeed))
+        for pedestrian_id, reservation in reservations.items():
+            shelter_id, population = (int(value) for value in reservation)
+            if population <= 0:
+                raise RuntimeError("Shelter reservation population must be positive")
+            shelter = shelters.get(shelter_id)
+            pedestrian = pedestrians.get(int(pedestrian_id))
+            if (
+                shelter is None
+                or pedestrian is None
+                or bool(getattr(pedestrian, "terminated", False))
+                or int(getattr(shelter, "status", 0)) != 0
+            ):
+                raise RuntimeError(
+                    "Operational reservation index contains an invalid cohort"
+                )
+            cell = getattr(shelter, "cellLocated", None)
+            if cell is None:
+                raise RuntimeError("Operational shelter has no regional cell")
+            i, j = (int(value) for value in cell)
+            if not (0 <= i < self.nx and 0 <= j < self.ny):
+                raise RuntimeError("Operational shelter cell is outside the grid")
+            distance = self._remaining_route_distance(pedestrian)
+            if np.isfinite(distance):
+                speed = max(
+                    speed_floor,
+                    float(getattr(pedestrian, "currSpeed", 0.0)),
+                )
+                arrival_steps = max(
+                    1, int(np.ceil((distance / speed) / time_step))
+                )
+            else:
+                arrival_steps = int(self.horizon) + 1
+            records[i * self.ny + j].append((arrival_steps, population))
+        return tuple(tuple(cell_records) for cell_records in records)
+
+    def _forecast_shelter_transition_burdens(
+        self,
+        sheltered_population: np.ndarray,
+        reserved_population: np.ndarray,
+        reservation_arrivals: tuple[tuple[tuple[int, int], ...], ...],
+        crossing_cdf_by_step: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Split threatened reservations by whether arrival precedes failure.
+
+        A cohort admitted before the crossing reverses safe stock and is
+        counted as re-evacuation.  A crossing at or before its arrival only
+        releases/reroutes the reservation.  The split integrates over the
+        public-belief first-passage distribution rather than comparing ETA to
+        one point forecast.
+        """
+        cdf = np.asarray(crossing_cdf_by_step, dtype=np.float64)
+        if cdf.ndim != 2 or cdf.shape[1] != self.number_of_cells:
+            raise ValueError(
+                "crossing_cdf_by_step must have shape (steps, cells)"
+            )
+        if cdf.shape[0] < 1 or not np.isfinite(cdf).all():
+            raise ValueError("crossing_cdf_by_step must be finite and non-empty")
+        if np.any(cdf < -1e-9) or np.any(cdf > 1.0 + 1e-9):
+            raise ValueError("crossing_cdf_by_step must contain probabilities")
+        if np.any(np.diff(cdf, axis=0) < -1e-7):
+            raise ValueError("First-passage crossing CDF must be monotone")
+        final_probability = np.clip(cdf[-1], 0.0, 1.0)
+        reevacuation = (
+            np.asarray(sheltered_population, dtype=np.float64)
+            * final_probability
+        )
+        reroute = np.zeros(self.number_of_cells, dtype=np.float64)
+        reservation_totals = np.zeros(self.number_of_cells, dtype=np.float64)
+        final_step = int(cdf.shape[0] - 1)
+        for cell_index, records in enumerate(reservation_arrivals):
+            for arrival_steps, population in records:
+                population = int(population)
+                reservation_totals[cell_index] += population
+                by_arrival = float(
+                    cdf[min(max(0, int(arrival_steps)), final_step), cell_index]
+                )
+                reroute[cell_index] += population * by_arrival
+                reevacuation[cell_index] += population * max(
+                    0.0, final_probability[cell_index] - by_arrival
+                )
+        if not np.allclose(
+            reservation_totals,
+            np.asarray(reserved_population, dtype=np.float64),
+            rtol=0.0,
+            atol=1e-6,
+        ):
+            raise RuntimeError(
+                "Reservation ETA records disagree with regional reserved population"
+            )
+        return (
+            reevacuation.astype(np.float32),
+            reroute.astype(np.float32),
+        )
 
     def _region_centers_m(self) -> np.ndarray:
         tracker = getattr(self.core, "cellTracker", None)
@@ -2160,10 +2890,44 @@ class RegionalObservationBuilder:
                 )
         return np.asarray(centers, dtype=np.float64)
 
+    def _belief_forecast_seed(
+        self,
+        danger: np.ndarray,
+        simulation_time: int,
+    ) -> int:
+        """Key finite belief sampling only to information the actor observes.
+
+        The realized regime stream generated the hidden episode tape and must
+        never seed a policy input.  A stable public-state key makes identical
+        observable states use identical forecast quadrature, while changes in
+        the observed fire front, public warnings, or decision time legitimately
+        produce a new ensemble.
+        """
+        regime = getattr(self.core, "hazard_regime", None)
+        public = getattr(regime, "public", {}) if regime is not None else {}
+        digest = hashlib.sha256()
+        digest.update(np.asarray(self.nx, dtype="<i8").tobytes())
+        digest.update(np.asarray(self.ny, dtype="<i8").tobytes())
+        digest.update(np.asarray(int(simulation_time), dtype="<i8").tobytes())
+        digest.update(
+            np.ascontiguousarray(danger, dtype="<f4").reshape(-1).tobytes()
+        )
+        for key in sorted(public):
+            digest.update(str(key).encode("utf-8"))
+            digest.update(repr(public[key]).encode("utf-8"))
+        return int.from_bytes(digest.digest()[:8], "little", signed=False)
+
     def _hazard_layer(
         self,
         danger: np.ndarray,
+        simulation_time: int,
+        operational_shelter_cells: np.ndarray,
     ) -> tuple[
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
         np.ndarray,
         np.ndarray,
         np.ndarray,
@@ -2174,14 +2938,34 @@ class RegionalObservationBuilder:
         float,
         float,
     ]:
-        """Return a momentum-based forecast distribution and wind vector."""
+        """Return public belief forecasts, including overrun first passage."""
         hazard_store = getattr(self.core, "hazardDS", None)
-        horizon = max(1, int(getattr(self.core, "shelterActionInterval", 1)))
-        distribution_method = getattr(
-            hazard_store, "forecast_distribution_by_cell", None
+        interval = max(1, int(getattr(self.core, "shelterActionInterval", 1)))
+        remaining = max(1, int(self.horizon) - int(simulation_time))
+        # Two decision intervals give the actor enough lead to pre-position a
+        # replacement before the next threatened shelter fails, without
+        # pretending that a far-horizon cell order is precise.
+        forecast_horizon = min(remaining, 2 * interval)
+        first_passage_method = getattr(
+            hazard_store, "belief_overrun_first_passage_by_cell", None
         )
-        if callable(distribution_method):
-            distribution = distribution_method(horizon)
+        if callable(first_passage_method):
+            seed = self._belief_forecast_seed(danger, simulation_time)
+            distribution = first_passage_method(
+                forecast_horizon,
+                float(getattr(self.core, "shelterOverrunDangerLevel", 4)),
+                ensemble_size=int(
+                    getattr(self.core, "forecastEnsembleSize", 8)
+                ),
+                rng=np.random.default_rng(
+                    np.random.SeedSequence(
+                        [seed, 63]
+                    )
+                ),
+                next_event_mask=np.asarray(
+                    operational_shelter_cells, dtype=np.bool_
+                ),
+            )
             forecast = np.asarray(
                 distribution["expected"], dtype=np.float32
             ).reshape(self.number_of_cells)
@@ -2194,12 +2978,52 @@ class RegionalObservationBuilder:
             uncertainty = np.asarray(
                 distribution["uncertainty"], dtype=np.float32
             ).reshape(self.number_of_cells)
+            overrun_probability = np.asarray(
+                distribution["crossing_probability"], dtype=np.float32
+            ).reshape(self.number_of_cells)
+            crossing_cdf = distribution.get("crossing_cdf_by_step")
+            if crossing_cdf is None:
+                # Compatibility for a deterministic external forecaster: put
+                # its crossing mass at the reported conditional lead.
+                crossing_cdf = np.zeros(
+                    (forecast_horizon + 1, self.number_of_cells),
+                    dtype=np.float32,
+                )
+                reported_leads = np.asarray(
+                    distribution["conditional_expected_first_crossing_steps"],
+                    dtype=np.float64,
+                ).reshape(self.number_of_cells)
+                for cell_index, probability in enumerate(overrun_probability):
+                    lead = min(
+                        forecast_horizon,
+                        max(0, int(np.ceil(reported_leads[cell_index]))),
+                    )
+                    crossing_cdf[lead:, cell_index] = float(probability)
+            crossing_cdf = np.asarray(crossing_cdf, dtype=np.float32).reshape(
+                forecast_horizon + 1, self.number_of_cells
+            )
+            next_overrun_probability = np.asarray(
+                distribution["next_overrun_probability"], dtype=np.float32
+            ).reshape(self.number_of_cells)
+            next_shelter_overrun_probability = np.asarray(
+                distribution["next_priority_overrun_probability"],
+                dtype=np.float32,
+            ).reshape(self.number_of_cells)
+            lead_steps = np.asarray(
+                distribution["conditional_expected_first_crossing_steps"],
+                dtype=np.float32,
+            ).reshape(self.number_of_cells)
+            overrun_lead_time = np.clip(
+                lead_steps / float(forecast_horizon + 1), 0.0, 1.0
+            )
         else:
             forecast_method = getattr(
                 hazard_store, "forecast_danger_by_cell", None
             )
             forecast = (
-                np.asarray(forecast_method(horizon), dtype=np.float32).reshape(
+                np.asarray(
+                    forecast_method(forecast_horizon), dtype=np.float32
+                ).reshape(
                     self.number_of_cells
                 )
                 if callable(forecast_method)
@@ -2214,6 +3038,54 @@ class RegionalObservationBuilder:
             )
             escalation = np.clip(escalation, 0.0, 1.0)
             uncertainty = 4.0 * escalation * (1.0 - escalation)
+            threshold = float(
+                np.clip(
+                    float(
+                        getattr(self.core, "shelterOverrunDangerLevel", 4)
+                    )
+                    / 5.0,
+                    0.0,
+                    1.0,
+                )
+            )
+            overrun_probability = (
+                forecast >= threshold - 1e-12
+            ).astype(np.float32)
+            crossing_cdf = np.zeros(
+                (forecast_horizon + 1, self.number_of_cells),
+                dtype=np.float32,
+            )
+            crossing_cdf[0] = (danger >= threshold - 1e-12).astype(
+                np.float32
+            )
+            if forecast_horizon > 0:
+                crossing_cdf[1:] = overrun_probability
+            crossing_cells = np.flatnonzero(
+                (danger < threshold - 1e-12)
+                & (overrun_probability > 0.0)
+            )
+            next_overrun_probability = np.zeros_like(danger, dtype=np.float32)
+            if crossing_cells.size:
+                next_overrun_probability[crossing_cells] = (
+                    1.0 / float(crossing_cells.size)
+                )
+            shelter_crossing_cells = crossing_cells[
+                np.asarray(
+                    operational_shelter_cells, dtype=np.bool_
+                )[crossing_cells]
+            ]
+            next_shelter_overrun_probability = np.zeros_like(
+                danger, dtype=np.float32
+            )
+            if shelter_crossing_cells.size:
+                next_shelter_overrun_probability[shelter_crossing_cells] = (
+                    1.0 / float(shelter_crossing_cells.size)
+                )
+            overrun_lead_time = np.where(
+                danger >= threshold - 1e-12,
+                0.0,
+                np.where(overrun_probability > 0.0, 0.5, 1.0),
+            ).astype(np.float32)
         forecast = np.clip(
             np.nan_to_num(forecast, nan=0.0, posinf=1.0, neginf=0.0),
             0.0,
@@ -2231,6 +3103,45 @@ class RegionalObservationBuilder:
         )
         uncertainty = np.clip(
             np.nan_to_num(uncertainty, nan=0.0, posinf=1.0, neginf=0.0),
+            0.0,
+            1.0,
+        )
+        overrun_probability = np.clip(
+            np.nan_to_num(
+                overrun_probability, nan=0.0, posinf=1.0, neginf=0.0
+            ),
+            0.0,
+            1.0,
+        )
+        crossing_cdf = np.clip(
+            np.nan_to_num(crossing_cdf, nan=0.0, posinf=1.0, neginf=0.0),
+            0.0,
+            1.0,
+        )
+        next_overrun_probability = np.clip(
+            np.nan_to_num(
+                next_overrun_probability,
+                nan=0.0,
+                posinf=1.0,
+                neginf=0.0,
+            ),
+            0.0,
+            1.0,
+        )
+        next_shelter_overrun_probability = np.clip(
+            np.nan_to_num(
+                next_shelter_overrun_probability,
+                nan=0.0,
+                posinf=1.0,
+                neginf=0.0,
+            ),
+            0.0,
+            1.0,
+        )
+        overrun_lead_time = np.clip(
+            np.nan_to_num(
+                overrun_lead_time, nan=1.0, posinf=1.0, neginf=0.0
+            ),
             0.0,
             1.0,
         )
@@ -2285,6 +3196,11 @@ class RegionalObservationBuilder:
             momentum.astype(np.float32),
             escalation.astype(np.float32),
             uncertainty.astype(np.float32),
+            overrun_probability.astype(np.float32),
+            next_overrun_probability.astype(np.float32),
+            next_shelter_overrun_probability.astype(np.float32),
+            overrun_lead_time.astype(np.float32),
+            crossing_cdf.astype(np.float32),
             proximity.astype(np.float32),
             wind_speed_fraction,
             wind_east,
@@ -2316,13 +3232,74 @@ class RegionalObservationBuilder:
             )
         )
 
+    def _road_disruption_layer(
+        self,
+        public: dict,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Map public closure warnings and observable closures to cells.
+
+        A single global warning share cannot tell a spatial policy which side
+        of the network is at risk.  Incidence is normalized by the number of
+        road-edge endpoints in each cell, preserving the complete public map
+        without revealing any unannounced future closure.
+        """
+        incident = np.zeros(self.number_of_cells, dtype=np.float32)
+        warned = np.zeros(self.number_of_cells, dtype=np.float32)
+        closed = np.zeros(self.number_of_cells, dtype=np.float32)
+        warned_ids = {
+            str(value) for value in public.get("closure_warning_edges", ())
+        }
+        closed_ids = {
+            str(value)
+            for value in getattr(self.core.mapDS, "closed_edges", {}).keys()
+        }
+        for key, edge in getattr(
+            self.core.mapDS, "edgeListByLocalID", {}
+        ).items():
+            edge_id = str(getattr(edge, "edgeID", key))
+            endpoint_cells = set()
+            for node in (
+                getattr(edge, "startNode", None),
+                getattr(edge, "endNode", None),
+            ):
+                index = self._node_cell_index(node)
+                if index is not None:
+                    endpoint_cells.add(int(index))
+            for index in endpoint_cells:
+                incident[index] += 1.0
+                if edge_id in warned_ids or str(key) in warned_ids:
+                    warned[index] += 1.0
+                if edge_id in closed_ids or str(key) in closed_ids:
+                    closed[index] += 1.0
+        warned = np.divide(
+            warned,
+            incident,
+            out=np.zeros_like(warned),
+            where=incident > 0.0,
+        )
+        closed = np.divide(
+            closed,
+            incident,
+            out=np.zeros_like(closed),
+            where=incident > 0.0,
+        )
+        return np.clip(warned, 0.0, 1.0), np.clip(closed, 0.0, 1.0)
+
     def _candidate_operational_features(
         self,
         danger: np.ndarray,
         forecast_danger: np.ndarray,
+        forecast_escalation: np.ndarray,
+        forecast_uncertainty: np.ndarray,
+        forecast_overrun_probability: np.ndarray,
+        forecast_next_overrun_probability: np.ndarray,
+        forecast_overrun_lead_time_fraction: np.ndarray,
+        reevacuation_response: np.ndarray,
+        closure_warning: np.ndarray,
+        closed_road: np.ndarray,
         records: Sequence[tuple[str, int, float, float, float]],
         nodes: Sequence[Optional[Any]],
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, ...]:
         """Compute only directly observable site geometry and hazard context.
 
         Candidate-specific pedestrian route scans used to expose an engineered
@@ -2332,13 +3309,30 @@ class RegionalObservationBuilder:
         """
         action_count = len(records)
         nearest_shelter = np.ones(action_count, dtype=np.float32)
+        candidate_danger = np.zeros(action_count, dtype=np.float32)
         candidate_forecast = np.zeros(action_count, dtype=np.float32)
+        candidate_escalation = np.zeros(action_count, dtype=np.float32)
+        candidate_uncertainty = np.zeros(action_count, dtype=np.float32)
+        candidate_overrun = np.zeros(action_count, dtype=np.float32)
+        candidate_next_overrun = np.zeros(action_count, dtype=np.float32)
+        candidate_overrun_lead = np.ones(action_count, dtype=np.float32)
         safety_margin = np.ones(action_count, dtype=np.float32)
+        candidate_warning = np.zeros(action_count, dtype=np.float32)
+        candidate_closed = np.zeros(action_count, dtype=np.float32)
         if action_count == 0:
             return (
                 nearest_shelter,
+                candidate_danger,
                 candidate_forecast,
+                candidate_escalation,
+                candidate_uncertainty,
+                candidate_overrun,
+                candidate_next_overrun,
+                candidate_overrun_lead,
+                reevacuation_response,
                 safety_margin,
+                candidate_warning,
+                candidate_closed,
             )
 
         available_capacity = getattr(
@@ -2363,8 +3357,30 @@ class RegionalObservationBuilder:
             and getattr(hazard, "sourceNode", None) is not None
         ]
         for action, (record, candidate_node) in enumerate(zip(records, nodes)):
-            _, host_cell, _, _, _ = record
+            candidate_id, host_cell, _, _, _ = record
+            if candidate_id == "__defer__":
+                nearest_shelter[action] = 0.0
+                safety_margin[action] = 0.0
+                continue
+            candidate_danger[action] = float(danger[host_cell])
             candidate_forecast[action] = float(forecast_danger[host_cell])
+            candidate_escalation[action] = float(
+                forecast_escalation[host_cell]
+            )
+            candidate_uncertainty[action] = float(
+                forecast_uncertainty[host_cell]
+            )
+            candidate_overrun[action] = float(
+                forecast_overrun_probability[host_cell]
+            )
+            candidate_next_overrun[action] = float(
+                forecast_next_overrun_probability[host_cell]
+            )
+            candidate_overrun_lead[action] = float(
+                forecast_overrun_lead_time_fraction[host_cell]
+            )
+            candidate_warning[action] = float(closure_warning[host_cell])
+            candidate_closed[action] = float(closed_road[host_cell])
             if candidate_node is None:
                 continue
             if shelters:
@@ -2394,8 +3410,17 @@ class RegionalObservationBuilder:
 
         return (
             nearest_shelter,
+            candidate_danger,
             candidate_forecast,
+            candidate_escalation,
+            candidate_uncertainty,
+            candidate_overrun,
+            candidate_next_overrun,
+            candidate_overrun_lead,
+            reevacuation_response,
             safety_margin,
+            candidate_warning,
+            candidate_closed,
         )
 
     def build(
@@ -2436,25 +3461,110 @@ class RegionalObservationBuilder:
         danger = np.nan_to_num(danger, nan=0.0, posinf=1.0, neginf=0.0)
         danger = np.clip(danger, 0.0, 1.0)
         (
-            forecast_danger,
-            danger_momentum,
-            forecast_escalation_probability,
-            forecast_uncertainty,
-            hazard_source_proximity,
-            wind_speed_fraction,
-            wind_east_fraction,
-            wind_north_fraction,
-            hazard_spread_fraction,
-        ) = self._hazard_layer(danger)
-        (
             remaining_capacity,
+            operational_shelter_capacity,
+            sheltered_population,
+            enroute_reserved_population,
             shelter_utilization,
             deployable_capacity,
             candidate_count,
             preview_nodes,
         ) = self._regional_capacity()
+        reservation_arrivals = self._reservation_arrivals_by_shelter_cell()
+        (
+            forecast_danger,
+            danger_momentum,
+            forecast_escalation_probability,
+            forecast_uncertainty,
+            forecast_overrun_probability,
+            forecast_next_overrun_probability,
+            forecast_next_shelter_overrun_probability,
+            forecast_overrun_lead_time_fraction,
+            forecast_crossing_cdf_by_step,
+            hazard_source_proximity,
+            wind_speed_fraction,
+            wind_east_fraction,
+            wind_north_fraction,
+            hazard_spread_fraction,
+        ) = self._hazard_layer(
+            danger,
+            simulation_time,
+            operational_shelter_capacity > 0.0,
+        )
+        regime = getattr(self.core, "hazard_regime", None)
+        public = getattr(regime, "public", {}) if regime is not None else {}
+        closure_warning_by_cell, closed_road_by_cell = (
+            self._road_disruption_layer(public)
+        )
         self._candidate_records, self._candidate_nodes = self._cell_action_records(
             preview_nodes
+        )
+        if self.defer_enabled:
+            self._candidate_records = (
+                ("__defer__", 0, 0.0, 0.5, 0.5),
+                *self._candidate_records,
+            )
+            self._candidate_nodes = (None, *self._candidate_nodes)
+        # An en-route cohort can reach the shelter before it fails.  Such a
+        # cohort becomes a resident and later reverses the safe-completion
+        # stock; only a crossing at or before its ETA is a pure reroute.  Split
+        # those outcomes against the full first-passage CDF rather than one
+        # mean lead time.
+        (
+            forecast_reevacuation_population,
+            forecast_enroute_reroute_population,
+        ) = self._forecast_shelter_transition_burdens(
+            sheltered_population,
+            enroute_reserved_population,
+            reservation_arrivals,
+            forecast_crossing_cdf_by_step,
+        )
+        forecast_safe_capacity = operational_shelter_capacity * (
+            1.0 - forecast_overrun_probability
+        )
+        forecast_reevacuation_fraction = float(
+            np.clip(
+                forecast_reevacuation_population.sum()
+                / float(max(1, self.initial_population)),
+                0.0,
+                1.0,
+            )
+        )
+        forecast_enroute_reroute_fraction = float(
+            np.clip(
+                forecast_enroute_reroute_population.sum()
+                / float(max(1, self.initial_population)),
+                0.0,
+                1.0,
+            )
+        )
+        forecast_safe_capacity_fraction = float(
+            np.clip(
+                forecast_safe_capacity.sum()
+                / float(max(1, self.initial_population)),
+                0.0,
+                1.0,
+            )
+        )
+        candidate_reevacuation_response = self._candidate_reevacuation_response(
+            self._candidate_records,
+            forecast_reevacuation_population,
+            forecast_overrun_lead_time_fraction,
+            forecast_overrun_probability,
+        )
+        shelter_next_mass = forecast_next_shelter_overrun_probability
+        next_shelter_overrun_probability = float(
+            np.clip(shelter_next_mass.sum(), 0.0, 1.0)
+        )
+        next_shelter_overrun_lead_time = (
+            float(
+                np.sum(
+                    shelter_next_mass * forecast_overrun_lead_time_fraction
+                )
+                / max(float(shelter_next_mass.sum()), 1e-12)
+            )
+            if np.any(shelter_next_mass > 0.0)
+            else 1.0
         )
         capacity_coverage = self.deployment_capacity_coverage_fraction
         if float(getattr(self.core, "shelterCapacityToken", 0)) <= 0.0:
@@ -2470,11 +3580,28 @@ class RegionalObservationBuilder:
             ))
         (
             candidate_nearest_shelter,
+            candidate_current_danger,
             candidate_forecast_danger,
+            candidate_forecast_escalation,
+            candidate_forecast_uncertainty,
+            candidate_forecast_overrun_probability,
+            candidate_forecast_next_overrun_probability,
+            candidate_forecast_overrun_lead_time_fraction,
+            candidate_forecast_reevacuation_response,
             candidate_hazard_safety,
+            candidate_closure_warning,
+            candidate_closed_road,
         ) = self._candidate_operational_features(
             danger,
             forecast_danger,
+            forecast_escalation_probability,
+            forecast_uncertainty,
+            forecast_overrun_probability,
+            forecast_next_overrun_probability,
+            forecast_overrun_lead_time_fraction,
+            candidate_reevacuation_response,
+            closure_warning_by_cell,
+            closed_road_by_cell,
             self._candidate_records,
             self._candidate_nodes,
         )
@@ -2500,6 +3627,43 @@ class RegionalObservationBuilder:
             remaining_deployments,
             forecast_danger,
             self._candidate_records,
+        )
+        interval = max(1, int(getattr(self.core, "shelterActionInterval", 1)))
+        # Decisions are taken after a physical transition and never on the
+        # terminal transition itself.  Count only epochs that can actually be
+        # executed; otherwise the mask can permit one defer too many and leave
+        # a capacity token unspent at the horizon.
+        terminal_time = int(self.horizon) - 1
+        remaining_epochs = (
+            0
+            if int(simulation_time) > terminal_time
+            else ((terminal_time - int(simulation_time)) // interval) + 1
+        )
+        deadline_slack = int(remaining_epochs - remaining_deployments)
+        if self.defer_enabled:
+            action_mask = action_mask.copy()
+            action_mask[0] = bool(
+                remaining_deployments > 0
+                and remaining_deployments < remaining_epochs
+            )
+        forecast_direction = float(public.get("wind_forecast_direction", 0.0))
+        forecast_speed_raw = max(0.0, float(public.get("wind_forecast_speed", 0.0)))
+        speed_reference = max(float(self.core.maxSpeed), 1e-6)
+        forecast_speed = float(
+            np.clip(
+                forecast_speed_raw / (forecast_speed_raw + speed_reference),
+                0.0,
+                1.0,
+            )
+        )
+        forecast_angle = np.deg2rad(forecast_direction)
+        edge_total = max(1, len(getattr(self.core.mapDS, "edgeListByLocalID", {})))
+        closure_share = float(
+            np.clip(
+                len(public.get("closure_warning_edges", ())) / edge_total,
+                0.0,
+                1.0,
+            )
         )
         return RegionalObservation(
             decision_index=decision_index,
@@ -2535,7 +3699,27 @@ class RegionalObservationBuilder:
                 [record[4] for record in self._candidate_records],
                 dtype=np.float32,
             ),
+            operational_shelter_capacity_by_cell=(
+                operational_shelter_capacity
+            ),
             shelter_utilization_by_cell=shelter_utilization,
+            sheltered_population_by_cell=sheltered_population,
+            enroute_reserved_population_by_cell=enroute_reserved_population,
+            forecast_overrun_probability_by_cell=(
+                forecast_overrun_probability
+            ),
+            forecast_next_shelter_overrun_probability_by_cell=(
+                forecast_next_shelter_overrun_probability
+            ),
+            forecast_overrun_lead_time_fraction_by_cell=(
+                forecast_overrun_lead_time_fraction
+            ),
+            forecast_reevacuation_population_by_cell=(
+                forecast_reevacuation_population
+            ),
+            forecast_enroute_reroute_population_by_cell=(
+                forecast_enroute_reroute_population
+            ),
             network_node_count_by_cell=self.network_node_count_by_cell,
             mean_route_time_by_cell=mean_route_time,
             slow_tail_population_by_cell=slow_tail_population,
@@ -2555,6 +3739,8 @@ class RegionalObservationBuilder:
             ),
             forecast_uncertainty_by_cell=forecast_uncertainty,
             hazard_source_proximity_by_cell=hazard_source_proximity,
+            closure_warning_by_cell=closure_warning_by_cell,
+            closed_road_by_cell=closed_road_by_cell,
             region_east_positions=self.region_east_positions,
             region_north_positions=self.region_north_positions,
             region_area_fractions=self.region_area_fractions,
@@ -2562,8 +3748,25 @@ class RegionalObservationBuilder:
             route_edge_index=route_edge_index,
             route_edge_weight=route_edge_weight,
             candidate_nearest_shelter_distances=candidate_nearest_shelter,
+            candidate_current_danger=candidate_current_danger,
             candidate_forecast_danger=candidate_forecast_danger,
+            candidate_forecast_escalation=candidate_forecast_escalation,
+            candidate_forecast_uncertainty=candidate_forecast_uncertainty,
+            candidate_forecast_overrun_probability=(
+                candidate_forecast_overrun_probability
+            ),
+            candidate_forecast_next_overrun_probability=(
+                candidate_forecast_next_overrun_probability
+            ),
+            candidate_forecast_overrun_lead_time_fraction=(
+                candidate_forecast_overrun_lead_time_fraction
+            ),
+            candidate_forecast_reevacuation_response=(
+                candidate_forecast_reevacuation_response
+            ),
             candidate_hazard_safety_margin=candidate_hazard_safety,
+            candidate_closure_warning=candidate_closure_warning,
+            candidate_closed_road=candidate_closed_road,
             network_load_share=self.network_load_share,
             time_step_minutes=float(getattr(self.core, "timeStepMinutes", 1.0)),
             wind_speed_fraction=wind_speed_fraction,
@@ -2578,6 +3781,34 @@ class RegionalObservationBuilder:
             deployment_capacity_coverage_fraction=(
                 capacity_coverage
             ),
+            forecast_reevacuation_population_fraction=(
+                forecast_reevacuation_fraction
+            ),
+            forecast_enroute_reroute_population_fraction=(
+                forecast_enroute_reroute_fraction
+            ),
+            forecast_safe_capacity_coverage_fraction=(
+                forecast_safe_capacity_fraction
+            ),
+            next_shelter_overrun_probability=(
+                next_shelter_overrun_probability
+            ),
+            next_shelter_overrun_lead_time_fraction=(
+                next_shelter_overrun_lead_time
+            ),
+            forecast_ensemble_mean=forecast_danger,
+            forecast_ensemble_dispersion=forecast_uncertainty,
+            forecast_escalation=forecast_escalation_probability,
+            wind_forecast_cos=float(np.cos(forecast_angle)),
+            wind_forecast_sin=float(np.sin(forecast_angle)),
+            wind_forecast_speed=forecast_speed,
+            wind_warning=float(bool(public.get("wind_warning", False))),
+            closure_warning_share=closure_share,
+            remaining_tokens=remaining_deployments,
+            remaining_epochs=remaining_epochs,
+            deadline_slack=deadline_slack,
+            regime_features_enabled=bool(regime is not None and regime.enabled),
+            defer_action_index=0 if self.defer_enabled else -1,
         )
 
 
@@ -2608,10 +3839,33 @@ class RegionalShelterExecutor:
             raise ValueError(f"Candidate action {action} is outside the shared action space")
         if not bool(observation.action_mask[action]):
             raise ValueError(f"Candidate action {action} is infeasible under the shared action mask")
-        if observation.number_of_actions != self.nx * self.ny:
+        expected_actions = self.nx * self.ny + int(
+            observation.defer_action_index >= 0
+        )
+        if observation.number_of_actions != expected_actions:
             raise RuntimeError(
                 "Observation action dimensionality does not match CellTracker: "
                 f"actions={observation.number_of_actions}, grid={(self.nx, self.ny)}"
+            )
+        if action == int(observation.defer_action_index):
+            return RegionalActionReceipt(
+                observation_id=(
+                    observation.decision_index,
+                    observation.simulation_time,
+                ),
+                requested_candidate=action,
+                executed_candidate=action,
+                requested_cell=-1,
+                executed_cell=-1,
+                shelter_id=-1,
+                candidate_osm_node_id="__defer__",
+                candidate_x_m=0.0,
+                candidate_y_m=0.0,
+                candidate_cell_i=-1,
+                candidate_cell_j=-1,
+                capacity_added=0.0,
+                rerouted_population=0,
+                installed=False,
             )
 
         cell_index = int(observation.candidate_cell_indices[action])
@@ -2654,11 +3908,14 @@ class RegionalShelterExecutor:
             self.core.finalInstallationUnassignedRationalPopulation = int(
                 unassigned
             )
-            if unassigned != 0:
-                raise RuntimeError(
-                    "Final scheduled shelter left capacity-eligible rational "
-                    f"pedestrians unassigned: {unassigned}"
-                )
+            self.core.shelterDS.assertPopulationMatchedAssignment(
+                unassigned,
+                self.core.pedVol,
+                network_disruption_active=bool(
+                    getattr(self.core.mapDS, "closed_edges", {})
+                ),
+                context="Final scheduled shelter",
+            )
 
         return RegionalActionReceipt(
             observation_id=(observation.decision_index, observation.simulation_time),

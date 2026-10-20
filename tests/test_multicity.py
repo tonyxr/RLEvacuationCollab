@@ -39,6 +39,11 @@ class CityProfileTests(unittest.TestCase):
                 "hazard_weighted",
                 "accessibility_deficit",
                 "random",
+                "forecast_greedy",
+                "regime_oracle_greedy",
+                "deadline_greedy",
+                "belief_rollout",
+                "rl_forecast_ablated",
             }.issubset(
                 DYNAMIC_STRATEGIES
             )

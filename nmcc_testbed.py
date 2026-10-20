@@ -150,6 +150,27 @@ class TestbedCore:
         self.scenario_seed = int(scenario_seed)
         self.shelterActionInterval = 4
         self.initial_population = int(population)
+        self.pedVol = int(population)
+        self.hazardVol = int(hazard_count)
+        self.panicRate = float(panic_rate)
+        self.activePersonTimeWeight = 1.0
+        self.hazardExposureTimeWeight = 1.0
+        self.clearanceTailFraction = 0.10
+        self.clearanceTailExtraWeight = 0.0
+        self.casualtyPriorityKappa = 2.0
+        self.shelterOverrunDangerLevel = 4
+        self.requirePopulationMatchedShelterCapacity = False
+        self.shelterCapacitySurplus = 0
+        self.shelterFailureReserveCount = 0
+        self.shelterCapacityToken = (
+            0 if shelter_capacity_token is None else int(shelter_capacity_token)
+        )
+        self.hazardCasualtyReferenceMinutes = 60.0
+        self.hazardSpreadSpeedMPerMinute = 100.0 / 3.0
+        self.hazardSeverityTransitionMinutes = [6.0, 15.0, 30.0, 50.0]
+        self.hazardSevereRadiusM = 100.0
+        self.actionSpace = "cell"
+        self.forecastEnsembleSize = 8
 
         seeds = {
             "hazard_evolution": int(
@@ -160,6 +181,9 @@ class TestbedCore:
             ),
             "pedestrian_panic_behavior": int(
                 np.random.SeedSequence([scenario_seed, 3]).generate_state(1, dtype=np.uint64)[0]
+            ),
+            "hazard_regime": int(
+                np.random.SeedSequence([scenario_seed, 4]).generate_state(1, dtype=np.uint64)[0]
             ),
         }
         self.random_stream_seeds = seeds
@@ -187,6 +211,9 @@ class TestbedCore:
             wind_direction_degrees=45.0,
             wind_influence=1.0,
             time_step_minutes=self.timeStepMinutes,
+            spread_speed_m_per_minute=self.hazardSpreadSpeedMPerMinute,
+            severity_transition_minutes=self.hazardSeverityTransitionMinutes,
+            severe_radius_m=self.hazardSevereRadiusM,
         )
         self.hazardDS.cell_state_evolution_mode = str(hazard_mode)
         self.cellTracker = CellTracker(self.cellX, self.cellY)
@@ -194,10 +221,16 @@ class TestbedCore:
         # Production samples ``shelterCanVol`` candidates (20 for State
         # College); the default keeps the historical testbed behaviour.
         self.shelterDS = ShelterDS(candidateVol=int(candidate_count), initVol=2)
+        self.pedDS.shelter_damage_danger_threshold = int(
+            self.shelterOverrunDangerLevel
+        )
+        self.shelterDS.hazardOverrunDangerLevel = int(
+            self.shelterOverrunDangerLevel
+        )
         self.shelterDS.deploymentCapacityToken = (
             None
-            if shelter_capacity_token is None
-            else int(shelter_capacity_token)
+            if self.shelterCapacityToken == 0
+            else int(self.shelterCapacityToken)
         )
 
         # MapDS/PedDS still use NumPy's legacy global generator for initial
@@ -256,9 +289,10 @@ class TestbedCore:
             forceTracker=self.forceTracker,
             congestionModel=self.congestionModel,
             timeStepMinutes=self.timeStepMinutes,
-            casualtyReferenceExposureMinutes=60.0,
+            casualtyReferenceExposureMinutes=self.hazardCasualtyReferenceMinutes,
             evacuationHorizonTimesteps=self.stopTime,
         )
+        self.pedDS.resolveHazardShelterClosures(simulation_time=0)
         self.pedDS.route_active_to_nearest_shelter()
         self.cellTracker.cellUpdate(
             pedDS=self.pedDS,

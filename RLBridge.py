@@ -4,7 +4,7 @@
 
 import copy
 import csv
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import math
 import os
@@ -26,12 +26,17 @@ from DecisionInterface import (
     CANDIDATE_FEATURE_NAMES,
     CELL_FEATURE_NAMES,
     GLOBAL_FEATURE_NAMES,
+    REGIME_GLOBAL_FEATURE_NAMES,
     HAZARD_FEATURE_NAMES,
     HAZARD_FEATURE_SLICE,
     INFRA_FEATURE_NAMES,
     INFRA_FEATURE_SLICE,
     MOMENTUM_FEATURE_NAMES,
     ObjectiveMatchedGreedyHeuristic,
+    ForecastGreedyHeuristic,
+    DeadlineGreedyHeuristic,
+    BeliefRolloutPolicy,
+    HindsightRolloutPolicy,
     PED_FEATURE_NAMES,
     PED_FEATURE_SLICE,
     HazardWeightedDemandHeuristic,
@@ -44,8 +49,10 @@ from DecisionInterface import (
     RiskTimeReductionHeuristic,
     RouteTimeSavingHeuristic,
     UniformRegionalPolicy,
+    _feasible_install_actions,
     estimate_clearance_tail,
     estimate_remaining_time_to_safety,
+    public_regional_objective_values,
 )
 from GNN import (
     ACTOR_PRIORS,
@@ -64,7 +71,17 @@ from RewardProcessor import (
 )
 
 
-MODEL_VERSION = 57
+MODEL_VERSION = 63
+EXOGENOUS_CRITIC_FEATURE_NAMES = (
+    "next_wind_cos",
+    "next_wind_sin",
+    "next_wind_speed_multiplier",
+    "next_intensity_multiplier",
+    "future_closure_share",
+    "future_ignition_share",
+    "minutes_to_wind_fraction",
+    "minutes_to_closure_fraction",
+)
 # --- NMCC policy improvement (NMCC-PI) --------------------------------------
 # See NMCCPolicyImprovement.py and docs/NMCC_POLICY_IMPROVEMENT_20260921.md.
 from NMCCPIConfig import (  # noqa: E402  (torch-free shared contract)
@@ -135,7 +152,7 @@ STAGED_TRAINING_CONTRACTS = {
         "environment_dynamics", True, True, False, False, False
     ),
     "P": TrainingStageContract(
-        "policy_improvement", False, False, True, False, False
+        "policy_improvement", False, False, True, True, False
     ),
 }
 
@@ -151,6 +168,7 @@ class ObservationFrame:
     momentum_features: torch.Tensor
     simulation_time: torch.Tensor
     reference_debt: torch.Tensor
+    critic_exogenous: torch.Tensor
 
 
 @dataclass
@@ -253,6 +271,7 @@ class PendingDecision:
     recurrent_state_at_decision: Optional[tuple] = None
     # NMCC-PI record collected before the executor installed anything.
     policy_improvement: Optional[dict] = None
+    deferred: bool = False
 
 
 @dataclass(frozen=True)
@@ -269,17 +288,33 @@ class ForwardRewardBreakdown:
     terminal_exposure_residual_cost: float
     decision_discount: float
     terminal_clearance_tail_cost: float = 0.0
+    active_person_time_weight: float = 1.0
+    hazard_exposure_time_weight: float = 1.0
+    reward_denominator: float = 1.0
+    safe_completion_stock_change: int = 0
+    casualty_change: int = 0
 
     @property
     def interval_cost(self) -> float:
+        """Configured complete-ledger cost in physical person-minute units."""
         return float(
-            self.plain_interval_cost
-            + self.exposure_interval_cost
+            self.active_person_time_weight
+            * (self.plain_interval_cost + self.terminal_plain_residual_cost)
+            + self.hazard_exposure_time_weight
+            * (
+                self.exposure_interval_cost
+                + self.terminal_exposure_residual_cost
+            )
             + self.expected_casualty_interval_cost
-            + self.terminal_plain_residual_cost
-            + self.terminal_exposure_residual_cost
             + self.terminal_clearance_tail_cost
         )
+
+    @property
+    def normalized_interval_cost(self) -> float:
+        denominator = float(self.reward_denominator)
+        if not np.isfinite(denominator) or denominator <= 0.0:
+            raise ValueError("reward_denominator must be finite and positive")
+        return float(self.interval_cost / denominator)
 
     @property
     def reference_potential_reduction(self) -> float:
@@ -651,6 +686,7 @@ class RLBridge:
         strategy = str(deployment_strategy).strip().lower()
         if strategy not in {
             "rl",
+            "rl_forecast_ablated",
             "rl_precommit",
             "objective_greedy",
             "random",
@@ -662,6 +698,11 @@ class RLBridge:
             "none",
             "initial_only",
             "static_greedy",
+            "forecast_greedy",
+            "regime_oracle_greedy",
+            "deadline_greedy",
+            "belief_rollout",
+            "hindsight_rollout",
         }:
             raise ValueError(f"Unsupported deployment strategy: {deployment_strategy!r}")
         if self.train_mode and strategy != "rl":
@@ -676,6 +717,8 @@ class RLBridge:
         self.d_haz = len(HAZARD_FEATURE_NAMES)
         self.d_inf = len(INFRA_FEATURE_NAMES)
         self.d_global = len(GLOBAL_FEATURE_NAMES)
+        if bool(getattr(core, "hazardRegimeEnabled", False)):
+            self.d_global += len(REGIME_GLOBAL_FEATURE_NAMES)
         self.d_momentum = len(MOMENTUM_FEATURE_NAMES)
         self.d_candidate = len(CANDIDATE_FEATURE_NAMES)
 
@@ -702,7 +745,9 @@ class RLBridge:
         target_shelters = max(initial_shelters, int(target_active_shelters))
         self.maximum_deployments = max(0, target_shelters - initial_shelters)
         self.deployments_made = 0
+        self.tokens_remaining = int(self.maximum_deployments)
         self.decision_index = 0
+        self.last_decision_time: Optional[int] = None
         self.first_decision_time = self._positive_int(
             "first_decision_time", first_decision_time
         )
@@ -740,6 +785,12 @@ class RLBridge:
         self.objective_expected_casualty_person_time = 0.0
         self.heuristic_policy = ActivePopulationHeuristic()
         self.objective_greedy_policy = ObjectiveMatchedGreedyHeuristic()
+        self.forecast_greedy_policy = ForecastGreedyHeuristic()
+        self.deadline_greedy_policy = DeadlineGreedyHeuristic(
+            float(getattr(core, "deadlineGreedyThreshold", -np.inf))
+        )
+        self.belief_rollout_policy = BeliefRolloutPolicy()
+        self.hindsight_rollout_policy = HindsightRolloutPolicy()
         self.risk_reduction_policy = RiskTimeReductionHeuristic()
         self.route_saving_policy = RouteTimeSavingHeuristic()
         self.hazard_weighted_policy = HazardWeightedDemandHeuristic()
@@ -759,7 +810,7 @@ class RLBridge:
         self.actor_head_named_parameters: list[tuple[str, nn.Parameter]] = []
         self.critic_head_named_parameters: list[tuple[str, nn.Parameter]] = []
         self.random_reference_named_parameters: list[tuple[str, nn.Parameter]] = []
-        if self.deployment_strategy in {"rl", "rl_precommit"}:
+        if self.deployment_strategy in {"rl", "rl_forecast_ablated", "rl_precommit"}:
             if tuple(VALUE_COMPONENT_NAMES) != tuple(REWARD_COMPONENT_NAMES):
                 raise RuntimeError("Actor-critic and reward component orders disagree")
             with torch.random.fork_rng(devices=[]):
@@ -779,12 +830,17 @@ class RLBridge:
                     actor_prior_scale=self.actor_prior_scale,
                     actor_prior_feature_index=(
                         CANDIDATE_FEATURE_NAMES.index(
-                            "exact_assignment_gain_fraction"
+                            "public_regional_objective_score"
                         )
                         if self.actor_prior == "objective_greedy"
                         else 0
                     ),
                     auxiliary_models_enabled=self.learned_nmcc_models_enabled,
+                    d_critic_exogenous=(
+                        len(EXOGENOUS_CRITIC_FEATURE_NAMES)
+                        if bool(getattr(core, "hazardRegimeEnabled", False))
+                        else 0
+                    ),
                 ).to(self.device)
             roles = self.policy.parameter_roles()
             self.representation_named_parameters = list(roles["representation"])
@@ -872,7 +928,7 @@ class RLBridge:
         self.rollout_episode_count = 0
         self.random_reference_replay: list[ReferenceValueEpisode] = []
         self.actor_replay: list[ActorReplayEpisode] = []
-        if self.deployment_strategy in {"rl", "rl_precommit"}:
+        if self.deployment_strategy in {"rl", "rl_forecast_ablated", "rl_precommit"}:
             if os.path.exists(self.checkpoint_path):
                 self._load_checkpoint(require_training_state=self.train_mode)
             elif not self.train_mode:
@@ -916,6 +972,7 @@ class RLBridge:
         self.action_agreements = 0
         self.action_comparisons = 0
         self.behavior_entropies: list[float] = []
+        self.deferred_decisions = 0
         self.last_training_diagnostics: Dict[str, float] = {}
         self.initial_observation_digest: Optional[str] = None
         self.precommit_initial_observation_digest: Optional[str] = None
@@ -1055,9 +1112,12 @@ class RLBridge:
         this environmental reward.
         """
         feasible = np.flatnonzero(np.asarray(observation.action_mask, dtype=bool))
+        defer_action = int(observation.defer_action_index)
+        if defer_action >= 0:
+            feasible = feasible[feasible != defer_action]
         action = int(selected_action)
         if action not in set(int(value) for value in feasible):
-            raise ValueError("Selected action is not feasible")
+            raise ValueError("Selected action is not a feasible shelter installation")
         cells = np.asarray(
             observation.candidate_cell_indices[feasible], dtype=np.int64
         )
@@ -1275,16 +1335,24 @@ class RLBridge:
 
     @property
     def remaining_deployments(self) -> int:
-        return max(0, self.maximum_deployments - self.deployments_made)
+        if str(getattr(self.core, "actionSpace", "cell")) == "region_defer":
+            return max(0, int(self.tokens_remaining))
+        return max(
+            0, int(self.maximum_deployments) - int(self.deployments_made)
+        )
 
     def _model_signature(self) -> dict:
         return {
             "version": MODEL_VERSION,
             "grid_shape": (self.nx, self.ny),
             "cell_features": CELL_FEATURE_NAMES,
-            "global_features": GLOBAL_FEATURE_NAMES,
+            "global_features": (
+                GLOBAL_FEATURE_NAMES + REGIME_GLOBAL_FEATURE_NAMES
+                if bool(getattr(self.core, "hazardRegimeEnabled", False))
+                else GLOBAL_FEATURE_NAMES
+            ),
             "candidate_features": CANDIDATE_FEATURE_NAMES,
-            "action_space": "structurally_masked_cell_policy_shared_deterministic_site_rule",
+            "action_space": str(getattr(self.core, "actionSpace", "cell")),
             "architecture": (
                 "relational_route_gnn_lstm_with_auxiliary_dynamics"
                 if self.policy.auxiliary_models_enabled
@@ -1328,7 +1396,7 @@ class RLBridge:
                     "risk_time_reduction": None,
                     "route_time_saving": None,
                     "active_population": "relative_active_population",
-                    "objective_greedy": "exact_assignment_gain_fraction",
+                    "objective_greedy": "public_regional_objective_score",
                     "none": None,
                 }[self.actor_prior],
             },
@@ -1349,7 +1417,8 @@ class RLBridge:
                     )
                 ),
                 "critic_target": (
-                    "not_used_by_rollout_policy_improvement"
+                    "complete_episode_smdp_monte_carlo_return_to_go_with_"
+                    "realized_regime_baseline"
                     if self.nmcc_policy_improvement
                     else "complete_episode_return"
                 ),
@@ -1444,7 +1513,11 @@ class RLBridge:
                 "continuation_loss_coefficient": float(
                     self.nmcc_pi_continuation_loss_coef
                 ),
-                "continuation_target": "realized_complete_simulator_cost",
+                "continuation_target": (
+                    "belief_complete_simulator_cost"
+                    if self._rollout_target_future_mode(self.core) == "belief"
+                    else "hindsight_realized_complete_simulator_cost"
+                ),
                 "stage_contract": {
                     "P": "frozen_rollout_collection_then_categorical_policy_fit",
                 },
@@ -1473,6 +1546,12 @@ class RLBridge:
             "hazard_forecast": {
                 "horizon_timesteps": int(self.shelter_action_interval),
                 "wind_observation": "normalized_east_north_velocity_tuple",
+                "latent_intensity_inference": (
+                    "marked_poisson_bayesian_filter_from_observed_ca_front"
+                ),
+                "belief_particle_current_intensity": (
+                    "posterior_sample_never_realized_hidden_copy"
+                ),
                 "wind_influence": float(
                     getattr(self.core, "hazardWindInfluence", 1.0)
                 ),
@@ -1502,6 +1581,12 @@ class RLBridge:
             },
             "rollout_episodes": self.rollout_episodes,
             "reward_contract": {
+                "active_person_time_weight": float(
+                    getattr(self.core, "activePersonTimeWeight", 1.0)
+                ),
+                "hazard_exposure_time_weight": float(
+                    getattr(self.core, "hazardExposureTimeWeight", 1.0)
+                ),
                 "evacuation_time_weight": (
                     self.reward_model.evacuation_time_weight
                 ),
@@ -1558,11 +1643,7 @@ class RLBridge:
                     "minimize_normalized_complete_ledger_cost_composed_of_"
                     "active_time_hazard_exposure_expected_casualty_and_clearance_tail"
                 ),
-                "factorized_critic_components": (
-                    "not_used_by_rollout_policy_improvement"
-                    if self.nmcc_policy_improvement
-                    else REWARD_COMPONENT_NAMES
-                ),
+                "factorized_critic_components": REWARD_COMPONENT_NAMES,
                 "learning_signal_scale": float(self.learning_reward_scale),
                 "reported_objective_scale": 1.0,
             },
@@ -1639,7 +1720,8 @@ class RLBridge:
                 "legacy_advantage_scale_floor_ignored": self.advantage_scale_floor,
                 "learning_reward_scale": self.learning_reward_scale,
                 "critic_target": (
-                    "not_used_by_rollout_policy_improvement"
+                    "complete_episode_smdp_monte_carlo_return_to_go_with_"
+                    "realized_regime_baseline"
                     if self.nmcc_policy_improvement
                     else "complete_episode_smdp_monte_carlo_return_to_go"
                 ),
@@ -1677,17 +1759,18 @@ class RLBridge:
                     else "diagnostic_only_for_direct_ppo"
                 ),
                 "critic_loss": (
-                    "not_used_by_rollout_policy_improvement"
+                    "factorized_smooth_l1_realized_monte_carlo_return"
                     if self.nmcc_policy_improvement
                     else "raw_smooth_l1_monte_carlo_return"
                 ),
                 "critic_factorization": (
-                    "not_used_by_rollout_policy_improvement"
+                    "signed_component_heads_with_realized_regime_baseline"
                     if self.nmcc_policy_improvement
                     else "signed_component_heads"
                 ),
                 "optimizer_ownership": (
-                    "actor_only_current_policy_rebased_recent_rollout_fit"
+                    "disjoint_actor_and_critic_parameters_with_actor_rebased_"
+                    "recent_rollout_fit"
                     if self.nmcc_policy_improvement
                     else "disjoint_actor_and_critic_world_parameters"
                 ),
@@ -2327,6 +2410,7 @@ class RLBridge:
         route_edge_weight: Optional[torch.Tensor] = None,
         candidate_cell_index: Optional[torch.Tensor] = None,
         candidate_features: Optional[torch.Tensor] = None,
+        critic_exogenous: Optional[torch.Tensor] = None,
     ):
         return fit_gnn(
             x_ped=cell_features[:, PED_FEATURE_SLICE],
@@ -2339,6 +2423,7 @@ class RLBridge:
             batch=batch,
             candidate_cell_index=candidate_cell_index,
             candidate_features=candidate_features,
+            critic_exogenous=critic_exogenous,
         )
 
     def _graph_from_frame(self, frame: ObservationFrame):
@@ -2349,7 +2434,69 @@ class RLBridge:
             route_edge_weight=frame.route_edge_weight.to(self.device),
             candidate_cell_index=frame.candidate_cell_index.to(self.device),
             candidate_features=frame.candidate_features.to(self.device),
+            critic_exogenous=frame.critic_exogenous.to(self.device),
         )
+
+    def _exogenous_critic_features(self, simulation_time: int) -> torch.Tensor:
+        """Summarize the realized future tape for the variance-only critic."""
+        if not bool(getattr(self.core, "hazardRegimeEnabled", False)):
+            return torch.empty(0, dtype=torch.float32, device=self.device)
+        regime = getattr(self.core, "hazard_regime", None)
+        values = np.zeros(len(EXOGENOUS_CRITIC_FEATURE_NAMES), dtype=np.float32)
+        if regime is not None and self.train_mode:
+            future = [
+                event
+                for event in getattr(regime, "scheduled", ())
+                if int(event.get("time", -1)) >= int(simulation_time)
+            ]
+            wind = next((event for event in future if event["kind"] == "wind"), None)
+            intensity = next(
+                (event for event in future if event["kind"] == "intensity"), None
+            )
+            closures = [event for event in future if event["kind"] == "closure"]
+            ignitions = [event for event in future if event["kind"] == "ignition"]
+            horizon_left = max(1, int(self.horizon) - int(simulation_time))
+            direction = float(getattr(regime, "wind_direction_degrees", 0.0))
+            speed = float(getattr(regime, "wind_speed_multiplier", 1.0))
+            if wind is not None:
+                direction = (
+                    direction + float(wind["payload"]["direction_delta"])
+                ) % 360.0
+                speed = float(wind["payload"]["speed_multiplier"])
+            angle = np.deg2rad(direction)
+            values[0] = float(np.cos(angle))
+            values[1] = float(np.sin(angle))
+            values[2] = float(speed)
+            values[3] = float(
+                getattr(regime, "intensity_multiplier", 1.0)
+                if intensity is None
+                else intensity["payload"]["multiplier"]
+            )
+            edge_total = max(
+                1, len(getattr(self.core.mapDS, "edgeListByLocalID", {}))
+            )
+            cell_total = max(1, int(self.num_cells))
+            values[4] = min(1.0, len(closures) / float(edge_total))
+            values[5] = min(1.0, len(ignitions) / float(cell_total))
+            values[6] = (
+                1.0
+                if wind is None
+                else min(
+                    1.0,
+                    max(0, int(wind["time"]) - int(simulation_time))
+                    / float(horizon_left),
+                )
+            )
+            values[7] = (
+                1.0
+                if not closures
+                else min(
+                    1.0,
+                    max(0, int(closures[0]["time"]) - int(simulation_time))
+                    / float(horizon_left),
+                )
+            )
+        return torch.as_tensor(values, dtype=torch.float32, device=self.device)
 
     def _momentum_features(self, observation: RegionalObservation) -> torch.Tensor:
         """Return causal traffic/hazard velocities from the observation history."""
@@ -2413,6 +2560,9 @@ class RLBridge:
                 device=self.device,
             ),
             reference_debt=self._reference_debt_tensor(observation).detach(),
+            critic_exogenous=self._exogenous_critic_features(
+                int(observation.simulation_time)
+            ).detach(),
         )
         graph = self._graph_from_frame(frame)
         with torch.no_grad():
@@ -2588,7 +2738,7 @@ class RLBridge:
         observation: RegionalObservation,
         recurrent_step: Optional[RecurrentPolicyStep] = None,
     ) -> PolicyDecision:
-        if self.deployment_strategy in {"rl", "rl_precommit"}:
+        if self.deployment_strategy in {"rl", "rl_forecast_ablated", "rl_precommit"}:
             return self._select_rl(
                 observation,
                 deterministic=not self.train_mode,
@@ -2597,8 +2747,43 @@ class RLBridge:
         if self.deployment_strategy == "objective_greedy":
             decision = self.objective_greedy_policy.select(
                 observation,
-                candidate_values=self._objective_greedy_values(observation),
+                candidate_values=self._public_regional_objective_values(
+                    observation
+                ),
                 deterministic=True,
+            )
+        elif self.deployment_strategy == "forecast_greedy":
+            decision = self.forecast_greedy_policy.select(
+                observation, deterministic=True
+            )
+        elif self.deployment_strategy == "regime_oracle_greedy":
+            decision = self.forecast_greedy_policy.select(
+                observation,
+                candidate_values=self._regime_oracle_greedy_values(observation),
+                deterministic=True,
+            )
+        elif self.deployment_strategy == "deadline_greedy":
+            decision = self.deadline_greedy_policy.select(
+                observation,
+                candidate_values=self._public_regional_objective_values(
+                    observation
+                ),
+                deterministic=True,
+            )
+        elif self.deployment_strategy in {"belief_rollout", "hindsight_rollout"}:
+            mode = (
+                "belief"
+                if self.deployment_strategy == "belief_rollout"
+                else "realized"
+            )
+            costs = self._planner_rollout_costs(observation, mode=mode)
+            policy = (
+                self.belief_rollout_policy
+                if mode == "belief"
+                else self.hindsight_rollout_policy
+            )
+            decision = policy.select(
+                observation, candidate_costs=costs, deterministic=True
             )
         elif self.deployment_strategy == "heuristic":
             decision = self.heuristic_policy.select(observation, deterministic=True)
@@ -2624,7 +2809,7 @@ class RLBridge:
             )
         elif self.deployment_strategy == "random":
             decision = self.random_policy.select(observation, deterministic=False)
-        elif self.deployment_strategy == "initial_only":
+        elif self.deployment_strategy in {"initial_only", "static_greedy"}:
             if len(self.static_precommit_schedule) != int(self.maximum_deployments):
                 raise RuntimeError(
                     "initial_only requires a complete time-zero precommitment schedule"
@@ -2649,17 +2834,32 @@ class RLBridge:
                 )
             decision = PolicyDecision(
                 action_index=int(matches[0]),
-                strategy="initial_only",
+                strategy=self.deployment_strategy,
             )
         else:
             raise RuntimeError(f"Strategy {self.deployment_strategy!r} cannot make dynamic decisions")
         return decision
 
+    def _public_regional_objective_values(
+        self,
+        observation: RegionalObservation,
+    ) -> np.ndarray:
+        """Return the actor/comparator shared public-regional base score."""
+        return public_regional_objective_values(
+            observation,
+            clearance_tail_weight=float(
+                getattr(self.core, "clearanceTailExtraWeight", 0.0)
+            ),
+            casualty_priority_kappa=float(
+                getattr(self.core, "casualtyPriorityKappa", 2.0)
+            ),
+        )
+
     def _objective_greedy_values(
         self,
         observation: RegionalObservation,
     ) -> np.ndarray:
-        """Exact complete-ledger myopic value of every feasible action.
+        """Privileged exact immediate values retained only for diagnostics.
 
         Every candidate is valued by the same positive full-episode score used
         for evaluation, applied to its post-installation cost-to-go. Rational
@@ -2668,18 +2868,17 @@ class RLBridge:
         safe contribute zero. Past realized cost is common to every candidate
         and therefore need not be added to determine the ranking.
 
-        Physical time does not advance and no continuation value is used, so
-        held-out improvement over this benchmark is specifically evidence of
-        useful foresight or state context beyond the complete-ledger immediate
-        calculation.
+        This calculation is not used by the actor or any deployable benchmark.
         """
         feasible = np.flatnonzero(observation.action_mask)
-        if feasible.size == 0:
+        defer = int(getattr(observation, "defer_action_index", -1))
+        install_actions = feasible[feasible != defer]
+        if install_actions.size == 0:
             raise RuntimeError(
-                "Objective-greedy scoring requires at least one feasible action"
+                "Objective-greedy scoring requires a feasible installation"
             )
-        cells = observation.candidate_cell_indices[feasible]
-        if len(set(int(cell) for cell in cells)) != int(feasible.size):
+        cells = observation.candidate_cell_indices[install_actions]
+        if len(set(int(cell) for cell in cells)) != int(install_actions.size):
             raise RuntimeError(
                 "Objective-greedy scoring requires one unique candidate cell per action"
             )
@@ -2696,7 +2895,7 @@ class RLBridge:
         after = CB.live_state_digest(self.core)
         if before != after:
             raise RuntimeError("Objective-greedy scoring mutated the live simulator")
-        if len(effects) != int(feasible.size):
+        if len(effects) != int(install_actions.size):
             raise RuntimeError(
                 "Objective-greedy scoring did not return every feasible action"
             )
@@ -2711,12 +2910,192 @@ class RLBridge:
             dtype=np.float64,
         )
         values = np.full(observation.number_of_actions, -np.inf, dtype=np.float64)
-        values[feasible] = 1.0 / (1.0 + action_costs / denominator)
-        if not np.isfinite(values[feasible]).all():
+        values[install_actions] = 1.0 / (1.0 + action_costs / denominator)
+        if not np.isfinite(values[install_actions]).all():
             raise FloatingPointError(
                 "Objective-greedy candidate values contain non-finite values"
             )
         return values
+
+    def _planner_rollout_costs(
+        self,
+        observation: RegionalObservation,
+        *,
+        mode: str,
+    ) -> np.ndarray:
+        """Grade defer and all feasible regions to the horizon with greedy continuation."""
+        feasible = np.flatnonzero(np.asarray(observation.action_mask, dtype=bool))
+        if feasible.size < 1:
+            raise RuntimeError("Rollout planner has no feasible action")
+        defer = int(getattr(observation, "defer_action_index", -1))
+        branch_limit = int(getattr(self.core, "nmccPiMaxBranches", 0))
+        install = feasible[feasible != defer]
+        if branch_limit > 0 and install.size > branch_limit:
+            public_scores = self._public_regional_objective_values(observation)
+            order = sorted(
+                install.tolist(),
+                key=lambda action: (-float(public_scores[int(action)]), int(action)),
+            )
+            selected = order[:branch_limit]
+            if defer >= 0 and bool(observation.action_mask[defer]):
+                selected.append(defer)
+            feasible = np.asarray(selected, dtype=np.int64)
+        cells = [
+            -1 if int(action) == defer else int(observation.candidate_cell_indices[action])
+            for action in feasible
+        ]
+        seed = int(getattr(self.core, "scenario_seed", self.policy_seed))
+        tape_count = (
+            max(1, int(getattr(self.core, "forecastEnsembleSize", 8)))
+            if mode == "belief"
+            else 1
+        )
+        future_seeds = tuple(
+            NPI.tape_seed(
+                seed ^ (0x42454C49 if mode == "belief" else 0x48494E44),
+                int(self.decision_index),
+                tape_index,
+            )
+            for tape_index in range(tape_count)
+        )
+        brancher = self._ensure_brancher()
+        snapshot = CB.capture(self.core, label=f"{mode}-rollout-planner")
+        before = CB.live_state_digest(self.core)
+        matrix = brancher.rollout_policy_costs(
+            cells,
+            snapshot=snapshot,
+            future_seeds=future_seeds,
+            decision_index=int(self.decision_index),
+            remaining_deployments=int(self.remaining_deployments),
+            maximum_deployments=int(self.maximum_deployments),
+            frozen_policy=RPI.ObjectiveGreedyContinuationPolicy(),
+            mode=mode,
+        )
+        if CB.live_state_digest(self.core) != before:
+            raise RuntimeError("Rollout planner mutated the live simulator")
+        costs = np.full(observation.number_of_actions, np.inf, dtype=np.float64)
+        costs[feasible] = np.mean(matrix, axis=0)
+        return costs
+
+    def _regime_oracle_greedy_values(
+        self,
+        observation: RegionalObservation,
+    ) -> np.ndarray:
+        """Score one interval with the realized regime tape.
+
+        This is an information-value benchmark only. It is myopic and never
+        supplies inputs or targets to the learned actor.
+        """
+        values = np.full(observation.number_of_actions, -np.inf, dtype=np.float64)
+        feasible = np.flatnonzero(np.asarray(observation.action_mask, dtype=bool))
+        defer = int(getattr(observation, "defer_action_index", -1))
+        feasible = feasible[feasible != defer]
+        if feasible.size == 0:
+            return values
+        regime = getattr(self.core, "hazard_regime", None)
+        if regime is None or not bool(getattr(regime, "enabled", False)):
+            return self.forecast_greedy_policy.scores(observation)
+        realized_particle = copy.deepcopy(regime)
+        distribution = self.core.hazardDS.forecast_distribution_by_cell(
+            max(1, int(self.shelter_action_interval)),
+            particles=(realized_particle,),
+        )
+        forecast = np.asarray(distribution["expected"], dtype=np.float64)
+        cells = observation.candidate_cell_indices[feasible]
+        demand = np.minimum(
+            observation.active_by_cell[cells],
+            observation.candidate_capacities[feasible],
+        )
+        values[feasible] = demand * (1.0 + forecast[cells])
+        return values
+
+    @staticmethod
+    def _without_forecast_information(
+        observation: RegionalObservation,
+        *,
+        clearance_tail_weight: float = 0.0,
+        casualty_priority_kappa: float = 2.0,
+    ) -> RegionalObservation:
+        """Remove every predictive input, including the derived actor prior."""
+        cells = observation.number_of_cells
+        actions = observation.number_of_actions
+        current_operational_capacity = float(
+            np.clip(
+                np.asarray(
+                    observation.operational_shelter_capacity_by_cell,
+                    dtype=np.float64,
+                ).sum()
+                / float(max(1, observation.initial_population)),
+                0.0,
+                1.0,
+            )
+        )
+        ablated = replace(
+            observation,
+            forecast_danger_by_cell=np.zeros(cells, dtype=np.float32),
+            danger_momentum_by_cell=np.zeros(cells, dtype=np.float32),
+            forecast_escalation_probability_by_cell=np.zeros(cells, dtype=np.float32),
+            forecast_uncertainty_by_cell=np.zeros(cells, dtype=np.float32),
+            forecast_overrun_probability_by_cell=np.zeros(cells, dtype=np.float32),
+            forecast_next_shelter_overrun_probability_by_cell=np.zeros(
+                cells, dtype=np.float32
+            ),
+            forecast_overrun_lead_time_fraction_by_cell=np.ones(
+                cells, dtype=np.float32
+            ),
+            forecast_reevacuation_population_by_cell=np.zeros(
+                cells, dtype=np.float32
+            ),
+            forecast_enroute_reroute_population_by_cell=np.zeros(
+                cells, dtype=np.float32
+            ),
+            hazard_source_proximity_by_cell=np.zeros(cells, dtype=np.float32),
+            closure_warning_by_cell=np.zeros(cells, dtype=np.float32),
+            forecast_ensemble_mean=np.zeros(cells, dtype=np.float32),
+            forecast_ensemble_dispersion=np.zeros(cells, dtype=np.float32),
+            forecast_escalation=np.zeros(cells, dtype=np.float32),
+            candidate_forecast_danger=np.zeros(actions, dtype=np.float32),
+            candidate_forecast_escalation=np.zeros(actions, dtype=np.float32),
+            candidate_forecast_uncertainty=np.zeros(actions, dtype=np.float32),
+            candidate_forecast_overrun_probability=np.zeros(
+                actions, dtype=np.float32
+            ),
+            candidate_forecast_next_overrun_probability=np.zeros(
+                actions, dtype=np.float32
+            ),
+            candidate_forecast_overrun_lead_time_fraction=np.ones(
+                actions, dtype=np.float32
+            ),
+            candidate_forecast_reevacuation_response=np.zeros(
+                actions, dtype=np.float32
+            ),
+            candidate_closure_warning=np.zeros(actions, dtype=np.float32),
+            wind_forecast_cos=0.0,
+            wind_forecast_sin=0.0,
+            wind_forecast_speed=0.0,
+            wind_warning=0.0,
+            closure_warning_share=0.0,
+            forecast_reevacuation_population_fraction=0.0,
+            forecast_enroute_reroute_population_fraction=0.0,
+            forecast_safe_capacity_coverage_fraction=current_operational_capacity,
+            next_shelter_overrun_probability=0.0,
+            next_shelter_overrun_lead_time_fraction=1.0,
+        )
+        # ``candidate_public_objective_score`` is the actor's residual base
+        # logit.  It is derived from forecast danger and forecast re-evacuation
+        # access, so retaining the pre-ablation value would leak the very
+        # information this comparator is meant to remove.
+        ablated_scores = public_regional_objective_values(
+            ablated,
+            clearance_tail_weight=float(clearance_tail_weight),
+            casualty_priority_kappa=float(casualty_priority_kappa),
+        )
+        return replace(
+            ablated,
+            candidate_public_objective_score=np.where(
+                np.isfinite(ablated_scores), ablated_scores, 0.0
+            ).astype(np.float32),
+        )
 
     @staticmethod
     def _observation_digest(observation: RegionalObservation) -> str:
@@ -2727,11 +3106,25 @@ class RLBridge:
             observation.congestion_speed_ratio_by_cell,
             observation.danger_by_cell,
             observation.remaining_capacity_by_cell,
+            observation.operational_shelter_capacity_by_cell,
             observation.shelter_utilization_by_cell,
+            observation.sheltered_population_by_cell,
+            observation.enroute_reserved_population_by_cell,
+            observation.forecast_overrun_probability_by_cell,
+            observation.forecast_next_shelter_overrun_probability_by_cell,
+            observation.forecast_overrun_lead_time_fraction_by_cell,
+            observation.forecast_reevacuation_population_by_cell,
+            observation.forecast_enroute_reroute_population_by_cell,
             observation.deployable_capacity_by_cell,
             observation.candidate_count_by_cell,
             observation.network_node_count_by_cell,
             observation.mean_route_time_by_cell,
+            observation.slow_tail_population_by_cell,
+            observation.slow_tail_time_by_cell,
+            observation.assigned_population_by_cell,
+            observation.unassigned_population_by_cell,
+            observation.outgoing_assignment_flow_by_cell,
+            observation.incoming_assignment_flow_by_cell,
             observation.long_route_share_by_cell,
             observation.stable_wellness_by_cell,
             observation.exposed_wellness_by_cell,
@@ -2741,6 +3134,8 @@ class RLBridge:
             observation.forecast_escalation_probability_by_cell,
             observation.forecast_uncertainty_by_cell,
             observation.hazard_source_proximity_by_cell,
+            observation.closure_warning_by_cell,
+            observation.closed_road_by_cell,
             observation.region_east_positions,
             observation.region_north_positions,
             observation.region_area_fractions,
@@ -2754,10 +3149,19 @@ class RLBridge:
             observation.candidate_nearest_shelter_distances,
             observation.candidate_forecast_danger,
             observation.candidate_hazard_safety_margin,
+            observation.candidate_current_danger,
+            observation.candidate_forecast_escalation,
+            observation.candidate_forecast_uncertainty,
+            observation.candidate_forecast_overrun_probability,
+            observation.candidate_forecast_next_overrun_probability,
+            observation.candidate_forecast_overrun_lead_time_fraction,
+            observation.candidate_forecast_reevacuation_response,
+            observation.candidate_closure_warning,
+            observation.candidate_closed_road,
             observation.candidate_reroutable_population,
             observation.candidate_risk_time_reduction,
             observation.remaining_evacuation_debt_by_cell,
-            observation.candidate_assignment_gain,
+            observation.candidate_public_objective_score,
             observation.action_mask.astype(np.uint8),
         ):
             digest.update(np.ascontiguousarray(array).tobytes())
@@ -2784,6 +3188,11 @@ class RLBridge:
                     observation.wind_east_direction_fraction,
                     observation.wind_north_direction_fraction,
                     observation.hazard_spread_fraction,
+                    observation.forecast_reevacuation_population_fraction,
+                    observation.forecast_enroute_reroute_population_fraction,
+                    observation.forecast_safe_capacity_coverage_fraction,
+                    observation.next_shelter_overrun_probability,
+                    observation.next_shelter_overrun_lead_time_fraction,
                 ],
                 dtype=np.float64,
             ).tobytes()
@@ -2813,13 +3222,30 @@ class RLBridge:
                     remaining_deployments=self.remaining_deployments,
                 )
             )
+            # Precommitment is an installation-only comparator: it commits the
+            # learned selector's complete shelter set before the simulator can
+            # advance.  The sequential policy's defer action is therefore not
+            # part of this comparator's action set.
+            defer_action = int(observation.defer_action_index)
+            if defer_action >= 0:
+                installation_mask = np.asarray(
+                    observation.action_mask, dtype=bool
+                ).copy()
+                installation_mask[defer_action] = False
+                observation = replace(
+                    observation,
+                    action_mask=installation_mask,
+                )
             observation_ms = (time.perf_counter() - observation_started) * 1000.0
             if self.precommit_initial_observation_digest is None:
                 self.precommit_initial_observation_digest = self._observation_digest(
                     observation
                 )
             if not observation.has_feasible_action:
-                break
+                raise RuntimeError(
+                    "RL precommitment exhausted deployable shelter candidates "
+                    "before committing its full installation budget"
+                )
             selection_started = time.perf_counter()
             decision = self._select_rl(
                 observation,
@@ -2838,6 +3264,10 @@ class RLBridge:
             execution_started = time.perf_counter()
             receipt = self.executor.execute(observation, decision)
             execution_ms = (time.perf_counter() - execution_started) * 1000.0
+            if not bool(receipt.installed):
+                raise RuntimeError(
+                    "RL precommitment selected a non-installation action"
+                )
             self._accumulate_installation_reward(reward)
             self.deployment_latency_records.append(
                 {
@@ -2849,25 +3279,29 @@ class RLBridge:
             )
             receipts.append(receipt)
             self.deployments_made += 1
+            self.tokens_remaining -= 1
             self.last_deployment_time = 0
             self.deployment_times.append(0)
             self.decision_index += 1
         return tuple(receipts)
 
     def precommit_static_schedule(self) -> tuple[tuple[str, int], ...]:
-        """Commit an open-loop shelter sequence from the exact time-zero state.
+        """Commit an open-loop shelter sequence from the public time-zero state.
 
-        The planner applies the objective-matched immediate rule repeatedly on
-        a frozen physical state. Each planned installation updates only the
-        planning copy's capacity reservations and routes, so later choices
-        complement earlier choices without observing any future traffic or
-        hazard realization. The live simulator and all random streams are
-        restored before the first transition. Runtime execution must follow
-        these exact candidate identities at the common decision epochs.
+        The planner applies the regional-dashboard immediate rule repeatedly
+        on a frozen physical state. Each planned installation updates the
+        planning copy so later sites complement earlier sites, but the scorer
+        still receives only public regional summaries and never evaluates an
+        alternative candidate by exact rerouting. No future traffic or hazard
+        realization is observed. The live simulator and all random streams
+        are restored before the first transition. Runtime execution must
+        follow these exact candidate identities at the common decision epochs.
         """
-        if self.train_mode or self.deployment_strategy != "initial_only":
+        if self.train_mode or self.deployment_strategy not in {
+            "initial_only", "static_greedy"
+        }:
             raise RuntimeError(
-                "precommit_static_schedule requires evaluation strategy='initial_only'"
+                "precommit_static_schedule requires initial_only or static_greedy"
             )
         if self.pending is not None or self.last_simulation_time is not None:
             raise RuntimeError(
@@ -2886,15 +3320,15 @@ class RLBridge:
         schedule: list[tuple[str, int]] = []
         try:
             for planning_index in range(int(self.maximum_deployments)):
-                observation = self._enrich_policy_observation(
-                    self.observation_builder.build(
-                        decision_index=planning_index,
-                        simulation_time=0,
-                        remaining_deployments=(
-                            int(self.maximum_deployments) - planning_index
-                        ),
-                    )
+                observation = self.observation_builder.build(
+                    decision_index=planning_index,
+                    simulation_time=0,
+                    remaining_deployments=(
+                        int(self.maximum_deployments) - planning_index
+                    ),
                 )
+                if self.deployment_strategy == "initial_only":
+                    observation = self._enrich_policy_observation(observation)
                 if planning_index == 0:
                     self.precommit_initial_observation_digest = (
                         self._observation_digest(observation)
@@ -2903,11 +3337,18 @@ class RLBridge:
                     raise RuntimeError(
                         "Static precommitment cannot fill the common shelter budget"
                     )
-                decision = self.objective_greedy_policy.select(
-                    observation,
-                    candidate_values=self._objective_greedy_values(observation),
-                    deterministic=True,
-                )
+                if self.deployment_strategy == "static_greedy":
+                    decision = self.heuristic_policy.select(
+                        observation, deterministic=True
+                    )
+                else:
+                    decision = self.objective_greedy_policy.select(
+                        observation,
+                        candidate_values=self._public_regional_objective_values(
+                            observation
+                        ),
+                        deterministic=True,
+                    )
                 action = int(decision.action_index)
                 candidate_osm_id = str(
                     observation.candidate_osm_node_ids[action]
@@ -2933,13 +3374,15 @@ class RLBridge:
             raise RuntimeError(
                 "Static precommitment did not produce the complete shelter schedule"
             )
-        restored_observation = self._enrich_policy_observation(
-            self.observation_builder.build(
-                decision_index=0,
-                simulation_time=0,
-                remaining_deployments=int(self.maximum_deployments),
-            )
+        restored_observation = self.observation_builder.build(
+            decision_index=0,
+            simulation_time=0,
+            remaining_deployments=int(self.maximum_deployments),
         )
+        if self.deployment_strategy == "initial_only":
+            restored_observation = self._enrich_policy_observation(
+                restored_observation
+            )
         if (
             self.precommit_initial_observation_digest
             != self._observation_digest(restored_observation)
@@ -2962,10 +3405,22 @@ class RLBridge:
                 False,
             )
         ):
-            scheduled_time = int(self.first_decision_time) + int(
-                self.deployments_made
-            ) * int(self.shelter_action_interval)
+            schedule_index = (
+                int(self.decision_index)
+                if str(getattr(self.core, "actionSpace", "cell"))
+                == "region_defer"
+                else int(self.deployments_made)
+            )
+            scheduled_time = int(self.first_decision_time) + schedule_index * int(
+                self.shelter_action_interval
+            )
             return int(simulation_time) >= scheduled_time
+        if str(getattr(self.core, "actionSpace", "cell")) == "region_defer":
+            if self.last_decision_time is None:
+                return int(simulation_time) >= int(self.first_decision_time)
+            return int(simulation_time) >= (
+                int(self.last_decision_time) + int(self.shelter_action_interval)
+            )
         if self.last_deployment_time is None:
             return int(simulation_time) >= int(self.first_decision_time)
         return int(simulation_time) >= (
@@ -2996,9 +3451,16 @@ class RLBridge:
             include_panicked=True,
             include_casualties=False,
         )
+        active_weight = float(
+            getattr(self.core, "activePersonTimeWeight", 1.0)
+        )
+        exposure_weight = float(
+            getattr(self.core, "hazardExposureTimeWeight", 1.0)
+        )
         realized_interval_cost = float(
-            pending.controllable_active_person_time
-            + pending.controllable_hazard_exposure_person_time
+            active_weight * pending.controllable_active_person_time
+            + exposure_weight
+            * pending.controllable_hazard_exposure_person_time
             + pending.controllable_expected_casualty_person_time
         )
         terminal_plain_residual_cost = float(
@@ -3008,7 +3470,8 @@ class RLBridge:
             terminal_residual.hazard_exposure_person_minutes if terminal else 0.0
         )
         terminal_residual_cost = (
-            terminal_plain_residual_cost + terminal_exposure_residual_cost
+            active_weight * terminal_plain_residual_cost
+            + exposure_weight * terminal_exposure_residual_cost
         )
         terminal_clearance_tail_cost = 0.0
         if terminal:
@@ -3069,7 +3532,40 @@ class RLBridge:
                 terminal_clearance_tail_cost
             ),
             decision_discount=float(decision_discount),
+            active_person_time_weight=float(active_weight),
+            hazard_exposure_time_weight=float(exposure_weight),
+            reward_denominator=float(reward_denominator),
+            safe_completion_stock_change=int(
+                after.outcome.safe_completed
+                - pending.observation.outcome.safe_completed
+            ),
+            casualty_change=int(
+                after.outcome.casualties
+                - pending.observation.outcome.casualties
+            ),
         )
+        if not np.isclose(
+            float(forward_breakdown.normalized_interval_cost),
+            float(normalized_interval_cost),
+            rtol=0.0,
+            atol=1e-12,
+        ):
+            raise RuntimeError(
+                "Forward reward diagnostics disagree with the learner's "
+                "configured complete-ledger cost"
+            )
+        if self.policy is not None and not np.isclose(
+            float(learning_reward),
+            float(
+                forward_breakdown.reference_potential_reduction
+                - forward_breakdown.normalized_interval_cost
+            ),
+            rtol=0.0,
+            atol=1e-12,
+        ):
+            raise RuntimeError(
+                "Forward reward is not reference reduction minus normalized cost"
+            )
         self.episode_return += float(learning_reward)
         if not np.isfinite(self.episode_random_reference_initial_value):
             self.episode_random_reference_initial_value = float(
@@ -3320,6 +3816,7 @@ class RLBridge:
         terminal = bool(is_terminal) or (
             observation.outcome.active_population <= 0
             and self.remaining_deployments <= 0
+            and int(self.core.pedDS.currentShelteredPopulation()) <= 0
         )
         self._accumulate_policy_objective(
             observation,
@@ -3335,6 +3832,7 @@ class RLBridge:
         completed_action = -1
         dynamic_strategy = self.deployment_strategy in {
             "rl",
+            "rl_forecast_ablated",
             "objective_greedy",
             "random",
             "heuristic",
@@ -3343,6 +3841,12 @@ class RLBridge:
             "hazard_weighted",
             "accessibility_deficit",
             "initial_only",
+            "static_greedy",
+            "forecast_greedy",
+            "regime_oracle_greedy",
+            "deadline_greedy",
+            "belief_rollout",
+            "hindsight_rollout",
         }
         deployment_due = bool(
             not terminal
@@ -3358,7 +3862,7 @@ class RLBridge:
             )
         ):
             scheduled_time = int(self.first_decision_time) + int(
-                self.deployments_made
+                self.decision_index
             ) * int(self.shelter_action_interval)
             if int(simulation_time) != scheduled_time:
                 raise RuntimeError(
@@ -3376,11 +3880,26 @@ class RLBridge:
         )
         if decision_opportunity and self.deployment_strategy in {
             "rl",
+            "rl_forecast_ablated",
             "rl_precommit",
             "objective_greedy",
+            "deadline_greedy",
             "initial_only",
         }:
             observation = self._enrich_policy_observation(observation)
+        if (
+            decision_opportunity
+            and self.deployment_strategy == "rl_forecast_ablated"
+        ):
+            observation = self._without_forecast_information(
+                observation,
+                clearance_tail_weight=float(
+                    getattr(self.core, "clearanceTailExtraWeight", 0.0)
+                ),
+                casualty_priority_kappa=float(
+                    getattr(self.core, "casualtyPriorityKappa", 2.0)
+                ),
+            )
         # The policy acts only at decision epochs, so its recurrent state also
         # advances only at decision epochs.  A physical NMCC branch ending at
         # the next decision now receives exactly the same one-step temporal
@@ -3388,7 +3907,9 @@ class RLBridge:
         # updates that existed only on the factual trajectory.
         if (
             decision_opportunity
-            and self.deployment_strategy in {"rl", "rl_precommit"}
+            and self.deployment_strategy in {
+                "rl", "rl_forecast_ablated", "rl_precommit"
+            }
         ):
             recurrent_step = self._advance_recurrent_observation(observation)
         decision_random_reference_value = float("nan")
@@ -3458,8 +3979,10 @@ class RLBridge:
             heuristic_cell = int(
                 observation.candidate_cell_indices[heuristic_candidate]
             )
-            selected_cell = int(
-                observation.candidate_cell_indices[selected_candidate]
+            selected_cell = (
+                -1
+                if selected_candidate == int(observation.defer_action_index)
+                else int(observation.candidate_cell_indices[selected_candidate])
             )
             self.action_comparisons += 1
             self.action_agreements += int(
@@ -3513,7 +4036,11 @@ class RLBridge:
                 )
             factual_effect = None
             factual_counterfactual_breakdown = None
-            if self.counterfactual_credit and self.train_mode:
+            if (
+                self.counterfactual_credit
+                and self.train_mode
+                and selected_cell >= 0
+            ):
                 factual_effect = self._ensure_brancher().paired_effect(
                     selected_cell
                 )
@@ -3536,9 +4063,14 @@ class RLBridge:
                     "end_to_end_ms": end_to_end_ms,
                 }
             )
-            self.deployments_made += 1
-            self.last_deployment_time = simulation_time
-            self.deployment_times.append(int(simulation_time))
+            if bool(receipt.installed):
+                self.deployments_made += 1
+                self.tokens_remaining -= 1
+                self.last_deployment_time = simulation_time
+                self.deployment_times.append(int(simulation_time))
+            else:
+                self.deferred_decisions += 1
+            self.last_decision_time = simulation_time
             observation_history = (
                 (recurrent_step.frame,)
                 if self.train_mode and recurrent_step is not None
@@ -3606,6 +4138,7 @@ class RLBridge:
                     else None
                 ),
                 policy_improvement=policy_improvement,
+                deferred=not bool(receipt.installed),
             )
             self.decision_index += 1
 
@@ -3625,17 +4158,30 @@ class RLBridge:
                     else float(completed_reward.reward)
                 ),
                 "reward_safe": 0.0,
-                "reward_casualty": 0.0,
+                "reward_casualty": (
+                    0.0
+                    if completed_reward is None or self.policy is None
+                    else -float(
+                        completed_reward.expected_casualty_interval_cost
+                    )
+                    / (self.initial_population * self.horizon_minutes)
+                ),
                 "reward_evacuation_time": (
                     0.0
                     if completed_reward is None or self.policy is None
-                    else -float(completed_reward.plain_interval_cost)
+                    else -float(
+                        completed_reward.active_person_time_weight
+                        * completed_reward.plain_interval_cost
+                    )
                     / (self.initial_population * self.horizon_minutes)
                 ),
                 "reward_hazard_exposure": (
                     0.0
                     if completed_reward is None or self.policy is None
-                    else -float(completed_reward.exposure_interval_cost)
+                    else -float(
+                        completed_reward.hazard_exposure_time_weight
+                        * completed_reward.exposure_interval_cost
+                    )
                     / (self.initial_population * self.horizon_minutes)
                 ),
                 "reward_reference_potential": (
@@ -3647,8 +4193,10 @@ class RLBridge:
                     0.0
                     if completed_reward is None or self.policy is None
                     else -float(
-                        completed_reward.terminal_plain_residual_cost
-                        + completed_reward.terminal_exposure_residual_cost
+                        completed_reward.active_person_time_weight
+                        * completed_reward.terminal_plain_residual_cost
+                        + completed_reward.hazard_exposure_time_weight
+                        * completed_reward.terminal_exposure_residual_cost
                     )
                     / (self.initial_population * self.horizon_minutes)
                 ),
@@ -3669,8 +4217,16 @@ class RLBridge:
                     else float(completed_reward.reward)
                 ),
                 "reward_shelter_service": 0.0,
-                "new_safe_completions": 0,
-                "new_casualties": 0,
+                "new_safe_completions": (
+                    0
+                    if completed_reward is None
+                    else int(completed_reward.safe_completion_stock_change)
+                ),
+                "new_casualties": (
+                    0
+                    if completed_reward is None
+                    else int(completed_reward.casualty_change)
+                ),
                 "attributed_shelter_service": 0,
                 "remaining_risk_time_before": (
                     0.0
@@ -3885,8 +4441,10 @@ class RLBridge:
             clearance_t90 = 0.0
             clearance_time = 0.0
         objective_mass = float(
-            objective_plain
-            + objective_exposure
+            float(getattr(self.core, "activePersonTimeWeight", 1.0))
+            * objective_plain
+            + float(getattr(self.core, "hazardExposureTimeWeight", 1.0))
+            * objective_exposure
             + objective_expected_casualty
             + objective_clearance_tail
         )
@@ -3931,6 +4489,12 @@ class RLBridge:
         diagnostics = {
             "episode_return": float(self.episode_return),
             "learning_reward_scale": float(self.learning_reward_scale),
+            "active_person_time_weight": float(
+                getattr(self.core, "activePersonTimeWeight", 1.0)
+            ),
+            "hazard_exposure_time_weight": float(
+                getattr(self.core, "hazardExposureTimeWeight", 1.0)
+            ),
             "forward_learning_reward": float(self.episode_return),
             "random_site_advantage_diagnostic": float(
                 self.episode_random_site_advantage
@@ -4015,6 +4579,7 @@ class RLBridge:
                 if self.behavior_entropies
                 else 0.0
             ),
+            "deferred_decisions": float(self.deferred_decisions),
             "optimizer_updated": 0.0,
             "actor_policy_entropy_before": 0.0,
             "actor_policy_entropy_after": 0.0,
@@ -4394,6 +4959,22 @@ class RLBridge:
             ).reshape(-1)
         return probabilities.detach().cpu().numpy().astype(np.float64)
 
+    @staticmethod
+    def _rollout_target_future_mode(core) -> str:
+        """Information set of the futures that grade actor rollout targets.
+
+        ``belief`` (default) resamples every latent regime event from the
+        public signals available at the decision, so each target is the
+        expected cost given the actor's own information. ``realized`` replays
+        the episode's hidden regime tape; it is a hindsight ablation whose
+        targets condition on information the actor cannot observe and which
+        therefore undervalue deferral and hedging.
+        """
+        mode = str(getattr(core, "nmccPiTargetFutureMode", "belief")).strip().lower()
+        if mode not in {"belief", "realized"}:
+            raise ValueError("nmccPiTargetFutureMode must be belief or realized")
+        return mode
+
     def _collect_rollout_policy_improvement(
         self,
         observation: RegionalObservation,
@@ -4423,14 +5004,20 @@ class RLBridge:
         if chosen_action not in set(feasible.tolist()):
             raise RuntimeError("Executed rollout action is infeasible")
 
+        defer_action = int(getattr(observation, "defer_action_index", -1))
+        install_actions = feasible[feasible != defer_action]
+        if install_actions.size == 0:
+            raise RuntimeError(
+                "Rollout policy improvement has no feasible installation"
+            )
         base_action = int(
-            feasible[
+            install_actions[
                 int(
                     np.argmax(
                         np.asarray(
-                            observation.candidate_assignment_gain,
+                            observation.candidate_public_objective_score,
                             dtype=np.float64,
-                        )[feasible]
+                        )[install_actions]
                     )
                 )
             ]
@@ -4439,7 +5026,7 @@ class RLBridge:
         future_seeds = tuple(
             NPI.tape_seed(
                 episode_seed ^ 0x524F4C4C,
-                int(self.deployments_made),
+                int(self.decision_index),
                 tape_index,
             )
             for tape_index in range(int(self.nmcc_pi_tapes))
@@ -4457,7 +5044,7 @@ class RLBridge:
         before = CB.live_state_digest(self.core)
         started = time.perf_counter()
         exhaustive = bool(
-            int(self.deployments_made) < int(self.nmcc_pi_exhaustive_decisions)
+            int(self.decision_index) < int(self.nmcc_pi_exhaustive_decisions)
             or int(self.nmcc_pi_max_branches) <= 0
             or feasible.size <= int(self.nmcc_pi_max_branches)
         )
@@ -4467,13 +5054,13 @@ class RLBridge:
         else:
             panel_seed = NPI.tape_seed(
                 episode_seed ^ 0x50414E45,
-                int(self.deployments_made),
+                int(self.decision_index),
                 0,
             )
             exact_actions = RPI.select_rollout_panel(
                 feasible,
                 np.asarray(
-                    observation.candidate_assignment_gain,
+                    observation.candidate_public_objective_score,
                     dtype=np.float64,
                 )[feasible],
                 max_branches=int(self.nmcc_pi_max_branches),
@@ -4486,21 +5073,35 @@ class RLBridge:
                 int(self.nmcc_pi_max_branches) - len({chosen_action, base_action}),
             )
         exact_cells = np.asarray(
-            observation.candidate_cell_indices[exact_actions], dtype=np.int64
+            [
+                -1
+                if int(action) == defer_action
+                else int(observation.candidate_cell_indices[int(action)])
+                for action in exact_actions
+            ],
+            dtype=np.int64,
         )
-        costs = brancher.rollout_policy_costs(
+        allocation = str(
+            getattr(self.core, "nmccPiAllocation", "uniform")
+        ).strip().lower()
+        target_future_mode = self._rollout_target_future_mode(self.core)
+        fitted = NPI.region_defer_panel_costs(
+            brancher,
             exact_cells,
             snapshot=snapshot,
             future_seeds=future_seeds,
-            decision_index=int(self.deployments_made),
+            decision_index=int(self.decision_index),
             remaining_deployments=int(self.remaining_deployments),
             maximum_deployments=int(self.maximum_deployments),
             frozen_policy=frozen_policy,
+            mode=target_future_mode,
+            allocation=allocation,
+            futures_min=2,
         )
+        futures_spent = fitted.futures_spent
         branch_seconds = time.perf_counter() - started
         if CB.live_state_digest(self.core) != before:
             raise RuntimeError("Rollout grading mutated the live simulator")
-        fitted = RPI.estimate_rollout_costs(costs)
         prior = self._actor_prior_probabilities(
             recurrent_step, recurrent_step.frame.action_mask
         )
@@ -4535,6 +5136,9 @@ class RLBridge:
                 fitted.paired_contrast_standard_error
             ),
             "tape_count": int(self.nmcc_pi_tapes),
+            "future_samples_total": int(np.sum(futures_spent)),
+            "future_samples_min": int(np.min(futures_spent)),
+            "future_samples_max": int(np.max(futures_spent)),
             "eligible": int(feasible.size),
             "uniform_panel_actions": int(uniform_panel_actions),
             "target_kl_to_prior": float(improvement.kl_to_old),
@@ -4550,7 +5154,10 @@ class RLBridge:
                 == branch_best
             ),
             "simulation_time": int(simulation_time),
-            "decision_index": int(self.deployments_made),
+            "decision_index": int(self.decision_index),
+            "future_mode": target_future_mode,
+            "future_allocation": NPI.effective_future_allocation(allocation),
+            "configured_future_allocation": allocation,
             "rollout_horizon_timesteps": max(
                 0, int(self.horizon) - int(simulation_time)
             ),
@@ -4642,6 +5249,7 @@ class RLBridge:
             decision_index=int(self.deployments_made),
             remaining_deployments=int(self.remaining_deployments),
             maximum_deployments=int(self.maximum_deployments),
+            mode="belief",
         )
         target = float(np.mean(costs))
         if not np.isfinite(target) or target < 0.0:
@@ -4688,6 +5296,9 @@ class RLBridge:
                 device=self.device,
             ),
             reference_debt=self._reference_debt_tensor(observation).detach(),
+            critic_exogenous=self._exogenous_critic_features(
+                int(observation.simulation_time)
+            ).detach(),
         )
         graph = self._graph_from_frame(frame)
         context = self.recurrent_state if recurrent_state is None else recurrent_state
@@ -4752,6 +5363,9 @@ class RLBridge:
                 device=self.device,
             ),
             reference_debt=self._reference_debt_tensor(observation).detach(),
+            critic_exogenous=self._exogenous_critic_features(
+                int(observation.simulation_time)
+            ).detach(),
         )
 
     def _packed_graph_from_frames(
@@ -4789,6 +5403,10 @@ class RLBridge:
             ),
             candidate_features=torch.stack(
                 [frame.candidate_features.to(self.device) for frame in frames],
+                dim=0,
+            ),
+            critic_exogenous=torch.stack(
+                [frame.critic_exogenous.to(self.device) for frame in frames],
                 dim=0,
             ),
         )
@@ -4910,6 +5528,16 @@ class RLBridge:
             raise ValueError("Counterfactual reference action is outside the action space")
         if not bool(observation.action_mask[action]):
             raise ValueError("Counterfactual reference action is not executable")
+        if action == int(getattr(observation, "defer_action_index", -1)):
+            zero_components = np.zeros(
+                len(REWARD_COMPONENT_NAMES), dtype=np.float64
+            )
+            return (
+                0.0,
+                zero_components.copy(),
+                zero_components.copy(),
+                np.zeros(self.d_momentum, dtype=np.float32),
+            )
         cell = int(observation.candidate_cell_indices[action])
         effect = self._ensure_brancher().paired_effect(cell)
         breakdown = effect.reward_breakdown(
@@ -6161,8 +6789,11 @@ class RLBridge:
 
         Stage E fits only the environment/reference-value models. Stage P fits
         one categorical actor iteration from complete common-future simulator
-        costs; it does not update or consult a critic. Physical branch scores
-        are retained only within the frozen continuation-policy iteration that
+        costs and trains the critic on the realized complete return-to-go. The
+        critic may use the realized regime summary as a variance-reducing
+        baseline, but the actor neither receives those exogenous channels nor
+        consults the critic for its rollout targets. Physical branch scores are
+        retained only within the frozen continuation-policy iteration that
         generated them, while policy probabilities are rebuilt before fitting.
         """
         if not transitions:

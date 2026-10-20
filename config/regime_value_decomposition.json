@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "base_curriculum": "config/state_college_regime_v53.json",
+  "validation_tapes": 10,
+  "held_out_tapes": 10,
+  "hindsight_tapes": 5,
+  "belief_futures": 4,
+  "deadline_thresholds": [-1e30, 0.2, 0.4, 0.6, 0.8],
+  "screening_overrides": {
+    "forecastEnsembleSize": 4,
+    "nmccPiMaxBranches": 6
+  },
+  "policy_seeds": 5,
+  "scenarios": {
+    "calm": {"hazardWindShiftRatePerMinute": 0.0, "hazardIntensitySwitchRatePerMinute": 0.0, "hazardClosureRatePerMinute": 0.0, "hazardSecondaryIgnitionRatePerMinute": 0.0},
+    "wind_shift": {"hazardWindShiftRatePerMinute": 0.03, "hazardIntensitySwitchRatePerMinute": 0.0, "hazardClosureRatePerMinute": 0.0, "hazardSecondaryIgnitionRatePerMinute": 0.0},
+    "intensity": {"hazardWindShiftRatePerMinute": 0.0, "hazardIntensitySwitchRatePerMinute": 0.025, "hazardClosureRatePerMinute": 0.0, "hazardSecondaryIgnitionRatePerMinute": 0.0},
+    "closure": {"hazardWindShiftRatePerMinute": 0.0, "hazardIntensitySwitchRatePerMinute": 0.0, "hazardClosureRatePerMinute": 0.015, "hazardSecondaryIgnitionRatePerMinute": 0.0},
+    "secondary_ignition": {"hazardWindShiftRatePerMinute": 0.0, "hazardIntensitySwitchRatePerMinute": 0.0, "hazardClosureRatePerMinute": 0.0, "hazardSecondaryIgnitionRatePerMinute": 0.012},
+    "decoy": {"constructedDecoyDemand": true, "hazardClosureRatePerMinute": 0.015},
+    "compound": {"hazardWindShiftRatePerMinute": 0.015, "hazardIntensitySwitchRatePerMinute": 0.01, "hazardClosureRatePerMinute": 0.005, "hazardSecondaryIgnitionRatePerMinute": 0.004}
+  },
+  "policies": ["objective_greedy", "forecast_greedy", "regime_oracle_greedy", "deadline_greedy", "belief_rollout", "hindsight_rollout", "static_greedy", "initial_only", "rl", "rl_forecast_ablated"]
+}

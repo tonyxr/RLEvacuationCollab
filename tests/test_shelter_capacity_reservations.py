@@ -296,7 +296,7 @@ class ReservationLedgerTests(unittest.TestCase):
 
         self.assertEqual(changed, 0)
         self.assertEqual(shelter_store.reservationFor(agent), (None, 0))
-        self.assertIs(agent.routeFollowing, provisional_route)
+        self.assertIsNone(agent.routeFollowing)
         self.assertFalse(agent.terminated)
         shelter_store.assertCapacityInvariant()
 
@@ -329,24 +329,43 @@ class ReservationIntegrationTests(unittest.TestCase):
             horizon=core.stopTime,
             maximum_deployments=2,
         )
-        remaining, utilization, _, _, _ = builder._regional_capacity()
+        (
+            remaining,
+            _installed,
+            sheltered_by_cell,
+            reserved_enroute_by_cell,
+            utilization,
+            _,
+            _,
+            _,
+        ) = builder._regional_capacity()
         expected_remaining = sum(
             core.shelterDS.availableCapacity(shelter)
             for shelter in core.shelterDS.shelterList.values()
         )
         by_cell = {}
         for shelter in core.shelterDS.shelterList.values():
-            capacity, committed = by_cell.get(shelter.cellLocated, (0, 0))
+            capacity, sheltered, reserved = by_cell.get(
+                shelter.cellLocated, (0, 0, 0)
+            )
             by_cell[shelter.cellLocated] = (
                 capacity + shelter.shelterCap,
-                committed
-                + shelter.shelterFlow
-                + core.shelterDS.reservedPopulation(shelter),
+                sheltered + shelter.shelterFlow,
+                reserved + core.shelterDS.reservedPopulation(shelter),
             )
         expected_utilization_sum = sum(
-            committed / capacity for capacity, committed in by_cell.values()
+            (sheltered + reserved) / capacity
+            for capacity, sheltered, reserved in by_cell.values()
         )
         self.assertEqual(int(remaining.sum()), expected_remaining)
+        self.assertEqual(
+            int(sheltered_by_cell.sum()),
+            sum(sheltered for _, sheltered, _ in by_cell.values()),
+        )
+        self.assertEqual(
+            int(reserved_enroute_by_cell.sum()),
+            sum(reserved for _, _, reserved in by_cell.values()),
+        )
         self.assertAlmostEqual(
             float(utilization.sum()),
             expected_utilization_sum,

@@ -14,6 +14,7 @@ from Route import Route
 from ShelterTypes import canonical_shelter_site_type
 import math
 import numpy as np
+import networkx as nx
 
 from collections import defaultdict
 from NetworkOptimization import routing_tree_to_target
@@ -82,6 +83,101 @@ class MapDS:
         self._shortest_path_osmid_cache = {}
         self._distance_to_target_cache = {}
         self._routing_tree_to_target_cache = {}
+        # Temporary, exogenous road closures. Keys are stable local edge ids;
+        # values are the simulator minute at which the link reopens.
+        self.closed_edges = {}
+        self.routing_version = 0
+
+    def _invalidate_routing_caches(self):
+        self._clear_routing_caches()
+        self.routing_version += 1
+
+    def _clear_routing_caches(self):
+        """Discard every route result tied to the current closure topology."""
+        self._shortest_path_osmid_cache.clear()
+        self._distance_to_target_cache.clear()
+        self._routing_tree_to_target_cache.clear()
+
+    def close_edge(self, edge_id, until):
+        edge_id = int(edge_id)
+        if edge_id not in self.edgeListByLocalID:
+            raise KeyError(f"Unknown road edge {edge_id}")
+        end_time = int(until)
+        if end_time < 0:
+            raise ValueError("Road-closure end time must be non-negative")
+        self.closed_edges[edge_id] = end_time
+        self._invalidate_routing_caches()
+
+    def reopen_edge(self, edge_id):
+        removed = self.closed_edges.pop(int(edge_id), None)
+        if removed is not None:
+            self._invalidate_routing_caches()
+
+    def is_edge_closed(self, edge):
+        return bool(
+            edge is not None
+            and int(getattr(edge, "edgeID", -1)) in self.closed_edges
+        )
+
+    def restore_closures(self, closures):
+        restored = {int(key): int(value) for key, value in dict(closures).items()}
+        if restored != self.closed_edges:
+            self.closed_edges = restored
+            self._invalidate_routing_caches()
+
+    def restore_routing_state(self, closures, routing_version):
+        """Restore a snapshot's closure topology and routing epoch exactly.
+
+        ``restore_closures`` is the factual-simulation operation: a topology
+        change advances the epoch so active assignments are refreshed. During
+        counterfactual replay both the map and the pedestrian assignment ledger
+        must instead return to the same historical epoch. Advancing only the map
+        would manufacture a route reassignment absent from the captured state.
+
+        Caches are discarded whenever either part of the routing state differs.
+        Clearing is deliberately separated from epoch advancement so the
+        restored epoch remains bit-for-bit identical to the snapshot.
+        """
+        restored = {int(key): int(value) for key, value in dict(closures).items()}
+        restored_version = int(routing_version)
+        if restored_version < 0:
+            raise ValueError("routing_version must be non-negative")
+        if (
+            restored != self.closed_edges
+            or restored_version != int(self.routing_version)
+        ):
+            self._clear_routing_caches()
+        self.closed_edges = restored
+        self.routing_version = restored_version
+
+    def _routing_graph(self):
+        if not self.closed_edges:
+            return self.locationDrive
+        closed_links = {
+            (
+                int(self.edgeListByLocalID[edge_id].startNode.OSMID),
+                int(self.edgeListByLocalID[edge_id].endNode.OSMID),
+                str(getattr(self.edgeListByLocalID[edge_id], "OSMID", "")),
+            )
+            for edge_id in self.closed_edges
+            if edge_id in self.edgeListByLocalID
+        }
+
+        def edge_allowed(u, v, key=None):
+            graph = self.locationDrive
+            try:
+                data = graph.get_edge_data(u, v, key)
+            except TypeError:
+                data = graph.get_edge_data(u, v)
+            if data is None:
+                return True
+            osmid = data.get("osmid", "") if hasattr(data, "get") else ""
+            values = osmid if isinstance(osmid, (list, tuple, set)) else (osmid,)
+            return not any(
+                (int(u), int(v), str(value)) in closed_links for value in values
+            )
+
+        return nx.subgraph_view(self.locationDrive, filter_edge=edge_allowed)
         
     """Getter functions"""
     
@@ -385,7 +481,7 @@ class MapDS:
             if dst not in self.locationDrive:
                 return {}, {}
             cached = routing_tree_to_target(
-                self.locationDrive,
+                self._routing_graph(),
                 dst,
                 weight="length",
             )
@@ -493,9 +589,18 @@ class MapDS:
         for u, v in zip(pathContainer[:-1], pathContainer[1:]):
             u, v = int(u), int(v)
             # Fast path: use precomputed "best" edge
-            edge_obj = self.idx_uv_best.get((u, v))
-            if edge_obj is None:
-                edge_obj = self.idx_uv_best.get((v, u))
+            choices = tuple(self.idx_uv_to_edges.get((u, v), ())) + tuple(
+                self.idx_uv_to_edges.get((v, u), ())
+            )
+            edge_obj = min(
+                (
+                    edge
+                    for edge in choices
+                    if not self.is_edge_closed(edge)
+                ),
+                key=lambda edge: (float(edge.edgeLen), int(edge.edgeID)),
+                default=None,
+            )
             
             if edge_obj is None:
                 return None

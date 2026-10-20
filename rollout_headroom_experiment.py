@@ -117,7 +117,9 @@ def base_action(bridge, observation, base: str) -> int:
         return int(
             bridge.objective_greedy_policy.select(
                 observation,
-                candidate_values=bridge._objective_greedy_values(observation),
+                candidate_values=bridge._public_regional_objective_values(
+                    observation
+                ),
                 deterministic=True,
             ).action_index
         )
@@ -184,7 +186,9 @@ def continuation_cost(
             next_time += interval
         CB.advance_one_timestep(core)
         plain, exposure, casualty = CB.controllable_time_mass(core, cohort)
-        cost += step_minutes * (plain + exposure + casualty)
+        cost += step_minutes * CB.weighted_objective_mass(
+            core, plain, exposure, casualty
+        )
     residual = estimate_remaining_time_to_safety(
         core,
         episode_horizon=episode_horizon,
@@ -192,7 +196,11 @@ def continuation_cost(
         include_panicked=True,
         include_casualties=False,
     )
-    cost += residual.hazard_weighted_person_minutes
+    cost += CB.weighted_objective_mass(
+        core,
+        residual.plain_person_minutes,
+        residual.hazard_exposure_person_minutes,
+    )
     return float(cost / (float(bridge.initial_population) * float(episode_horizon) * step_minutes))
 
 
@@ -223,7 +231,7 @@ def _rollout_select(self, observation, recurrent_step=None):
     feasible = np.flatnonzero(observation.action_mask)
     cells = observation.candidate_cell_indices[feasible].astype(int)
     base_choice = base_action(self, observation, base)
-    greedy_values = self._objective_greedy_values(observation)[feasible]
+    greedy_values = self._public_regional_objective_values(observation)[feasible]
     active = observation.active_by_cell[cells]
     hazard_score = active * (1.0 + observation.danger_by_cell[cells])
 

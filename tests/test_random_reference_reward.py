@@ -177,6 +177,21 @@ class RandomReferenceRewardTests(unittest.TestCase):
         )
         self.assertEqual(result.hazard_weighted_time_to_safety_cost, 67.0)
 
+    def test_branch_cost_uses_declared_plain_and_exposure_weights(self):
+        result = CB.BranchResult(
+            label="candidate",
+            active_person_time=30.0,
+            hazard_exposure_person_time=12.0,
+            expected_casualty_person_time=5.0,
+            remaining_plain_person_time=10.0,
+            remaining_hazard_exposure_person_time=8.0,
+            clearance_tail_person_time=4.0,
+            active_person_time_weight=0.5,
+            hazard_exposure_time_weight=2.0,
+        )
+        self.assertEqual(result.interval_hazard_weighted_person_time, 44.0)
+        self.assertEqual(result.hazard_weighted_time_to_safety_cost, 69.0)
+
 
 if __name__ == "__main__":
     unittest.main()

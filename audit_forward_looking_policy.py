@@ -157,7 +157,9 @@ def _select_with_audit(self, observation, recurrent_step=None):
         "objective_greedy": int(
             self.objective_greedy_policy.select(
                 observation,
-                candidate_values=self._objective_greedy_values(observation),
+                candidate_values=self._public_regional_objective_values(
+                    observation
+                ),
                 deterministic=True,
             ).action_index
         ),
@@ -230,7 +232,9 @@ def _select_with_audit(self, observation, recurrent_step=None):
         int(action): position for position, action in enumerate(panel_actions)
     }
     mean_cost = costs.mean(axis=0)
-    greedy_values = self._objective_greedy_values(observation)[panel_actions]
+    greedy_values = self._public_regional_objective_values(observation)[
+        panel_actions
+    ]
     actor_scores = actual_logits.detach().cpu().numpy().reshape(-1)[panel_actions]
     record = {
         "scenario": int(config["scenario"]),

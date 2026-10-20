@@ -16,6 +16,7 @@ import json
 import random
 import warnings
 import numpy as np
+import networkx as nx
 
 #import torch
 #import torch.nn as nn
@@ -24,7 +25,16 @@ import numpy as np
 """Import other main Simulator modules"""
 from OSMProcessor import OSMProcessor
 from MapDatabase import MapDS
-from HazardDatabase import HazardDS
+from HazardDatabase import HazardDS, HazardRegimeConfig, HazardRegimeProcess
+from StressScenarios import (
+    StressScenarioSpec,
+    bearing_degrees,
+    clustered_origin_plan,
+    downwind_front_speed,
+    population_centroid,
+    stress_rng,
+    threat_source_index,
+)
 from ShelterDatabase import ShelterDS
 from PedestrianDatabase import PedDS
 from CAProcessor import CellTracker, authoritative_grid_shape
@@ -186,6 +196,10 @@ class Core:
         # capacity after the final scheduled installation.
         self.requirePopulationMatchedShelterCapacity = False
         self.shelterCapacitySurplus = 0
+        # N-minus-k capacity resilience: after this many equal-capacity sites
+        # are lost, the surviving planned network must still house the full
+        # initial population. Zero preserves legacy experiment contracts.
+        self.shelterFailureReserveCount = 0
         # Retained only so archived curricula still parse. These values do not
         # filter the policy's action space; risk and benefit are observations.
         self.maximumShelterForecastDanger = 1.0
@@ -216,6 +230,11 @@ class Core:
         # maximum remaining living burden; sensitivity runs vary this declared
         # value rather than hiding it in reward weights.
         self.casualtyPriorityKappa = 2.0
+        # Explicit objective weights.  Defaults preserve historical runs;
+        # experiment curricula may change them, but the same values are used
+        # by the live reward, branch grading, heuristics and evaluation.
+        self.activePersonTimeWeight = 1.0
+        self.hazardExposureTimeWeight = 1.0
         # Optional coherent tail-clearance objective.  Older experiment files
         # leave the weight at zero; curricula that enable it state both the
         # CVaR population fraction and its extra weight explicitly.
@@ -232,6 +251,54 @@ class Core:
         # stochastic transition probability.  It is independent of the
         # decision-grid resolution and population-adaptive cell widths.
         self.hazardSpreadSpeedMPerMinute = 100.0 / 3.0
+        # Danger severity is a source-local, elapsed-time process.  Only the
+        # source cell can reach level 5, cells whose footprint is within the
+        # declared radius can reach level 4, and all other affected cells cap
+        # at level 3.  Values are cumulative minutes since first impact.
+        self.hazardSeverityTransitionMinutes = [6.0, 15.0, 30.0, 50.0]
+        self.hazardSevereRadiusM = 100.0
+        # An installed shelter permanently fails at or above this integer CA
+        # danger level; its current residents resume evacuation immediately.
+        self.shelterOverrunDangerLevel = 4
+        # v53r regime/timing controls are opt-in. Their disabled defaults leave
+        # the historical simulator, action table and random streams untouched.
+        self.hazardRegimeEnabled = False
+        self.hazardWindShiftRatePerMinute = 0.0
+        self.hazardWindShiftDegrees = [-90.0, -45.0, 45.0, 90.0]
+        self.hazardWindSpeedMultipliers = [0.6, 1.0, 1.5]
+        self.hazardWindMinDwellMinutes = 20
+        self.hazardForecastLeadMinutes = 15
+        self.hazardForecastMissProbability = 0.2
+        self.hazardForecastFalseAlarmRatePerMinute = 0.0
+        self.hazardIntensitySwitchRatePerMinute = 0.0
+        self.hazardIntensityMultipliers = [0.7, 1.0, 1.6]
+        self.hazardClosureRatePerMinute = 0.0
+        self.hazardClosureDurationMinutes = [20, 60]
+        self.hazardClosureWarningLeadMinutes = 10
+        self.hazardSecondaryIgnitionRatePerMinute = 0.0
+        self.hazardSecondaryIgnitionWindow = [10, 90]
+        self.forecastEnsembleSize = 8
+        self.actionSpace = "cell"
+        self.nmccPiAllocation = "uniform"
+        # Information set of the futures that grade the actor's rollout
+        # targets. "belief" resamples every latent regime event from the
+        # public signals at the decision (the actor's information set);
+        # "realized" replays the episode's hidden regime tape and is retained
+        # only as an explicitly labelled hindsight ablation.
+        self.nmccPiTargetFutureMode = "belief"
+        self.deadlineGreedyThreshold = -1.0e30
+        self.constructedDecoyDemand = False
+        # Evaluation stress scenarios (exogenous, pre-registered; off by
+        # default and never set by the training curricula). See
+        # ``StressScenarios`` and ``config/stress_family_evaluation.json``.
+        self.stressScenarioFamily = "none"
+        self.stressClusterShares = []
+        self.stressClusterRadiusM = 300.0
+        self.stressClusterMinSeparationM = 1500.0
+        self.stressThreatenedCluster = -1
+        self.stressThreatArrivalMinutes = 0.0
+        self.stressWindAim = "none"
+        self.hazard_regime = None
         
         # Input defined, indicate the initial volume of shelters we deploy in the network at t = 0
         self.initShelterVol = 0
@@ -382,6 +449,11 @@ class Core:
         self.trainingStageTotalUpdates = 1
         self.trainMode = False
         self.finalInstallationUnassignedRationalPopulation = None
+        self.decoy_scenario_metadata = None
+        self.stress_scenario_metadata = None
+        self._stress_raw_node_xy = None
+        self._stress_population_weights = None
+        self._stress_anchor_indices = ()
 
     """Getter Functions"""
     
@@ -414,7 +486,206 @@ class Core:
     
     def getInitGuidanceVol(self):
         return self.initGuidanceVol
+
+    def _construct_decoy_origin_plan(self):
+        """Create the preregistered decoy-demand start state.
+
+        Three quarters of represented pedestrians start at an installed
+        shelter and therefore clear quickly.  The remainder start beyond a
+        true bridge link with every initial shelter on the opposite side.  A
+        warned closure of both directed copies of that bridge is added to the
+        exogenous tape.  The construction is deterministic conditional on the
+        scenario/map and fails if the requested experiment cannot be formed.
+        """
+        if not self.constructedDecoyDemand:
+            return None
+        if self.hazard_regime is None or not self.hazard_regime.enabled:
+            raise RuntimeError("The constructed decoy requires the hazard regime")
+        shelters = tuple(
+            sorted(
+                self.shelterDS.shelterList.values(),
+                key=lambda shelter: int(shelter.shelterID),
+            )
+        )
+        if not shelters:
+            raise RuntimeError("The constructed decoy requires an initial shelter")
+        shelter_nodes = {
+            int(shelter.nodeMapped.OSMID) for shelter in shelters
+        }
+        graph = nx.Graph(self.mapDS.locationDrive)
+        if graph.number_of_nodes() < 3:
+            raise RuntimeError("The constructed decoy requires a connected road graph")
+        chosen = None
+        for u, v in sorted(nx.bridges(graph), key=lambda pair: (int(pair[0]), int(pair[1]))):
+            graph.remove_edge(u, v)
+            components = (
+                nx.node_connected_component(graph, u),
+                nx.node_connected_component(graph, v),
+            )
+            graph.add_edge(u, v)
+            for component, boundary in ((components[0], u), (components[1], v)):
+                component = set(component)
+                if len(component) < 3 or shelter_nodes & component:
+                    continue
+                if len(component) > max(3, int(0.45 * graph.number_of_nodes())):
+                    continue
+                chosen = (int(u), int(v), component, int(boundary))
+                break
+            if chosen is not None:
+                break
+        if chosen is None:
+            raise RuntimeError(
+                "No bridge-separated road region without an initial shelter "
+                "is available for the constructed decoy"
+            )
+        u, v, isolated, boundary = chosen
+        subgraph = graph.subgraph(isolated)
+        distances = nx.single_source_shortest_path_length(subgraph, boundary)
+        small_origin = int(max(distances, key=lambda node: (distances[node], int(node))))
+        large_origin = int(shelters[0].nodeMapped.OSMID)
+        represented_agents = int(
+            math.ceil(float(self.pedVol) / float(self.pedestrianGroupSize))
+        )
+        large_count = int(round(0.75 * represented_agents))
+        large_count = min(max(1, large_count), represented_agents - 1)
+        origins = [large_origin] * large_count + [small_origin] * (
+            represented_agents - large_count
+        )
+        closure_edges = sorted({
+            int(edge.edgeID)
+            for pair in ((u, v), (v, u))
+            for edge in self.mapDS.idx_uv_to_edges.get(pair, ())
+        })
+        if not closure_edges:
+            raise RuntimeError("The decoy bridge has no initialized road edge")
+        closure_time = max(1, int(self.shelterActionInterval))
+        duration = max(1, int(self.stopTime))
+        for edge_id in closure_edges:
+            self.hazard_regime.scheduled.append({
+                "time": closure_time,
+                "kind": "closure",
+                "payload": {"edge_id": edge_id, "duration": duration},
+            })
+        self.hazard_regime.scheduled.sort(
+            key=lambda event: (int(event["time"]), str(event["kind"]))
+        )
+        self.hazard_regime._update_public(0)
+        self.decoy_scenario_metadata = {
+            "large_origin_osmid": large_origin,
+            "small_origin_osmid": small_origin,
+            "large_agent_count": large_count,
+            "small_agent_count": represented_agents - large_count,
+            "bridge_nodes": [u, v],
+            "closure_edge_ids": closure_edges,
+            "closure_time": closure_time,
+        }
+        return origins
     
+    # -- evaluation stress scenarios -------------------------------------
+
+    def _raw_node_xy(self, raw_nodes):
+        """Local metric coordinates (x east, y south) of every raw road node."""
+        xy = np.full((len(raw_nodes), 2), np.nan, dtype=np.float64)
+        for index, (osmid, _) in enumerate(raw_nodes):
+            node = self.mapDS.nodeListByOSMID.get(int(osmid))
+            if node is not None:
+                xy[index] = (float(node.nodeX), float(node.nodeY))
+        return xy
+
+    def _stress_hazard_sources(self, spec, raw_nodes):
+        """Place hazard 0 at the pre-registered nominal arrival distance."""
+        if spec.threatened_cluster < 0:
+            return None
+        if not self._stress_anchor_indices or self._stress_raw_node_xy is None:
+            raise RuntimeError("Threatened-cluster scenario has no cluster anchors")
+        anchors = list(self._stress_anchor_indices)
+        threatened = anchors[spec.threatened_cluster]
+        front_speed = downwind_front_speed(
+            self.hazardSpreadSpeedMPerMinute,
+            self.hazardWindSpeedMPerMinute,
+            self.hazardWindInfluence,
+        )
+        distance = float(spec.threat_arrival_minutes) * front_speed
+        source_index = threat_source_index(
+            self._stress_raw_node_xy,
+            threatened,
+            distance,
+            self.random_stream_seeds["hazard_evolution"],
+            other_anchor_indices=[
+                anchor for position, anchor in enumerate(anchors)
+                if position != spec.threatened_cluster
+            ],
+        )
+        node = self.mapDS.nodeListByOSMID.get(int(raw_nodes[source_index][0]))
+        if node is None:
+            raise RuntimeError("Threat source node is not in the road network")
+        return [node]
+
+    def _apply_stress_wind_aim(self, spec):
+        """Point the public wind before t = 0 (hazard, forecast and regime)."""
+        if spec.wind_aim == "random":
+            direction = float(
+                stress_rng(self.random_stream_seeds["hazard_regime"]).uniform(0.0, 360.0)
+            )
+        else:
+            sources = [
+                (float(hazard.sourceNode.nodeX), float(hazard.sourceNode.nodeY))
+                for hazard in self.hazardDS.hazardList.values()
+                if getattr(hazard, "sourceNode", None) is not None
+            ]
+            if not sources:
+                raise RuntimeError("Aimed wind requires at least one hazard source")
+            source_xy = np.mean(np.asarray(sources, dtype=np.float64), axis=0)
+            if spec.wind_aim == "population_centroid":
+                target_xy = population_centroid(
+                    self._stress_raw_node_xy, self._stress_population_weights
+                )
+            else:
+                anchor = self._stress_anchor_indices[spec.threatened_cluster]
+                target_xy = self._stress_raw_node_xy[int(anchor)]
+            direction = bearing_degrees(source_xy, target_xy)
+        self.hazardWindDirectionDegrees = float(direction) % 360.0
+        self.hazardDS.configure_wind(
+            speed_m_per_minute=self.hazardWindSpeedMPerMinute,
+            direction_degrees=self.hazardWindDirectionDegrees,
+            influence=self.hazardWindInfluence,
+            time_step_minutes=self.timeStepMinutes,
+        )
+        regime = getattr(self, "hazard_regime", None)
+        if regime is not None:
+            regime.base_wind_direction_degrees = self.hazardWindDirectionDegrees
+            regime.wind_direction_degrees = self.hazardWindDirectionDegrees
+            regime._update_public(0)
+
+    def _stress_metadata(self, spec, raw_nodes, source_nodes):
+        anchors = [int(raw_nodes[index][0]) for index in self._stress_anchor_indices]
+        metadata = {
+            **spec.as_dict(),
+            "anchor_osmids": anchors,
+            "wind_speed_m_per_minute": float(self.hazardWindSpeedMPerMinute),
+            "wind_direction_degrees": float(self.hazardWindDirectionDegrees),
+            "nominal_downwind_front_speed_m_per_minute": float(
+                downwind_front_speed(
+                    self.hazardSpreadSpeedMPerMinute,
+                    self.hazardWindSpeedMPerMinute,
+                    self.hazardWindInfluence,
+                )
+            ),
+        }
+        if source_nodes:
+            source = source_nodes[0]
+            anchor_xy = self._stress_raw_node_xy[
+                int(self._stress_anchor_indices[spec.threatened_cluster])
+            ]
+            metadata.update({
+                "threat_source_osmid": int(source.OSMID),
+                "threat_distance_m": float(np.hypot(
+                    float(source.nodeX) - anchor_xy[0],
+                    float(source.nodeY) - anchor_xy[1],
+                )),
+            })
+        return metadata
+
     """Handles all functionality at t = 0"""
     """Still need to add input parameters to function calls"""
     def initSimulator(
@@ -485,6 +756,11 @@ class Core:
             ),
             "pedestrian_origins": int(
                 np.random.SeedSequence([self.scenario_seed, 4]).generate_state(
+                    1, dtype=np.uint64
+                )[0]
+            ),
+            "hazard_regime": int(
+                np.random.SeedSequence([self.scenario_seed, 5]).generate_state(
                     1, dtype=np.uint64
                 )[0]
             ),
@@ -617,6 +893,8 @@ class Core:
             wind_influence=self.hazardWindInfluence,
             time_step_minutes=self.timeStepMinutes,
             spread_speed_m_per_minute=self.hazardSpreadSpeedMPerMinute,
+            severity_transition_minutes=self.hazardSeverityTransitionMinutes,
+            severe_radius_m=self.hazardSevereRadiusM,
         )
         self.hazardDS.cell_state_evolution_mode = str(self.hazardEvolutionMode).strip().lower()
         if self.hazardDS.cell_state_evolution_mode not in {"deterministic", "stochastic"}:
@@ -629,6 +907,9 @@ class Core:
             impact_coefficient=self.socialForceImpactCoefficient,
         )
         self.shelterDS = ShelterDS(self.shelterCanVol, self.initShelterVol)
+        self.shelterDS.hazardOverrunDangerLevel = int(
+            self.shelterOverrunDangerLevel
+        )
         
         # Call initializing functions here, functions needed at t = 0 (follow old model, with additions)
         self.mapDS.computeConvertUnit()
@@ -638,6 +919,7 @@ class Core:
 
         raw_nodes = list(self.OSMProcessor.nodeList)
         planned_birth_osmids = None
+        planned_group_sizes = None
         population_weights = None
         population_partition_key = None
         if self.cellPartitionMode == POPULATION_DENSITY_ADAPTIVE:
@@ -647,13 +929,29 @@ class Core:
                 int(self.pedestrianGroupSize),
                 self.random_stream_seeds["pedestrian_origins"],
             )
+            stress_spec = StressScenarioSpec.from_core(self)
+            if stress_spec.requires_origin_plan:
+                self._stress_raw_node_xy = self._raw_node_xy(raw_nodes)
+            if stress_spec.cluster_shares:
+                origin_plan = clustered_origin_plan(
+                    self._stress_raw_node_xy,
+                    int(self.pedVol),
+                    int(self.pedestrianGroupSize),
+                    stress_spec,
+                    self.random_stream_seeds["pedestrian_origins"],
+                )
+                self._stress_anchor_indices = tuple(origin_plan["anchor_indices"])
             planned_birth_osmids = [
                 int(raw_nodes[index][0])
                 for index in origin_plan["origin_indices"]
             ]
+            planned_group_sizes = [
+                int(value) for value in origin_plan["group_sizes"]
+            ]
             population_weights = np.asarray(
                 origin_plan["node_population"], dtype=float
             )
+            self._stress_population_weights = population_weights
             population_partition_key = hashlib.sha256(
                 population_weights.tobytes()
             ).hexdigest()
@@ -758,6 +1056,54 @@ class Core:
         self.mapDS.buildEdgeIndices()
         self.mapDS.computeNodeCapSum()
         self.congestionModel.bind_edges(self.mapDS.edgeListByLocalID.values())
+        regime_config = HazardRegimeConfig(
+            enabled=bool(self.hazardRegimeEnabled),
+            wind_shift_rate_per_minute=float(
+                self.hazardWindShiftRatePerMinute
+            ),
+            wind_shift_degrees=tuple(self.hazardWindShiftDegrees),
+            wind_speed_multipliers=tuple(self.hazardWindSpeedMultipliers),
+            wind_min_dwell_minutes=int(self.hazardWindMinDwellMinutes),
+            forecast_lead_minutes=int(self.hazardForecastLeadMinutes),
+            forecast_miss_probability=float(
+                self.hazardForecastMissProbability
+            ),
+            forecast_false_alarm_rate_per_minute=float(
+                self.hazardForecastFalseAlarmRatePerMinute
+            ),
+            intensity_switch_rate_per_minute=float(
+                self.hazardIntensitySwitchRatePerMinute
+            ),
+            intensity_multipliers=tuple(self.hazardIntensityMultipliers),
+            closure_rate_per_minute=float(self.hazardClosureRatePerMinute),
+            closure_duration_minutes=tuple(
+                self.hazardClosureDurationMinutes
+            ),
+            closure_warning_lead_minutes=int(
+                self.hazardClosureWarningLeadMinutes
+            ),
+            secondary_ignition_rate_per_minute=float(
+                self.hazardSecondaryIgnitionRatePerMinute
+            ),
+            secondary_ignition_window=tuple(
+                self.hazardSecondaryIgnitionWindow
+            ),
+            episode_horizon=max(1, int(self.stopTime) - 1),
+        )
+        self.hazard_regime = HazardRegimeProcess(
+            regime_config,
+            np.random.default_rng(self.random_stream_seeds["hazard_regime"]),
+            self.cellTracker,
+            self.mapDS,
+        )
+        self.hazard_regime.base_wind_direction_degrees = float(
+            self.hazardWindDirectionDegrees
+        )
+        self.hazard_regime.base_wind_speed_m_per_minute = float(
+            self.hazardWindSpeedMPerMinute
+        )
+        self.hazard_regime.reset(0)
+        self.hazardDS.set_regime(self.hazard_regime)
         
         self.forceTracker.setupCellTracker(self.cellTracker)
         
@@ -831,44 +1177,27 @@ class Core:
             initialized_shelter_ids[:requested_initial_shelters]
         )
         predeployed_ids = list(initialized_shelter_ids[requested_initial_shelters:])
-        if strategy_key == "static_greedy":
-            grid_x, grid_y = authoritative_grid_shape(self)
-            node_mass = np.zeros(self.cellTracker.number_of_cells, dtype=float)
-            for node in self.mapDS.nodeListByLocalID.values():
-                cell = getattr(node, "cellID", None)
-                if cell is None:
-                    continue
-                i, j = int(cell[0]), int(cell[1])
-                if 0 <= i < grid_x and 0 <= j < grid_y:
-                    node_mass[self.cellTracker.flatten_cell((i, j))] += 1.0
-            if float(node_mass.sum()) <= 0.0:
-                node_mass[:] = 1.0
-            expected_initial_demand = (
-                float(self.pedVol) * node_mass / float(node_mass.sum())
-            )
-            additions = max(
-                0,
-                int(self.targetActiveShelters) - len(self.shelterDS.shelterList),
-            )
-            predeployed_ids.extend(
-                self.shelterDS.predeployStaticDemandGreedy(
-                    expected_initial_demand,
-                    additions,
-                    self.cellTracker,
-                )
-            )
-            print(
-                f"[SHELTER FAIRNESS] strategy=static_greedy pre-deployed "
-                f"{len(predeployed_ids)} expected-demand sites at t=0.",
-                flush=True,
-            )
         self.static_predeployment_shelter_ids = frozenset(predeployed_ids)
         for shelter in self.shelterDS.shelterList.values():
             self.cellTracker.addShelter(shelter.cellLocated, shelter)
         if self.verbose:
             print("Shelters list: ", self.shelterDS.shelterList)
+        decoy_origins = self._construct_decoy_origin_plan()
+        if decoy_origins is not None:
+            planned_birth_osmids = decoy_origins
+            planned_group_sizes = [1] * len(decoy_origins)
         
-        self.hazardDS.initHazard(self.mapDS, self.cellTracker)
+        stress_spec = StressScenarioSpec.from_core(self)
+        stress_source_nodes = self._stress_hazard_sources(stress_spec, raw_nodes)
+        self.hazardDS.initHazard(
+            self.mapDS, self.cellTracker, source_nodes=stress_source_nodes
+        )
+        if stress_spec.wind_aim != "none":
+            self._apply_stress_wind_aim(stress_spec)
+        if stress_spec.active:
+            self.stress_scenario_metadata = self._stress_metadata(
+                stress_spec, raw_nodes, stress_source_nodes
+            )
         self._hazard_trajectory_hasher = hashlib.sha256()
         self._record_hazard_state(0)
         
@@ -877,6 +1206,7 @@ class Core:
             self.cellTracker,
             self.maxSpeed,
             birth_node_osmids=planned_birth_osmids,
+            group_sizes=planned_group_sizes,
         )
         
         self.shelterDS.shelterByOSMID   = {sh.nodeMapped.OSMID: sh for sh in self.shelterDS.shelterList.values()}    
@@ -893,6 +1223,14 @@ class Core:
                                   self.hazardCasualtyReferenceMinutes
                               ),
                               evacuationHorizonTimesteps = self.stopTime)
+        self.pedDS.shelter_damage_danger_threshold = int(
+            self.shelterOverrunDangerLevel
+        )
+        # Initial sites obey the same physics as sequentially installed ones.
+        # This runs after the occupant registry is connected but before any
+        # pedestrian is routed, so a source-overrun site contributes no
+        # phantom operational capacity at t=0.
+        self.pedDS.resolveHazardShelterClosures(simulation_time=0)
         self.pedDS.route_active_to_nearest_shelter()
         # Initialize every cell-indexed observation from the same authoritative
         # CA state before a t=0 precommitment or the first RL observation. In
@@ -911,11 +1249,14 @@ class Core:
             self.finalInstallationUnassignedRationalPopulation = int(
                 unassigned
             )
-            if unassigned != 0:
-                raise RuntimeError(
-                    "Complete shelter budget left capacity-eligible rational "
-                    f"pedestrians unassigned: {unassigned}"
-                )
+            self.shelterDS.assertPopulationMatchedAssignment(
+                unassigned,
+                self.pedVol,
+                network_disruption_active=bool(
+                    getattr(self.mapDS, "closed_edges", {})
+                ),
+                context="Complete shelter budget",
+            )
 
         self.rl = RLBridge(
             self,
@@ -966,10 +1307,10 @@ class Core:
                 for attribute, keyword, _, _ in NMCC_PI_ALL_CORE_FIELDS
             },
         )
-        if strategy_key == "initial_only":
+        if strategy_key in {"initial_only", "static_greedy"}:
             schedule = self.rl.precommit_static_schedule()
             print(
-                "[SHELTER FAIRNESS] strategy=initial_only committed "
+                f"[SHELTER FAIRNESS] strategy={strategy_key} committed "
                 f"{len(schedule)} initial-state sites for scheduled deployment "
                 f"at t={self.shelterActionInterval},...,"
                 f"{len(schedule) * self.shelterActionInterval}.",
@@ -1114,8 +1455,19 @@ class Core:
         stage_id = str(self.trainingStageId).upper()
         comparison_horizon = {
             "E": "environment_dynamics_only_actor_frozen",
-            "P": "one_decision_interval_plus_nmcc_continuation_value",
-        }.get(stage_id, "one_decision_interval_plus_nmcc_continuation_value")
+            "P": "complete_simulator_rollout_to_episode_horizon",
+        }.get(stage_id, "complete_simulator_rollout_to_episode_horizon")
+        if not self.trainMode:
+            critic_target = "frozen_evaluation_value"
+        elif stage_id == "E":
+            critic_target = "random_reference_cost_to_go"
+        elif bool(getattr(self, "nmccPolicyImprovement")):
+            critic_target = (
+                "complete_episode_smdp_monte_carlo_return_to_go_with_"
+                "realized_regime_baseline"
+            )
+        else:
+            critic_target = "current_policy_return_to_go"
         return {
             "city_id": str(self.cityID),
             "address": str(self.address),
@@ -1132,12 +1484,14 @@ class Core:
                 "mode": (
                     "individual"
                     if int(self.pedestrianGroupSize) == 1
-                    else "weighted_cohort"
+                    else "bounded_initial_node_cohort"
                 ),
                 "maximum_persons_per_agent": int(self.pedestrianGroupSize),
                 "initialized_agent_count": int(
                     math.ceil(float(self.pedVol) / float(self.pedestrianGroupSize))
                 ),
+                "initial_node_group_count": "recorded_after_initialization",
+                "review_unit": "origin_node_cohort_per_simulator_transition",
             },
             "hazards": int(self.hazardVol),
             "maximum_speed": float(self.maxSpeed),
@@ -1191,6 +1545,18 @@ class Core:
                 self.requirePopulationMatchedShelterCapacity
             ),
             "shelter_capacity_surplus": int(self.shelterCapacitySurplus),
+            "shelter_failure_reserve_count": int(
+                self.shelterFailureReserveCount
+            ),
+            "planned_capacity_after_reserved_failures": int(
+                max(
+                    0,
+                    self.initShelterVol
+                    + self.maxAdditionalShelters
+                    - self.shelterFailureReserveCount,
+                )
+                * self.shelterCapacityToken
+            ),
             "training_stage": {
                 "id": str(self.trainingStageId),
                 "update_index": int(self.trainingStageUpdateIndex),
@@ -1202,13 +1568,8 @@ class Core:
                 "train_shared_critic": bool(
                     self.trainMode
                     and stage_id not in {"E"}
-                    and not bool(getattr(self, "nmccPolicyImprovement"))
                 ),
-                "critic_target": (
-                    "not_used_by_rollout_policy_improvement"
-                    if bool(getattr(self, "nmccPolicyImprovement"))
-                    else "current_policy_return_to_go"
-                ),
+                "critic_target": critic_target,
                 "use_continuation_for_actions": bool(
                     not bool(getattr(self, "nmccPolicyImprovement"))
                     and ((not self.trainMode) or stage_id == "P")
@@ -1221,6 +1582,10 @@ class Core:
             "expected_casualty_priority_kappa": float(
                 self.casualtyPriorityKappa
             ),
+            "active_person_time_weight": float(self.activePersonTimeWeight),
+            "hazard_exposure_time_weight": float(
+                self.hazardExposureTimeWeight
+            ),
             "clearance_tail_fraction": float(self.clearanceTailFraction),
             "clearance_tail_extra_weight": float(
                 self.clearanceTailExtraWeight
@@ -1231,12 +1596,81 @@ class Core:
             "hazard_spread_speed_m_per_minute": float(
                 self.hazardSpreadSpeedMPerMinute
             ),
+            "hazard_severity_transition_minutes": list(
+                self.hazardSeverityTransitionMinutes
+            ),
+            "hazard_severe_radius_m": float(self.hazardSevereRadiusM),
+            "shelter_overrun_danger_level": int(
+                self.shelterOverrunDangerLevel
+            ),
             "hazard_wind": {
                 "speed_m_per_minute": float(self.hazardWindSpeedMPerMinute),
                 "direction_degrees_from_east": float(
                     self.hazardWindDirectionDegrees
                 ),
                 "spread_influence": float(self.hazardWindInfluence),
+            },
+            "hazard_regime": {
+                "enabled": bool(self.hazardRegimeEnabled),
+                "wind_shift_rate_per_minute": float(
+                    self.hazardWindShiftRatePerMinute
+                ),
+                "wind_shift_degrees": list(self.hazardWindShiftDegrees),
+                "wind_speed_multipliers": list(
+                    self.hazardWindSpeedMultipliers
+                ),
+                "wind_min_dwell_minutes": int(
+                    self.hazardWindMinDwellMinutes
+                ),
+                "forecast_lead_minutes": int(
+                    self.hazardForecastLeadMinutes
+                ),
+                "forecast_miss_probability": float(
+                    self.hazardForecastMissProbability
+                ),
+                "forecast_false_alarm_rate_per_minute": float(
+                    self.hazardForecastFalseAlarmRatePerMinute
+                ),
+                "intensity_switch_rate_per_minute": float(
+                    self.hazardIntensitySwitchRatePerMinute
+                ),
+                "intensity_multipliers": list(
+                    self.hazardIntensityMultipliers
+                ),
+                "closure_rate_per_minute": float(
+                    self.hazardClosureRatePerMinute
+                ),
+                "closure_duration_minutes": list(
+                    self.hazardClosureDurationMinutes
+                ),
+                "closure_warning_lead_minutes": int(
+                    self.hazardClosureWarningLeadMinutes
+                ),
+                "secondary_ignition_rate_per_minute": float(
+                    self.hazardSecondaryIgnitionRatePerMinute
+                ),
+                "secondary_ignition_window": list(
+                    self.hazardSecondaryIgnitionWindow
+                ),
+                "intensity_information_contract": (
+                    "latent_bayesian_posterior_from_observed_ca_front"
+                ),
+                "intensity_transition_model": "marked_poisson",
+            },
+            "forecast_ensemble_size": int(self.forecastEnsembleSize),
+            "action_space": str(self.actionSpace),
+            "nmcc_pi_allocation": str(self.nmccPiAllocation),
+            "nmcc_pi_target_future_mode": str(self.nmccPiTargetFutureMode),
+            "deadline_greedy_threshold": float(self.deadlineGreedyThreshold),
+            "constructed_decoy_demand": bool(self.constructedDecoyDemand),
+            "stress_scenario": {
+                "family": str(self.stressScenarioFamily),
+                "cluster_shares": [float(v) for v in (self.stressClusterShares or [])],
+                "cluster_radius_m": float(self.stressClusterRadiusM),
+                "cluster_min_separation_m": float(self.stressClusterMinSeparationM),
+                "threatened_cluster": int(self.stressThreatenedCluster),
+                "threat_arrival_minutes": float(self.stressThreatArrivalMinutes),
+                "wind_aim": str(self.stressWindAim),
             },
             "ppo_learning_rate": float(self.learningRate),
             "actor_learning_rate": float(self.actorLearningRate),
@@ -1294,7 +1728,12 @@ class Core:
                         ),
                         "continuation_policy": "frozen_current_residual_actor",
                         "shared_actor_critic_continuation_value": False,
-                        "continuation_target": "realized_complete_simulator_cost",
+                        "continuation_target": (
+                            "belief_complete_simulator_cost"
+                            if str(self.nmccPiTargetFutureMode) == "belief"
+                            else "hindsight_realized_complete_simulator_cost"
+                        ),
+                        "target_future_mode": str(self.nmccPiTargetFutureMode),
                         "environment_reward_branch_horizon": 0,
                         "correction_gate": False,
                         "fallback_controller": False,
@@ -1313,11 +1752,7 @@ class Core:
                 if bool(getattr(self, "nmccPolicyImprovement"))
                 else {}
             ),
-            "critic_target": (
-                "not_used_by_rollout_policy_improvement"
-                if bool(getattr(self, "nmccPolicyImprovement"))
-                else "complete_episode_smdp_monte_carlo_return_to_go"
-            ),
+            "critic_target": critic_target,
             "optimizer": str(self.optimizer),
             "learner_batch_episodes": int(self.ppoRolloutEpisodes),
             "finalize_incomplete_learner_batch": bool(self.finalizePpoRollout),
@@ -1415,11 +1850,18 @@ class Core:
         self.panicHerdProbability = float(self.panicHerdProbability)
         self.panicDangerThreshold = int(self.panicDangerThreshold)
         self.casualtyPriorityKappa = float(self.casualtyPriorityKappa)
+        self.activePersonTimeWeight = float(self.activePersonTimeWeight)
+        self.hazardExposureTimeWeight = float(self.hazardExposureTimeWeight)
         self.clearanceTailFraction = float(self.clearanceTailFraction)
         self.clearanceTailExtraWeight = float(self.clearanceTailExtraWeight)
         self.hazardSpreadSpeedMPerMinute = float(
             self.hazardSpreadSpeedMPerMinute
         )
+        self.hazardSeverityTransitionMinutes = [
+            float(value) for value in self.hazardSeverityTransitionMinutes
+        ]
+        self.hazardSevereRadiusM = float(self.hazardSevereRadiusM)
+        self.shelterOverrunDangerLevel = int(self.shelterOverrunDangerLevel)
         self.cellX = int(self.cellX)
         self.cellY = int(self.cellY)
         self.cellPartitionMode = normalize_partition_mode(self.cellPartitionMode)
@@ -1431,6 +1873,22 @@ class Core:
             or self.casualtyPriorityKappa < 1.0
         ):
             raise ValueError("casualtyPriorityKappa must be finite and at least 1")
+        if (
+            not math.isfinite(self.activePersonTimeWeight)
+            or self.activePersonTimeWeight < 0.0
+        ):
+            raise ValueError("activePersonTimeWeight must be finite and non-negative")
+        if (
+            not math.isfinite(self.hazardExposureTimeWeight)
+            or self.hazardExposureTimeWeight < 0.0
+        ):
+            raise ValueError(
+                "hazardExposureTimeWeight must be finite and non-negative"
+            )
+        if self.activePersonTimeWeight + self.hazardExposureTimeWeight <= 0.0:
+            raise ValueError(
+                "At least one evacuation-time objective weight must be positive"
+            )
         if (
             not math.isfinite(self.clearanceTailFraction)
             or not 0.0 < self.clearanceTailFraction <= 1.0
@@ -1448,10 +1906,33 @@ class Core:
             raise ValueError(
                 "hazardSpreadSpeedMPerMinute must be finite and positive"
             )
+        if (
+            len(self.hazardSeverityTransitionMinutes) != 4
+            or any(
+                not math.isfinite(value) or value <= 0.0
+                for value in self.hazardSeverityTransitionMinutes
+            )
+            or any(
+                later <= earlier
+                for earlier, later in zip(
+                    self.hazardSeverityTransitionMinutes,
+                    self.hazardSeverityTransitionMinutes[1:],
+                )
+            )
+        ):
+            raise ValueError(
+                "hazardSeverityTransitionMinutes must contain four finite, "
+                "positive, strictly increasing values"
+            )
+        if not math.isfinite(self.hazardSevereRadiusM) or self.hazardSevereRadiusM < 0.0:
+            raise ValueError("hazardSevereRadiusM must be finite and non-negative")
+        if not 1 <= self.shelterOverrunDangerLevel <= 5:
+            raise ValueError("shelterOverrunDangerLevel must be in [1, 5]")
         self.shelterCanVol = int(self.shelterCanVol)
         self.initShelterVol = int(self.initShelterVol)
         self.shelterCapacityToken = int(self.shelterCapacityToken)
         self.shelterCapacitySurplus = int(self.shelterCapacitySurplus)
+        self.shelterFailureReserveCount = int(self.shelterFailureReserveCount)
         self.maxAdditionalShelters = int(self.maxAdditionalShelters)
         self.shelterActionInterval = int(self.shelterActionInterval)
         self.trainingStageId = str(self.trainingStageId).strip()
@@ -1533,6 +2014,81 @@ class Core:
         self.hazardWindSpeedMPerMinute = float(self.hazardWindSpeedMPerMinute)
         self.hazardWindDirectionDegrees = float(self.hazardWindDirectionDegrees)
         self.hazardWindInfluence = float(self.hazardWindInfluence)
+        self.hazardRegimeEnabled = bool(self.hazardRegimeEnabled)
+        self.hazardWindShiftRatePerMinute = float(
+            self.hazardWindShiftRatePerMinute
+        )
+        self.hazardWindShiftDegrees = [
+            float(value) for value in self.hazardWindShiftDegrees
+        ]
+        self.hazardWindSpeedMultipliers = [
+            float(value) for value in self.hazardWindSpeedMultipliers
+        ]
+        self.hazardWindMinDwellMinutes = int(
+            self.hazardWindMinDwellMinutes
+        )
+        self.hazardForecastLeadMinutes = int(self.hazardForecastLeadMinutes)
+        self.hazardForecastMissProbability = float(
+            self.hazardForecastMissProbability
+        )
+        self.hazardForecastFalseAlarmRatePerMinute = float(
+            self.hazardForecastFalseAlarmRatePerMinute
+        )
+        self.hazardIntensitySwitchRatePerMinute = float(
+            self.hazardIntensitySwitchRatePerMinute
+        )
+        self.hazardIntensityMultipliers = [
+            float(value) for value in self.hazardIntensityMultipliers
+        ]
+        self.hazardClosureRatePerMinute = float(
+            self.hazardClosureRatePerMinute
+        )
+        self.hazardClosureDurationMinutes = [
+            int(value) for value in self.hazardClosureDurationMinutes
+        ]
+        self.hazardClosureWarningLeadMinutes = int(
+            self.hazardClosureWarningLeadMinutes
+        )
+        self.hazardSecondaryIgnitionRatePerMinute = float(
+            self.hazardSecondaryIgnitionRatePerMinute
+        )
+        self.hazardSecondaryIgnitionWindow = [
+            int(value) for value in self.hazardSecondaryIgnitionWindow
+        ]
+        self.forecastEnsembleSize = int(self.forecastEnsembleSize)
+        self.actionSpace = str(self.actionSpace).strip().lower()
+        self.nmccPiAllocation = str(self.nmccPiAllocation).strip().lower()
+        self.nmccPiTargetFutureMode = (
+            str(self.nmccPiTargetFutureMode).strip().lower()
+        )
+        self.deadlineGreedyThreshold = float(self.deadlineGreedyThreshold)
+        if not isinstance(self.constructedDecoyDemand, (bool, np.bool_)):
+            raise ValueError("constructedDecoyDemand must be boolean")
+        self.constructedDecoyDemand = bool(self.constructedDecoyDemand)
+        self.stressScenarioFamily = str(self.stressScenarioFamily)
+        self.stressClusterShares = [
+            float(value) for value in (self.stressClusterShares or [])
+        ]
+        self.stressClusterRadiusM = float(self.stressClusterRadiusM)
+        self.stressClusterMinSeparationM = float(self.stressClusterMinSeparationM)
+        self.stressThreatenedCluster = int(self.stressThreatenedCluster)
+        self.stressThreatArrivalMinutes = float(self.stressThreatArrivalMinutes)
+        self.stressWindAim = str(self.stressWindAim).strip().lower()
+        stress_spec = StressScenarioSpec.from_core(self)
+        if stress_spec.active and self.constructedDecoyDemand:
+            raise ValueError(
+                "Stress scenarios and constructedDecoyDemand are mutually exclusive"
+            )
+        if (
+            stress_spec.requires_origin_plan
+            and self.cellPartitionMode != POPULATION_DENSITY_ADAPTIVE
+        ):
+            raise ValueError(
+                "Stress population and aimed-wind scenarios require "
+                "cellPartitionMode=population_density_adaptive"
+            )
+        if stress_spec.threatened_cluster >= 0 and int(self.hazardVol) < 1:
+            raise ValueError("A threatened-cluster scenario requires a hazard")
         self.cityID = str(self.cityID).strip()
         self.mapQueryMode = str(self.mapQueryMode).strip().lower()
         if not str(self.address).strip():
@@ -1565,11 +2121,6 @@ class Core:
             raise ValueError("pedVol must be positive")
         if self.pedestrianGroupSize <= 0:
             raise ValueError("pedestrianGroupSize must be positive")
-        if self.panicRate > 0.0 and self.pedestrianGroupSize != 1:
-            raise ValueError(
-                "panicRate > 0 requires pedestrianGroupSize=1 so panic and herding "
-                "are computed for every active pedestrian"
-            )
         if self.hazardVol < 0:
             raise ValueError("hazardVol must be non-negative")
         if (
@@ -1587,6 +2138,46 @@ class Core:
         if not math.isfinite(self.hazardWindDirectionDegrees):
             raise ValueError("hazardWindDirectionDegrees must be finite")
         self.hazardWindDirectionDegrees %= 360.0
+        HazardRegimeConfig(
+            enabled=self.hazardRegimeEnabled,
+            wind_shift_rate_per_minute=self.hazardWindShiftRatePerMinute,
+            wind_shift_degrees=tuple(self.hazardWindShiftDegrees),
+            wind_speed_multipliers=tuple(self.hazardWindSpeedMultipliers),
+            wind_min_dwell_minutes=self.hazardWindMinDwellMinutes,
+            forecast_lead_minutes=self.hazardForecastLeadMinutes,
+            forecast_miss_probability=self.hazardForecastMissProbability,
+            forecast_false_alarm_rate_per_minute=(
+                self.hazardForecastFalseAlarmRatePerMinute
+            ),
+            intensity_switch_rate_per_minute=(
+                self.hazardIntensitySwitchRatePerMinute
+            ),
+            intensity_multipliers=tuple(self.hazardIntensityMultipliers),
+            closure_rate_per_minute=self.hazardClosureRatePerMinute,
+            closure_duration_minutes=tuple(
+                self.hazardClosureDurationMinutes
+            ),
+            closure_warning_lead_minutes=(
+                self.hazardClosureWarningLeadMinutes
+            ),
+            secondary_ignition_rate_per_minute=(
+                self.hazardSecondaryIgnitionRatePerMinute
+            ),
+            secondary_ignition_window=tuple(
+                self.hazardSecondaryIgnitionWindow
+            ),
+            episode_horizon=max(1, int(self.stopTime) - 1),
+        )
+        if self.forecastEnsembleSize <= 0:
+            raise ValueError("forecastEnsembleSize must be positive")
+        if self.actionSpace not in {"cell", "region_defer"}:
+            raise ValueError("actionSpace must be cell or region_defer")
+        if self.nmccPiAllocation not in {"uniform", "ocba"}:
+            raise ValueError("nmccPiAllocation must be uniform or ocba")
+        if self.nmccPiTargetFutureMode not in {"belief", "realized"}:
+            raise ValueError("nmccPiTargetFutureMode must be belief or realized")
+        if not math.isfinite(self.deadlineGreedyThreshold):
+            raise ValueError("deadlineGreedyThreshold must be finite")
         if not math.isfinite(self.hazardWindInfluence) or self.hazardWindInfluence < 0.0:
             raise ValueError("hazardWindInfluence must be finite and non-negative")
         if not math.isfinite(self.maxSpeed) or self.maxSpeed <= 0.0:
@@ -1640,6 +2231,8 @@ class Core:
             raise ValueError("shelterCapacityToken must be non-negative")
         if self.shelterCapacitySurplus < 0:
             raise ValueError("shelterCapacitySurplus must be non-negative")
+        if self.shelterFailureReserveCount < 0:
+            raise ValueError("shelterFailureReserveCount must be non-negative")
         if self.maxAdditionalShelters < 0:
             raise ValueError("maxAdditionalShelters must be non-negative")
         if self.shelterActionInterval <= 0:
@@ -1661,6 +2254,11 @@ class Core:
             )
             if planned_shelters <= 0:
                 raise ValueError("Population-matched capacity requires shelters")
+            if self.shelterFailureReserveCount >= planned_shelters:
+                raise ValueError(
+                    "shelterFailureReserveCount must be smaller than the "
+                    "planned shelter count"
+                )
             if int(self.shelterCanVol) < planned_shelters:
                 raise ValueError(
                     "Population-matched capacity requires at least one "
@@ -1676,6 +2274,16 @@ class Core:
                     "declared surplus: "
                     f"{planned_shelters} * {self.shelterCapacityToken} "
                     f"!= {self.pedVol} + {self.shelterCapacitySurplus}"
+                )
+            surviving_capacity = (
+                planned_shelters - self.shelterFailureReserveCount
+            ) * int(self.shelterCapacityToken)
+            if surviving_capacity < int(self.pedVol):
+                raise ValueError(
+                    "Shelter failure reserve is infeasible: "
+                    f"({planned_shelters} - {self.shelterFailureReserveCount}) "
+                    f"* {self.shelterCapacityToken} = {surviving_capacity} "
+                    f"< pedVol {self.pedVol}"
                 )
             if int(self.initShelterVol) != 2 or int(self.maxAdditionalShelters) != 8:
                 raise ValueError(
@@ -1787,6 +2395,21 @@ class Core:
                 dtype=np.int64,
             )
             self._hazard_trajectory_hasher.update(values.tobytes())
+        regime = getattr(self, "hazard_regime", None)
+        if regime is not None and regime.enabled:
+            self._hazard_trajectory_hasher.update(
+                json.dumps(
+                    {
+                        "wind_direction": regime.wind_direction_degrees,
+                        "wind_speed_multiplier": regime.wind_speed_multiplier,
+                        "intensity_multiplier": regime.intensity_multiplier,
+                        "closures": sorted(regime.active_closures.items()),
+                        "public": regime.public,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            )
 
     """Read the input-defined parameter values accordingly from a CSV file"""
     def readInputCSV(self):
@@ -1825,6 +2448,34 @@ class Core:
                 
     """Controls the main execution of functions in the Simulator, all functionalities for t >= 1"""
     """Still need to add input parameters to function calls"""
+    def _advance_exogenous_hazard(self, sim_time, timer=None):
+        """Advance and record one complete exogenous hazard transition.
+
+        The physical episode and the post-termination audit must consume the
+        identical regime/spread/heat/smoke transition.  Keeping that sequence
+        here prevents a policy's pedestrian stopping time from changing the
+        matched-tape hazard digest used by evaluation.
+        """
+        if self.hazard_regime is not None and self.hazard_regime.enabled:
+            self.hazard_regime.advance(sim_time, self.hazardDS, self.mapDS)
+
+        self.hazardDS.spreadUpdate()
+        if timer is not None:
+            timer.lap("hazard.spreadUpdate")
+
+        self.hazardDS.heatUpdate()
+        if timer is not None:
+            timer.lap("hazard.heatUpdate")
+
+        self.hazardDS.smokeUpdate()
+        if timer is not None:
+            timer.lap("hazard.smokeUpdate")
+
+        self.hazardDS.terminateHazard()
+        self._record_hazard_state(sim_time)
+        if timer is not None:
+            timer.lap("hazard.terminateHazard")
+
     def simulationEnumerator(self):
         iterator = range(1, self.stopTime)
         last_simulation_time = 0
@@ -1843,18 +2494,12 @@ class Core:
             self.pedDS.startDocument()
             if tmr is not None: tmr.lap("startDocument")
 
-            self.hazardDS.spreadUpdate()
-            if tmr is not None: tmr.lap("hazard.spreadUpdate")
+            self._advance_exogenous_hazard(sim_time, tmr)
 
-            self.hazardDS.heatUpdate()
-            if tmr is not None: tmr.lap("hazard.heatUpdate")
-
-            self.hazardDS.smokeUpdate()
-            if tmr is not None: tmr.lap("hazard.smokeUpdate")
-
-            self.hazardDS.terminateHazard()
-            self._record_hazard_state(sim_time)
-            if tmr is not None: tmr.lap("hazard.terminateHazard")
+            closure = self.pedDS.resolveHazardShelterClosures(
+                simulation_time=sim_time
+            )
+            if tmr is not None: tmr.lap("shelter.resolveHazardClosures")
 
             # === PED/GU/SH LOOKUPS ===
             self.pedDS.loadShelterLookup(self.shelterDS.shelterByOSMID)
@@ -1902,6 +2547,22 @@ class Core:
                 "active_panicked": self.pedDS.active_panicked_count(),
                 "panic_herd_choices": cumuResult.get("panic_herd_choices", 0),
                 "panic_random_choices": cumuResult.get("panic_random_choices", 0),
+                "shelter_closures": int(
+                    getattr(self.shelterDS, "hazardOverrunCount", 0)
+                ),
+                "current_sheltered_population": int(
+                    self.pedDS.currentShelteredPopulation()
+                ),
+                "cumulative_shelter_admissions": int(
+                    self.pedDS.cumulativeShelterAdmissions
+                ),
+                "forced_reevacuated": int(
+                    self.pedDS.cumulativeForcedReevacuated
+                ),
+                "closed_this_step": int(closure["closed_shelters"]),
+                "reactivated_this_step": int(
+                    closure["reactivated_population"]
+                ),
                 "added_shelters": rl_out.get("added_shelters", 0),
                 "reward_raw": float(rl_out.get("reward", 0.0)),
                 "reward_safe": rl_out.get("reward_safe", 0.0),
@@ -1980,11 +2641,20 @@ class Core:
                 "mean_evacuation_time": float(getattr(self.pedDS, "mean_evacuation_time", lambda: 0.0)()),
                 "mean_safe_completion_time": float(self.pedDS.mean_safe_completion_time()),
                 "total_shelter_capacity": float(sum(getattr(sh, "shelterCap", 0.0) for sh in self.shelterDS.shelterList.values())),
+                "operational_shelter_capacity": float(sum(
+                    getattr(sh, "shelterCap", 0.0)
+                    for sh in self.shelterDS.shelterList.values()
+                    if int(getattr(sh, "status", 0)) != 2
+                )),
                 "shelter_utilization": 0.0,
                 **dict(self.pedDS.lastCongestionMetrics),
             }
-            total_capacity = float(metrics["total_shelter_capacity"])
-            total_flow = float(sum(getattr(sh, "shelterFlow", 0.0) for sh in self.shelterDS.shelterList.values()))
+            total_capacity = float(metrics["operational_shelter_capacity"])
+            total_flow = float(sum(
+                getattr(sh, "shelterFlow", 0.0)
+                for sh in self.shelterDS.shelterList.values()
+                if int(getattr(sh, "status", 0)) != 2
+            ))
             metrics["shelter_utilization"] = (total_flow / total_capacity) if total_capacity > 0.0 else 0.0
             population = float(max(1, self.rl.initial_population))
             metrics["safe_completion_rate"] = float(
@@ -2048,11 +2718,7 @@ class Core:
         # future length without extending pedestrian motion, rewards, or the
         # decision process.
         for audit_time in range(last_simulation_time + 1, int(self.stopTime)):
-            self.hazardDS.spreadUpdate()
-            self.hazardDS.heatUpdate()
-            self.hazardDS.smokeUpdate()
-            self.hazardDS.terminateHazard()
-            self._record_hazard_state(audit_time)
+            self._advance_exogenous_hazard(audit_time)
                 
         total_arrival = int(self.pedDS.result.get("arrival", 0))
         total_casualty = int(self.pedDS.result.get("casualty", 0))
@@ -2099,16 +2765,30 @@ class Core:
             "policy_seed": self.policy_seed,
             "random_stream_seeds": dict(self.random_stream_seeds),
             "hazard_trajectory_digest": self._hazard_trajectory_hasher.hexdigest(),
+            "hazard_regime_events": (
+                []
+                if self.hazard_regime is None
+                else [
+                    {
+                        "time": int(event["time"]),
+                        "kind": str(event["kind"]),
+                        "payload": dict(event["payload"]),
+                    }
+                    for event in self.hazard_regime.scheduled
+                ]
+            ),
+            "decoy_scenario": self.decoy_scenario_metadata,
+            "stress_scenario": self.stress_scenario_metadata,
             "initial_population": actual_population,
             "population_representation": (
                 "individual"
                 if int(self.pedestrianGroupSize) == 1
-                else "weighted_cohort"
+                else "bounded_initial_node_cohort"
             ),
             "maximum_persons_per_agent": int(self.pedestrianGroupSize),
-            "initialized_agent_count": int(
-                math.ceil(float(actual_population) / float(self.pedestrianGroupSize))
-            ),
+            "initialized_agent_count": int(self.pedDS.initial_agent_count),
+            "initial_node_group_count": int(len(self.pedDS.origin_groups)),
+            "pedestrian_review_unit": "origin_node_cohort_per_simulator_transition",
             "grid_shape": list(authoritative_grid_shape(self)),
             "cell_partition": {
                 **dict(self.cellPartitionDiagnostics),
@@ -2143,13 +2823,64 @@ class Core:
             "mean_safe_completion_time": float(self.pedDS.mean_safe_completion_time()),
             "restricted_mean_time_to_safety": restricted_mean_time_to_safety,
             "active_shelters": int(len(self.shelterDS.shelterList)),
+            "operational_shelters": int(sum(
+                int(getattr(shelter, "status", 0)) != 2
+                for shelter in self.shelterDS.shelterList.values()
+            )),
+            "overrun_shelters": int(sum(
+                int(getattr(shelter, "status", 0)) == 2
+                for shelter in self.shelterDS.shelterList.values()
+            )),
+            "shelter_overrun_events": [
+                {
+                    "shelter_id": int(shelter.shelterID),
+                    "time": int(shelter.overrunTime),
+                    "danger_level": int(shelter.overrunDangerLevel),
+                    "forced_reevacuated_population": int(
+                        shelter.forcedReevacuatedPopulation
+                    ),
+                }
+                for shelter in sorted(
+                    self.shelterDS.shelterList.values(),
+                    key=lambda item: int(item.shelterID),
+                )
+                if int(getattr(shelter, "status", 0)) == 2
+            ],
+            "current_sheltered_population": int(
+                self.pedDS.currentShelteredPopulation()
+            ),
+            "cumulative_shelter_admissions": int(
+                self.pedDS.cumulativeShelterAdmissions
+            ),
+            "forced_reevacuated": int(
+                self.pedDS.cumulativeForcedReevacuated
+            ),
             "total_shelter_capacity": int(
                 sum(
                     int(getattr(shelter, "shelterCap", 0))
                     for shelter in self.shelterDS.shelterList.values()
                 )
             ),
+            "operational_shelter_capacity": int(
+                sum(
+                    int(getattr(shelter, "shelterCap", 0))
+                    for shelter in self.shelterDS.shelterList.values()
+                    if int(getattr(shelter, "status", 0)) != 2
+                )
+            ),
             "planned_capacity_surplus": int(self.shelterCapacitySurplus),
+            "shelter_failure_reserve_count": int(
+                self.shelterFailureReserveCount
+            ),
+            "planned_capacity_after_reserved_failures": int(
+                max(
+                    0,
+                    self.initShelterVol
+                    + self.maxAdditionalShelters
+                    - self.shelterFailureReserveCount,
+                )
+                * self.shelterCapacityToken
+            ),
             "unassigned_rational_after_final_installation": (
                 -1
                 if self.finalInstallationUnassignedRationalPopulation is None

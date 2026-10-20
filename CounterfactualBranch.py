@@ -91,10 +91,14 @@ import numpy as np
 from CAProcessor import authoritative_grid_shape
 from DecisionInterface import (
     OutcomeSnapshot,
+    PolicyDecision,
     RegionalObservationBuilder,
+    RegionalShelterExecutor,
     RemainingTimeEstimate,
     estimate_clearance_tail,
     estimate_remaining_time_to_safety,
+    public_regional_objective_values,
+    uniform_feasible_action,
 )
 from RolloutPolicyIteration import FrozenResidualPolicy
 
@@ -224,6 +228,9 @@ class SimulatorSnapshot:
     numpy_legacy_state: tuple
     simulation_time: int
     grid_shape: tuple[int, int]
+    closures: tuple[tuple[int, int], ...] = ()
+    routing_version: int = 0
+    congestion_last_occupied_keys: tuple[Any, ...] = ()
     label: str = ""
 
     def state_digest(self) -> str:
@@ -234,6 +241,9 @@ class SimulatorSnapshot:
         hasher.update(repr(self.hazard_bit_generator_state).encode("utf-8"))
         hasher.update(str(self.simulation_time).encode("utf-8"))
         hasher.update(np.asarray(self.grid_shape, dtype=np.int64).tobytes())
+        hasher.update(repr(self.closures).encode("utf-8"))
+        hasher.update(str(int(self.routing_version)).encode("utf-8"))
+        hasher.update(repr(self.congestion_last_occupied_keys).encode("utf-8"))
         return hasher.hexdigest()
 
 
@@ -254,6 +264,9 @@ class HazardFrame:
     cell_state: np.ndarray
     cell_heat: np.ndarray
     cell_smoke: np.ndarray
+    regime_state: Optional[dict] = None
+    closures: tuple[tuple[int, int], ...] = ()
+    routing_version: int = 0
 
 
 def _capture_hazard_frame(core) -> HazardFrame:
@@ -281,6 +294,22 @@ def _capture_hazard_frame(core) -> HazardFrame:
         cell_smoke=np.asarray(
             [float(getattr(cell, "smoke", 0.0)) for cell in cells],
             dtype=np.float64,
+        ),
+        regime_state=(
+            None
+            if getattr(core, "hazard_regime", None) is None
+            else core.hazard_regime.snapshot()
+        ),
+        closures=tuple(
+            sorted(
+                (int(key), int(value))
+                for key, value in getattr(
+                    getattr(core, "mapDS", None), "closed_edges", {}
+                ).items()
+            )
+        ),
+        routing_version=int(
+            getattr(getattr(core, "mapDS", None), "routing_version", 0)
         ),
     )
 
@@ -321,6 +350,16 @@ def _apply_hazard_frame(core, frame: HazardFrame) -> None:
         cell.impactedLevel = int(frame.cell_state[index])
         cell.heat = float(frame.cell_heat[index])
         cell.smoke = float(frame.cell_smoke[index])
+    map_store = getattr(core, "mapDS", None)
+    if map_store is not None:
+        restore_routing = getattr(map_store, "restore_routing_state", None)
+        if callable(restore_routing):
+            restore_routing(dict(frame.closures), int(frame.routing_version))
+        elif hasattr(map_store, "restore_closures"):
+            map_store.restore_closures(dict(frame.closures))
+    regime = getattr(core, "hazard_regime", None)
+    if regime is not None and frame.regime_state is not None:
+        regime.restore(frame.regime_state)
 
 
 def capture(core, *, label: str = "") -> SimulatorSnapshot:
@@ -353,6 +392,27 @@ def capture(core, *, label: str = "") -> SimulatorSnapshot:
         numpy_legacy_state=np.random.get_state(),
         simulation_time=int(getattr(getattr(core, "pedDS", None), "currTime", 0)),
         grid_shape=grid_shape,
+        closures=tuple(
+            sorted(
+                (int(key), int(value))
+                for key, value in getattr(
+                    getattr(core, "mapDS", None), "closed_edges", {}
+                ).items()
+            )
+        ),
+        routing_version=int(
+            getattr(getattr(core, "mapDS", None), "routing_version", 0)
+        ),
+        congestion_last_occupied_keys=tuple(
+            sorted(
+                getattr(
+                    getattr(core, "congestionModel", None),
+                    "_last_occupied_keys",
+                    (),
+                ),
+                key=repr,
+            )
+        ),
         label=str(label),
     )
 
@@ -375,6 +435,13 @@ def restore(core, snapshot: SimulatorSnapshot) -> None:
         snapshot.node_flow,
         snapshot.edge_flow,
     )
+    congestion_model = getattr(core, "congestionModel", None)
+    if congestion_model is not None and hasattr(
+        congestion_model, "_last_occupied_keys"
+    ):
+        congestion_model._last_occupied_keys = set(
+            snapshot.congestion_last_occupied_keys
+        )
 
     hazard_store = getattr(core, "hazardDS", None)
     hazard_rng = getattr(hazard_store, "rng", None)
@@ -392,6 +459,19 @@ def restore(core, snapshot: SimulatorSnapshot) -> None:
                 setter(restored_tracker)
             else:
                 hazard_store.cellTracker = restored_tracker
+    if hazard_store is not None and getattr(hazard_store, "regime", None) is not None:
+        core.hazard_regime = hazard_store.regime
+        core.hazard_regime.cell_tracker = getattr(core, "cellTracker", None)
+        core.hazard_regime.map_ds = getattr(core, "mapDS", None)
+    map_store = getattr(core, "mapDS", None)
+    if map_store is not None:
+        restore_routing = getattr(map_store, "restore_routing_state", None)
+        if callable(restore_routing):
+            restore_routing(
+                dict(snapshot.closures), int(snapshot.routing_version)
+            )
+        elif hasattr(map_store, "restore_closures"):
+            map_store.restore_closures(dict(snapshot.closures))
 
     restored_shape = authoritative_grid_shape(core)
     if restored_shape != tuple(snapshot.grid_shape):
@@ -413,45 +493,310 @@ def live_state_digest(core) -> str:
     bitwise-replay and branch-order-invariance audits.
     """
     hasher = hashlib.sha256()
+
+    def _update(label: str, value: Any) -> None:
+        """Add one explicitly labelled, deterministic value to the digest."""
+        hasher.update(label.encode("utf-8"))
+        if isinstance(value, np.ndarray):
+            array = np.ascontiguousarray(value)
+            hasher.update(str(array.dtype).encode("ascii"))
+            hasher.update(repr(array.shape).encode("ascii"))
+            hasher.update(array.tobytes())
+        else:
+            hasher.update(repr(value).encode("utf-8"))
+
+    def _object_id(value: Any) -> Any:
+        if value is None:
+            return None
+        for name in ("OSMID", "edgeID", "localID", "shelterID", "agentID"):
+            if hasattr(value, name):
+                return getattr(value, name)
+        return None
+
+    def _pedestrian_signature(pedestrian: Any) -> tuple:
+        route = getattr(pedestrian, "routeFollowing", None)
+        return (
+            int(getattr(pedestrian, "agentID", -1)),
+            getattr(pedestrian, "group_id", None),
+            int(getattr(pedestrian, "group_size", 0)),
+            getattr(pedestrian, "origin_node_osmid", None),
+            float(getattr(pedestrian, "lastX", 0.0)),
+            float(getattr(pedestrian, "lastY", 0.0)),
+            float(getattr(pedestrian, "currSpeed", 0.0)),
+            float(getattr(pedestrian, "edge_remain", 0.0)),
+            float(getattr(pedestrian, "desired_speed", 0.0)),
+            tuple(
+                np.asarray(
+                    ()
+                    if getattr(pedestrian, "edge_vec", None) is None
+                    else getattr(pedestrian, "edge_vec")
+                ).reshape(-1).tolist()
+            ),
+            _object_id(getattr(pedestrian, "currNode", None)),
+            _object_id(getattr(pedestrian, "currEdge", None)),
+            tuple(getattr(pedestrian, "currCell", ()) or ()),
+            _object_id(getattr(pedestrian, "edge_dest_node", None)),
+            bool(getattr(pedestrian, "atNode", False)),
+            bool(getattr(pedestrian, "affected", False)),
+            bool(getattr(pedestrian, "casualty", False)),
+            bool(getattr(pedestrian, "evacuated", False)),
+            bool(getattr(pedestrian, "arrival", False)),
+            bool(getattr(pedestrian, "terminated", False)),
+            bool(getattr(pedestrian, "panicked", False)),
+            getattr(pedestrian, "panic_onset_time", None),
+            bool(getattr(pedestrian, "panic_eligibility_evaluated", False)),
+            int(getattr(pedestrian, "panic_decision_count", 0)),
+            _object_id(getattr(pedestrian, "panic_next_edge", None)),
+            float(getattr(pedestrian, "social_force_speed", 0.0)),
+            float(getattr(pedestrian, "social_self_force", 0.0)),
+            float(getattr(pedestrian, "social_impact_force", 0.0)),
+            getattr(pedestrian, "speed_danger_level", None),
+            float(getattr(pedestrian, "distance_travelled_m", 0.0)),
+            _object_id(getattr(route, "startNode", None)),
+            _object_id(getattr(route, "endNode", None)),
+            tuple(
+                _object_id(node)
+                for node in (getattr(route, "nodeRemained", None) or ())
+            ),
+            tuple(
+                _object_id(edge)
+                for edge in (getattr(route, "edgeRemained", None) or ())
+            ),
+        )
+
     ped_store = getattr(core, "pedDS", None)
     if ped_store is not None:
-        hasher.update(str(int(getattr(ped_store, "currTime", 0))).encode("utf-8"))
-        for key in sorted(getattr(ped_store, "result", {})):
-            hasher.update(f"{key}={ped_store.result[key]}".encode("utf-8"))
+        for name in (
+            "currTime",
+            "docuStart",
+            "initial_agent_count",
+            "_next_agent_id",
+            "evacuationTimeSum",
+            "evacuationCount",
+            "safeCompletionTimeSum",
+            "safeCompletionCount",
+            "cumulativeShelterAdmissions",
+            "cumulativeForcedReevacuated",
+            "expectedCasualtyIntensityStep",
+            "expectedCasualtyIntensityCumulative",
+            "socialForcePersonSteps",
+            "socialSelfForcePersonSteps",
+            "socialImpactForcePersonSteps",
+            "socialSpeedRatioPersonSteps",
+            "congestionPersonMinutes",
+            "congestionWeightedRatioSum",
+            "congestedPersonMinutes",
+            "maximumObservedLinkDensity",
+            "effectiveSpeedPersonMinuteSum",
+        ):
+            _update(f"ped.{name}", getattr(ped_store, name, None))
+        for name in (
+            "_step",
+            "result",
+            "numArrival",
+            "numCasualty",
+            "numEvacuated",
+            "numAffected",
+            "expectedCasualtyIntensityByTime",
+            "travelDistanceByOutcome",
+            "travelPopulationByOutcome",
+            "lastCongestionMetrics",
+            "lastCongestionLinkStates",
+        ):
+            value = getattr(ped_store, name, {})
+            if hasattr(value, "items"):
+                value = tuple(sorted(value.items(), key=lambda item: repr(item[0])))
+            _update(f"ped.{name}", value)
+        # These fields define the clearance-tail objective and the auditable
+        # shelter-failure ledger.  Hashing only ``result['evacuated']`` would
+        # let a broken admission reversal pass snapshot/replay tests.
+        completion_histogram = tuple(
+            sorted(
+                (
+                    float(completion_time),
+                    int(population),
+                )
+                for completion_time, population in getattr(
+                    ped_store, "safeCompletionTimeHistogram", {}
+                ).items()
+            )
+        )
+        _update("ped.safeCompletionTimeHistogram", completion_histogram)
+        for name in ("groups", "origin_groups"):
+            index = tuple(
+                (key, tuple(sorted(int(item) for item in values)))
+                for key, values in sorted(
+                    getattr(ped_store, name, {}).items(),
+                    key=lambda item: repr(item[0]),
+                )
+            )
+            _update(f"ped.{name}", index)
         agents = getattr(ped_store, "pedAgentList", {})
         for key in sorted(agents):
-            ped = agents[key]
-            for name in (
-                "lastX",
-                "lastY",
-                "currSpeed",
-                "terminated",
-                "panicked",
-                "affected",
-                "group_size",
-            ):
-                hasher.update(f"{name}={getattr(ped, name, None)!r}".encode("utf-8"))
+            _update(f"active_pedestrian.{key}", _pedestrian_signature(agents[key]))
     shelter_store = getattr(core, "shelterDS", None)
     if shelter_store is not None:
+        for name in (
+            "nextID",
+            "currentSimulationTime",
+            "hazardOverrunCount",
+            "hazardOverrunDangerLevel",
+            "deploymentCapacityToken",
+        ):
+            _update(f"shelter_store.{name}", getattr(shelter_store, name, None))
+        _update(
+            "shelter_store.implemented_by_time",
+            tuple(
+                sorted(
+                    getattr(shelter_store, "shelterImplementedByTime", {}).items(),
+                    key=lambda item: repr(item[0]),
+                )
+            ),
+        )
         for key in sorted(getattr(shelter_store, "shelterList", {})):
             shelter = shelter_store.shelterList[key]
-            hasher.update(
-                f"{key}:{getattr(shelter, 'shelterCap', 0)}:"
-                f"{getattr(shelter, 'shelterFlow', 0)}:"
-                f"{getattr(shelter, 'status', 0)}".encode("utf-8")
+            _update(
+                f"shelter.{key}",
+                (
+                    int(getattr(shelter, "shelterID", key)),
+                    _object_id(getattr(shelter, "nodeMapped", None)),
+                    tuple(getattr(shelter, "cellLocated", ()) or ()),
+                    int(getattr(shelter, "shelterCap", 0)),
+                    int(getattr(shelter, "shelterFlow", 0)),
+                    int(getattr(shelter, "status", 0)),
+                    getattr(shelter, "overrunTime", None),
+                    getattr(shelter, "overrunDangerLevel", None),
+                    int(getattr(shelter, "forcedReevacuatedPopulation", 0)),
+                ),
             )
-        for pedestrian_id, reservation in sorted(
-            getattr(shelter_store, "reservationByPedestrian", {}).items()
+        for name in (
+            "reservationByPedestrian",
+            "reservationsByShelter",
+            "reservedPopulationByShelter",
         ):
-            hasher.update(
-                f"reservation:{pedestrian_id}:{reservation}".encode("utf-8")
+            _update(
+                f"shelter_store.{name}",
+                tuple(
+                    sorted(
+                        getattr(shelter_store, name, {}).items(),
+                        key=lambda item: repr(item[0]),
+                    )
+                ),
             )
+        _update(
+            "shelter_store.candidates",
+            tuple(
+                (key, _object_id(node))
+                for key, node in sorted(
+                    getattr(shelter_store, "shelterCanList", {}).items(),
+                    key=lambda item: repr(item[0]),
+                )
+            ),
+        )
+        candidate_grid = getattr(shelter_store, "shelterCanByCell", None)
+        if candidate_grid is not None:
+            _update(
+                "shelter_store.candidate_grid",
+                tuple(
+                    tuple(
+                        tuple(_object_id(node) for node in candidate_grid[i][j])
+                        for j in range(len(candidate_grid[i]))
+                    )
+                    for i in range(len(candidate_grid))
+                ),
+            )
+        for shelter_id, residents in sorted(
+            getattr(ped_store, "shelteredOccupants", {}).items()
+        ):
+            for pedestrian_id, record in sorted(residents.items()):
+                pedestrian = record["pedestrian"]
+                _update(
+                    f"resident.{shelter_id}.{pedestrian_id}",
+                    (
+                        int(record["population"]),
+                        float(record["admission_time"]),
+                        float(record["distance_at_admission"]),
+                        _pedestrian_signature(pedestrian),
+                    ),
+                )
     tracker = getattr(core, "cellTracker", None)
     if tracker is not None:
-        danger = np.asarray(getattr(tracker, "dangerLevelByCell", []), dtype=np.float64)
-        counts = np.asarray(getattr(tracker, "countByCell", []), dtype=np.float64)
-        hasher.update(danger.tobytes())
-        hasher.update(counts.tobytes())
+        _update("cell.grid_shape", tuple(getattr(tracker, "grid_shape", ())))
+        for name in (
+            "countByCell",
+            "avgVelocityByCell",
+            "heatByCell",
+            "smokeByCell",
+            "dangerLevelByCell",
+            "shelterFulfillByCell",
+            "shelterPressureByCell",
+            "guidanceInterByCell",
+            "wellnessPenaltyByCell",
+        ):
+            _update(f"cell.{name}", np.asarray(getattr(tracker, name, ())))
+        for cell_id in getattr(tracker, "cell_ids", lambda: ())():
+            cell = tracker.cellList[cell_id]
+            _update(
+                f"cell.object.{cell_id}",
+                (
+                    int(getattr(cell, "impactedLevel", 0)),
+                    float(getattr(cell, "heat", 0.0)),
+                    float(getattr(cell, "smoke", 0.0)),
+                ),
+            )
+        _update("cell.last_snapshot", getattr(tracker, "last_snapshot", None))
+    hazard_store = getattr(core, "hazardDS", None)
+    if hazard_store is not None:
+        for hazard_id, hazard in sorted(
+            getattr(hazard_store, "hazardList", {}).items(),
+            key=lambda item: repr(item[0]),
+        ):
+            _update(
+                f"hazard.{hazard_id}",
+                (
+                    int(getattr(hazard, "hazardID", hazard_id)),
+                    bool(getattr(hazard, "active", False)),
+                    int(getattr(hazard, "age", 0)),
+                    int(getattr(hazard, "lifespan", 0)),
+                    int(getattr(hazard, "step", 0)),
+                    _object_id(getattr(hazard, "sourceNode", None)),
+                    getattr(hazard, "sourceCell", None),
+                    tuple(sorted(tuple(cell) for cell in getattr(hazard, "impactedCells", ()))),
+                    tuple(sorted(getattr(hazard, "cellImpactStep", {}).items())),
+                    tuple(sorted(getattr(hazard, "cellFirstImpactStep", {}).items())),
+                    tuple(sorted(getattr(hazard, "residualLevelByCell", {}).items())),
+                ),
+            )
+        rng = getattr(hazard_store, "rng", None)
+        if rng is not None and hasattr(rng, "bit_generator"):
+            _update("hazard.rng", rng.bit_generator.state)
+    map_store = getattr(core, "mapDS", None)
+    _update("map.closed_edges", tuple(sorted(getattr(map_store, "closed_edges", {}).items())))
+    _update("map.routing_version", getattr(map_store, "routing_version", None))
+    node_flow, edge_flow = _capture_map_flow(
+        _iter_map_nodes(core), _iter_map_edges(core)
+    )
+    _update("map.node_flow", node_flow)
+    _update("map.edge_flow", edge_flow)
+    _update(
+        "congestion.last_occupied_keys",
+        tuple(
+            sorted(
+                getattr(
+                    getattr(core, "congestionModel", None),
+                    "_last_occupied_keys",
+                    (),
+                ),
+                key=repr,
+            )
+        ),
+    )
+    regime = getattr(core, "hazard_regime", None)
+    if regime is not None and bool(getattr(regime, "enabled", False)):
+        state = regime.snapshot()
+        # The generator state and complete event tape are part of the
+        # exogenous world; repr is deterministic for these nested primitives.
+        _update("hazard.regime", state)
     return hasher.hexdigest()
 
 
@@ -468,12 +813,22 @@ def advance_one_timestep(core, *, hazard_frame: Optional[HazardFrame] = None) ->
     """
     core.pedDS.startDocument()
     if hazard_frame is None:
+        regime = getattr(core, "hazard_regime", None)
+        if regime is not None and regime.enabled:
+            regime.advance(
+                int(getattr(core.pedDS, "currTime", 0)) + 1,
+                core.hazardDS,
+                core.mapDS,
+            )
         core.hazardDS.spreadUpdate()
         core.hazardDS.heatUpdate()
         core.hazardDS.smokeUpdate()
         core.hazardDS.terminateHazard()
     else:
         _apply_hazard_frame(core, hazard_frame)
+    core.pedDS.resolveHazardShelterClosures(
+        simulation_time=int(getattr(core.pedDS, "currTime", 0)) + 1
+    )
     core.pedDS.loadShelterLookup(core.shelterDS.shelterByOSMID)
     core.pedDS.pedestrianHazardInteraction()
     core.pedDS.interPedestrianInteraction()
@@ -586,6 +941,22 @@ def controllable_time_mass(
     return float(plain), float(exposure), float(casualty_cost)
 
 
+def weighted_objective_mass(
+    core,
+    plain_person_time: float,
+    hazard_exposure_person_time: float,
+    expected_casualty_person_time: float = 0.0,
+) -> float:
+    """Apply the one declared scalar objective to raw ledger components."""
+    return float(
+        float(getattr(core, "activePersonTimeWeight", 1.0))
+        * float(plain_person_time)
+        + float(getattr(core, "hazardExposureTimeWeight", 1.0))
+        * float(hazard_exposure_person_time)
+        + float(expected_casualty_person_time)
+    )
+
+
 @dataclass
 class BranchResult:
     """One branch's realized trajectory over the counterfactual horizon."""
@@ -623,6 +994,9 @@ class BranchResult:
     # payload to the parent, which evaluates the shared continuation network in
     # one batch without running PyTorch in child processes.
     endpoint_payload: Any = None
+    future_mode: str = "realized"
+    active_person_time_weight: float = 1.0
+    hazard_exposure_time_weight: float = 1.0
 
     @property
     def plain_time_to_safety_cost(self) -> float:
@@ -638,8 +1012,9 @@ class BranchResult:
     @property
     def hazard_weighted_time_to_safety_cost(self) -> float:
         return float(
-            self.plain_time_to_safety_cost
-            + self.hazard_exposure_to_safety_cost
+            self.active_person_time_weight * self.plain_time_to_safety_cost
+            + self.hazard_exposure_time_weight
+            * self.hazard_exposure_to_safety_cost
             + self.expected_casualty_person_time
             + self.clearance_tail_person_time
         )
@@ -648,8 +1023,9 @@ class BranchResult:
     def interval_hazard_weighted_person_time(self) -> float:
         """Realized plain plus danger-weighted person-time in this branch."""
         return float(
-            self.active_person_time
-            + self.hazard_exposure_person_time
+            self.active_person_time_weight * self.active_person_time
+            + self.hazard_exposure_time_weight
+            * self.hazard_exposure_person_time
             + self.expected_casualty_person_time
         )
 
@@ -785,6 +1161,38 @@ class PairedEffect:
             initial_population=initial_population,
             horizon_minutes=episode_horizon_minutes,
         )
+
+
+@dataclass(frozen=True)
+class PairedEffectEstimate:
+    """Common-reference estimates from one rectangular CRN design."""
+
+    cell_indices: tuple[int, ...]
+    mean_advantage: np.ndarray
+    paired_standard_error: np.ndarray
+    futures_spent: np.ndarray
+    effects: tuple[tuple[PairedEffect, ...], ...]
+
+    @property
+    def selected_cell(self) -> int:
+        return int(self.cell_indices[int(np.argmax(self.mean_advantage))])
+
+
+@dataclass(frozen=True)
+class PairedRolloutCostEstimate:
+    """Action costs and uncertainty from identical futures per contender."""
+
+    score: np.ndarray
+    mean_cost: np.ndarray
+    standard_error: np.ndarray
+    paired_contrast_standard_error: float
+    futures_spent: np.ndarray
+
+
+# Archived audit scripts imported these names directly.  Keep aliases while
+# ensuring the active implementation and diagnostics use truthful terminology.
+OCBAEffectEstimate = PairedEffectEstimate
+AdaptiveRolloutCostEstimate = PairedRolloutCostEstimate
 
 
 @dataclass(frozen=True)
@@ -1217,7 +1625,15 @@ class _ImmediateCandidateEvaluator:
             exposure += size * hazard
             remaining_by_person.extend([ordinary] * size)
 
-        result = BranchResult(label=label)
+        result = BranchResult(
+            label=label,
+            active_person_time_weight=float(
+                getattr(self.core, "activePersonTimeWeight", 1.0)
+            ),
+            hazard_exposure_time_weight=float(
+                getattr(self.core, "hazardExposureTimeWeight", 1.0)
+            ),
+        )
         result.start_outcome = self.start_outcome
         result.end_outcome = self.start_outcome
         result.remaining_plain_person_time = float(plain)
@@ -1330,7 +1746,7 @@ class _RandomContinuationTask:
 class _RolloutContinuationTask:
     tape_index: int
     action_position: int
-    install_cell: int
+    install_cell: Optional[int]
     decision_index: int
     remaining_deployments: int
 
@@ -1355,6 +1771,7 @@ class _LocalBranchBatch:
     endpoint_spec: Optional[EndpointObservationSpec]
     endpoint_builder: Optional[RegionalObservationBuilder]
     rollout_policy: Optional[FrozenResidualPolicy] = None
+    future_mode: str = "realized"
 
 
 @dataclass
@@ -1372,6 +1789,7 @@ class _SpawnBranchBatch:
     python_random_state: tuple
     numpy_legacy_state: tuple
     rollout_policy: Optional[FrozenResidualPolicy] = None
+    future_mode: str = "realized"
 
 
 _SPAWN_BRANCH_BATCH: Optional[_LocalBranchBatch] = None
@@ -1390,7 +1808,57 @@ _PORTABLE_CORE_ATTRIBUTES = (
     "hazardVol",
     "panicRate",
     "stopTime",
+    # The branch objective is part of the simulator contract, not learner
+    # metadata.  Omitting any of these silently makes spawned workers grade a
+    # different evacuation problem from the live process.
+    "activePersonTimeWeight",
+    "hazardExposureTimeWeight",
+    "clearanceTailFraction",
+    "clearanceTailExtraWeight",
     "casualtyPriorityKappa",
+    "shelterOverrunDangerLevel",
+    "requirePopulationMatchedShelterCapacity",
+    "shelterCapacitySurplus",
+    "shelterFailureReserveCount",
+    "pedVol",
+    "hazardCasualtyReferenceMinutes",
+    "hazardSpreadSpeedMPerMinute",
+    "hazardSeverityTransitionMinutes",
+    "hazardSevereRadiusM",
+    "actionSpace",
+    "forecastEnsembleSize",
+    "random_stream_seeds",
+)
+
+_PORTABLE_REQUIRED_SIMULATION_ATTRIBUTES = (
+    "mapDS",
+    "congestionModel",
+    "cellX",
+    "cellY",
+    "timeStepMinutes",
+    "maxSpeed",
+    "shelterActionInterval",
+    "shelterCapacityToken",
+    "hazardVol",
+    "panicRate",
+    "stopTime",
+    "activePersonTimeWeight",
+    "hazardExposureTimeWeight",
+    "clearanceTailFraction",
+    "clearanceTailExtraWeight",
+    "casualtyPriorityKappa",
+    "shelterOverrunDangerLevel",
+    "requirePopulationMatchedShelterCapacity",
+    "shelterCapacitySurplus",
+    "shelterFailureReserveCount",
+    "pedVol",
+    "hazardCasualtyReferenceMinutes",
+    "hazardSpreadSpeedMPerMinute",
+    "hazardSeverityTransitionMinutes",
+    "hazardSevereRadiusM",
+    "actionSpace",
+    "forecastEnsembleSize",
+    "random_stream_seeds",
 )
 
 
@@ -1402,13 +1870,225 @@ def _portable_branch_core(core, snapshot: SimulatorSnapshot) -> SimpleNamespace:
     are serialized in the same object graph so pedestrian route-node identity is
     retained after unpickling.
     """
+    missing = tuple(
+        name
+        for name in _PORTABLE_REQUIRED_SIMULATION_ATTRIBUTES
+        if not hasattr(core, name)
+    )
+    if missing:
+        raise RuntimeError(
+            "Parallel branch core is missing simulation-contract attributes: "
+            + ", ".join(missing)
+        )
+    missing_state = tuple(
+        name
+        for name in ("pedDS", "hazardDS", "shelterDS", "cellTracker", "forceTracker")
+        if name not in snapshot.state
+    )
+    if missing_state:
+        raise RuntimeError(
+            "Parallel branch snapshot is missing mutable simulator stores: "
+            + ", ".join(missing_state)
+        )
     attributes = {
         name: getattr(core, name)
         for name in _PORTABLE_CORE_ATTRIBUTES
         if hasattr(core, name)
     }
     attributes.update(snapshot.state)
-    return SimpleNamespace(**attributes)
+    portable = SimpleNamespace(**attributes)
+    shape = authoritative_grid_shape(portable)
+    if shape != tuple(snapshot.grid_shape):
+        raise RuntimeError(
+            "Parallel branch grid contract disagrees with its snapshot: "
+            f"core={shape}, snapshot={tuple(snapshot.grid_shape)}"
+        )
+
+    def _same_float(name: str, *values: Any) -> None:
+        converted = tuple(float(value) for value in values)
+        if not all(
+            math.isfinite(value)
+            and math.isclose(value, converted[0], rel_tol=0.0, abs_tol=1e-12)
+            for value in converted
+        ):
+            raise RuntimeError(
+                f"Parallel branch {name} contract disagrees across stores: "
+                + ", ".join(repr(value) for value in converted)
+            )
+
+    _same_float(
+        "timestep",
+        portable.timeStepMinutes,
+        getattr(portable.pedDS, "timeStepMinutes", float("nan")),
+        getattr(portable.hazardDS, "time_step_minutes", float("nan")),
+    )
+    _same_float(
+        "maximum speed",
+        portable.maxSpeed,
+        getattr(portable.pedDS, "maxSpeed", float("nan")),
+    )
+    if int(portable.stopTime) != int(
+        getattr(portable.pedDS, "evacuation_horizon_timesteps", -1)
+    ):
+        raise RuntimeError(
+            "Parallel branch episode horizon disagrees across stores: "
+            f"core={portable.stopTime}, pedestrians="
+            f"{getattr(portable.pedDS, 'evacuation_horizon_timesteps', None)}"
+        )
+    if int(snapshot.simulation_time) != int(
+        getattr(portable.pedDS, "currTime", -1)
+    ):
+        raise RuntimeError(
+            "Parallel branch snapshot time disagrees with PedDS: "
+            f"snapshot={snapshot.simulation_time}, "
+            f"pedestrians={getattr(portable.pedDS, 'currTime', None)}"
+        )
+    shelter_time = int(getattr(portable.shelterDS, "currentSimulationTime", -1))
+    if shelter_time != int(snapshot.simulation_time):
+        raise RuntimeError(
+            "Parallel branch shelter lifecycle time disagrees with snapshot: "
+            f"shelters={shelter_time}, snapshot={snapshot.simulation_time}"
+        )
+
+    core_capacity = int(portable.shelterCapacityToken)
+    stored_capacity = getattr(portable.shelterDS, "deploymentCapacityToken", None)
+    normalized_capacity = 0 if stored_capacity is None else int(stored_capacity)
+    if core_capacity != normalized_capacity:
+        raise RuntimeError(
+            "Parallel branch shelter capacity token disagrees across stores: "
+            f"core={core_capacity}, shelters={stored_capacity!r}"
+        )
+
+    ped_threshold = int(
+        getattr(portable.pedDS, "shelter_damage_danger_threshold", -1)
+    )
+    shelter_threshold = int(
+        getattr(portable.shelterDS, "hazardOverrunDangerLevel", -1)
+    )
+    core_threshold = int(portable.shelterOverrunDangerLevel)
+    if not (core_threshold == ped_threshold == shelter_threshold):
+        raise RuntimeError(
+            "Parallel branch shelter-overrun thresholds disagree: "
+            f"core={core_threshold}, pedestrians={ped_threshold}, "
+            f" shelters={shelter_threshold}"
+        )
+
+    _same_float(
+        "casualty reference duration",
+        portable.hazardCasualtyReferenceMinutes,
+        getattr(
+            portable.pedDS,
+            "casualty_reference_exposure_minutes",
+            float("nan"),
+        ),
+    )
+    _same_float(
+        "hazard spread speed",
+        portable.hazardSpreadSpeedMPerMinute,
+        getattr(portable.hazardDS, "spread_speed_m_per_minute", float("nan")),
+    )
+    _same_float(
+        "hazard severe radius",
+        portable.hazardSevereRadiusM,
+        getattr(portable.hazardDS, "severe_radius_m", float("nan")),
+    )
+    configured_transitions = tuple(
+        float(value) for value in portable.hazardSeverityTransitionMinutes
+    )
+    stored_transitions = tuple(
+        float(value)
+        for value in getattr(portable.hazardDS, "severity_transition_minutes", ())
+    )
+    if configured_transitions != stored_transitions:
+        raise RuntimeError(
+            "Parallel branch hazard severity thresholds disagree across stores: "
+            f"core={configured_transitions}, hazard={stored_transitions}"
+        )
+    if int(portable.hazardVol) != int(
+        getattr(portable.hazardDS, "totalHazard", -1)
+    ):
+        raise RuntimeError(
+            "Parallel branch hazard count disagrees across stores: "
+            f"core={portable.hazardVol}, "
+            f"hazard={getattr(portable.hazardDS, 'totalHazard', None)}"
+        )
+    _same_float(
+        "panic rate",
+        portable.panicRate,
+        getattr(portable.pedDS, "panic_rate", float("nan")),
+    )
+    if int(portable.pedVol) != int(getattr(portable.pedDS, "pedNum", -1)):
+        raise RuntimeError(
+            "Parallel branch population contract disagrees across stores: "
+            f"core={portable.pedVol}, pedestrians="
+            f"{getattr(portable.pedDS, 'pedNum', None)}"
+        )
+
+    pointer_contract = (
+        ("PedDS.mapDS", getattr(portable.pedDS, "mapDS", None), portable.mapDS),
+        (
+            "PedDS.cellTracker",
+            getattr(portable.pedDS, "cellTracker", None),
+            portable.cellTracker,
+        ),
+        ("PedDS.hazardDS", getattr(portable.pedDS, "hazardDS", None), portable.hazardDS),
+        (
+            "PedDS.shelterDS",
+            getattr(portable.pedDS, "shelterDS", None),
+            portable.shelterDS,
+        ),
+        (
+            "PedDS.forceTracker",
+            getattr(portable.pedDS, "forceTracker", None),
+            portable.forceTracker,
+        ),
+        (
+            "PedDS.congestionModel",
+            getattr(portable.pedDS, "congestionModel", None),
+            portable.congestionModel,
+        ),
+        (
+            "ForceProcessor.cellTracker",
+            getattr(portable.forceTracker, "cellTracker", None),
+            portable.cellTracker,
+        ),
+    )
+    for name, observed, expected in pointer_contract:
+        if observed is not expected:
+            raise RuntimeError(
+                f"Parallel branch object graph is incoherent: {name} does not "
+                "point to the portable worker's authoritative store"
+            )
+    regime = getattr(portable.hazardDS, "regime", None)
+    if regime is not None:
+        if (
+            getattr(regime, "cell_tracker", None) is not portable.cellTracker
+            or getattr(regime, "map_ds", None) is not portable.mapDS
+        ):
+            raise RuntimeError(
+                "Parallel branch object graph is incoherent: the hazard regime "
+                "does not share the authoritative cell tracker and map"
+            )
+        # ``stopTime`` is the number of state boundaries.  Physical and
+        # exogenous transitions run over ``range(1, stopTime)``, so the hazard
+        # regime is intentionally configured through ``stopTime - 1``.  Keep
+        # the worker contract identical to Core's authoritative construction
+        # instead of comparing unlike boundary and transition counts.
+        expected_regime_horizon = max(1, int(portable.stopTime) - 1)
+        if int(getattr(regime.config, "episode_horizon", -1)) != int(
+            expected_regime_horizon
+        ):
+            raise RuntimeError(
+                "Parallel branch hazard-regime horizon disagrees with the "
+                "physical transition horizon: "
+                f"regime={getattr(regime.config, 'episode_horizon', None)}, "
+                f"expected={expected_regime_horizon}, "
+                f"stopTime={portable.stopTime}"
+            )
+
+    portable.shelterDS.assertCapacityInvariant()
+    portable.pedDS.assertShelterOccupancyInvariant()
+    return portable
 
 
 def _capture_endpoint_observation(
@@ -1447,6 +2127,7 @@ def _execute_physical_branch(
         steps=brancher.horizon,
         hazard_timeline=batch.hazard_timelines[task.tape_index],
     )
+    result.future_mode = str(batch.future_mode)
     result.endpoint_payload = _capture_endpoint_observation(
         brancher,
         result,
@@ -1464,6 +2145,16 @@ def _execute_random_continuation(
     restore(brancher.core, batch.snapshot)
     seed = batch.future_seeds[task.tape_index]
     brancher._reseed_exogenous_streams(seed)
+    if batch.future_mode == "belief":
+        regime = getattr(brancher.core, "hazard_regime", None)
+        if regime is not None and bool(getattr(regime, "enabled", False)):
+            particle = regime.belief_particles(
+                1, np.random.default_rng(seed)
+            )[0]
+            particle.cell_tracker = brancher.core.cellTracker
+            particle.map_ds = brancher.core.mapDS
+            brancher.core.hazard_regime = particle
+            brancher.core.hazardDS.set_regime(particle)
     if batch.endpoint_builder is None:
         raise RuntimeError("Random continuation worker has no observation builder")
     placement_seed = int(
@@ -1487,11 +2178,24 @@ def _execute_rollout_continuation(
     restore(brancher.core, batch.snapshot)
     seed = batch.future_seeds[task.tape_index]
     brancher._reseed_exogenous_streams(seed)
+    if batch.future_mode == "belief":
+        regime = getattr(brancher.core, "hazard_regime", None)
+        if regime is not None and bool(getattr(regime, "enabled", False)):
+            particle_rng = np.random.default_rng(seed)
+            particle = regime.belief_particles(1, particle_rng)[0]
+            particle.cell_tracker = brancher.core.cellTracker
+            particle.map_ds = brancher.core.mapDS
+            brancher.core.hazard_regime = particle
+            brancher.core.hazardDS.set_regime(particle)
+    elif batch.future_mode != "realized":
+        raise ValueError("Rollout future_mode must be realized or belief")
     if batch.endpoint_builder is None or batch.rollout_policy is None:
         raise RuntimeError("Rollout worker has no frozen policy or observation builder")
     cost = brancher._run_frozen_policy_continuation(
         builder=batch.endpoint_builder,
-        first_cell=int(task.install_cell),
+        first_cell=(
+            None if task.install_cell is None else int(task.install_cell)
+        ),
         decision_index=int(task.decision_index),
         remaining_deployments=int(task.remaining_deployments),
         frozen_policy=batch.rollout_policy,
@@ -1543,6 +2247,7 @@ def _initialize_spawn_branch_worker(batch: _SpawnBranchBatch) -> None:
         endpoint_spec=batch.endpoint_spec,
         endpoint_builder=builder,
         rollout_policy=batch.rollout_policy,
+        future_mode=batch.future_mode,
     )
 
 
@@ -1946,7 +2651,7 @@ class CounterfactualBrancher:
         self,
         observation: RegionalObservation,
     ) -> RegionalObservation:
-        """Attach the exact D(s) ledger and zero-horizon action gain.
+        """Attach complete-ledger debt and the public regional base score.
 
         Both quantities use the same capacity-valid route estimator as the
         complete objective. They are deterministic functions of the current
@@ -1966,37 +2671,31 @@ class CounterfactualBrancher:
         )
         if denominator <= 0.0:
             raise RuntimeError("Exact decision-feature denominator must be positive")
-        debt_by_cell = np.asarray(
-            estimate.hazard_weighted_by_cell,
-            dtype=np.float64,
+        debt_by_cell = (
+            float(getattr(self.core, "activePersonTimeWeight", 1.0))
+            * np.asarray(estimate.plain_by_cell, dtype=np.float64)
+            + float(getattr(self.core, "hazardExposureTimeWeight", 1.0))
+            * np.asarray(estimate.hazard_exposure_by_cell, dtype=np.float64)
         ) / denominator
-        gains = np.zeros(observation.number_of_actions, dtype=np.float64)
-        feasible = np.flatnonzero(observation.action_mask)
-        if feasible.size:
-            cells = observation.candidate_cell_indices[feasible]
-            effects = _ImmediateCandidateEvaluator(self).effects(cells)
-            if len(effects) != int(feasible.size):
-                raise RuntimeError("Exact assignment gain changed candidate count")
-            gains[feasible] = np.asarray(
-                [
-                    effect.waited.hazard_weighted_time_to_safety_cost
-                    - effect.acted.hazard_weighted_time_to_safety_cost
-                    for effect in effects
-                ],
-                dtype=np.float64,
-            ) / denominator
-        if not np.isfinite(debt_by_cell).all() or not np.isfinite(gains).all():
-            raise FloatingPointError("Exact decision features contain non-finite values")
+        if not np.isfinite(debt_by_cell).all():
+            raise FloatingPointError("Decision debt contains non-finite values")
         if np.any(debt_by_cell < -1e-9):
             raise RuntimeError("Capacity-valid evacuation debt became negative")
-        if np.any(np.abs(gains) > 2.0 + 1e-6):
-            raise RuntimeError("Exact assignment gain exceeded its ledger bound")
-        return replace(
+        enriched = replace(
             observation,
             remaining_evacuation_debt_by_cell=np.maximum(
                 debt_by_cell, 0.0
             ).astype(np.float32),
-            candidate_assignment_gain=gains.astype(np.float32),
+        )
+        public_scores = public_regional_objective_values(
+            enriched,
+            clearance_tail_weight=float(getattr(self.core, "clearanceTailExtraWeight", 0.0)),
+            casualty_priority_kappa=float(getattr(self.core, "casualtyPriorityKappa", 2.0)),
+        )
+        finite_scores = np.where(np.isfinite(public_scores), public_scores, 0.0)
+        return replace(
+            enriched,
+            candidate_public_objective_score=finite_scores.astype(np.float32),
         )
 
     def __del__(self):
@@ -2011,13 +2710,32 @@ class CounterfactualBrancher:
         self,
         snapshot: SimulatorSnapshot,
         future_seed: Optional[int],
+        mode: str = "realized",
     ) -> tuple[HazardFrame, ...]:
         """Evolve one action-independent hazard future exactly once."""
+        mode = str(mode).strip().lower()
+        if mode not in {"realized", "belief"}:
+            raise ValueError("hazard future mode must be realized or belief")
         restore(self.core, snapshot)
         if future_seed is not None:
             self._reseed_exogenous_streams(future_seed)
+        regime = getattr(self.core, "hazard_regime", None)
+        if mode == "belief" and regime is not None and regime.enabled:
+            particle_rng = np.random.default_rng(
+                0 if future_seed is None else int(future_seed)
+            )
+            regime = regime.belief_particles(1, particle_rng)[0]
+            self.core.hazard_regime = regime
+            self.core.hazardDS.set_regime(regime)
         frames = []
-        for _ in range(self.horizon):
+        start_time = int(snapshot.simulation_time)
+        for offset in range(1, self.horizon + 1):
+            if regime is not None and regime.enabled:
+                regime.advance(
+                    start_time + offset,
+                    self.core.hazardDS,
+                    self.core.mapDS,
+                )
             self.core.hazardDS.spreadUpdate()
             self.core.hazardDS.heatUpdate()
             self.core.hazardDS.smokeUpdate()
@@ -2037,14 +2755,16 @@ class CounterfactualBrancher:
         hazard_timeline: Optional[Sequence[HazardFrame]] = None,
     ) -> BranchResult:
         core = self.core
-        result = BranchResult(label=label)
+        result = BranchResult(
+            label=label,
+            active_person_time_weight=float(
+                getattr(core, "activePersonTimeWeight", 1.0)
+            ),
+            hazard_exposure_time_weight=float(
+                getattr(core, "hazardExposureTimeWeight", 1.0)
+            ),
+        )
         result.start_outcome = outcome_snapshot(core)
-        reward_pedestrian_ids = {
-            int(getattr(pedestrian, "agentID"))
-            for pedestrian in getattr(core.pedDS, "pedAgentList", {}).values()
-            if not bool(getattr(pedestrian, "terminated", False))
-        }
-
         installed_shelter = None
         if install_cell is not None:
             cell_index = int(install_cell)
@@ -2091,8 +2811,13 @@ class CounterfactualBrancher:
             # traffic and fire evolution; an action-caused difference remains
             # valid shelter-placement credit rather than making a person
             # disappear from the objective.
+            active_ids = {
+                int(getattr(pedestrian, "agentID"))
+                for pedestrian in core.pedDS.pedAgentList.values()
+                if not bool(getattr(pedestrian, "terminated", False))
+            }
             active_mass, exposure_mass, casualty_cost = controllable_time_mass(
-                core, reward_pedestrian_ids
+                core, active_ids
             )
             result.active_person_time += active_mass * time_step_minutes
             result.hazard_exposure_person_time += (
@@ -2115,7 +2840,11 @@ class CounterfactualBrancher:
         remaining = estimate_remaining_time_to_safety(
             core,
             episode_horizon=self.episode_horizon,
-            pedestrian_ids=reward_pedestrian_ids,
+            pedestrian_ids={
+                int(getattr(pedestrian, "agentID"))
+                for pedestrian in core.pedDS.pedAgentList.values()
+                if not bool(getattr(pedestrian, "terminated", False))
+            },
             include_panicked=True,
             include_casualties=False,
         )
@@ -2174,15 +2903,11 @@ class CounterfactualBrancher:
             raise ValueError("Random continuation requires a deployment decision")
         interval = max(1, int(getattr(core, "shelterActionInterval", 1)))
         next_deployment_time = int(getattr(core.pedDS, "currTime", 0))
-        cohort = {
-            int(getattr(pedestrian, "agentID"))
-            for pedestrian in core.pedDS.pedAgentList.values()
-            if not bool(getattr(pedestrian, "terminated", False))
-        }
         time_step_minutes = max(
             1e-9, float(getattr(core, "timeStepMinutes", 1.0))
         )
         complete_cost = 0.0
+        executor = RegionalShelterExecutor(core)
 
         while int(getattr(core.pedDS, "currTime", 0)) < self.episode_horizon:
             current_time = int(getattr(core.pedDS, "currTime", 0))
@@ -2201,43 +2926,53 @@ class CounterfactualBrancher:
                         "Uniform reference policy exhausted feasible shelter cells "
                         "before its deployment budget"
                     )
-                action = int(placement_rng.choice(feasible))
-                cell_index = int(observation.candidate_cell_indices[action])
-                _, cell_y = authoritative_grid_shape(core)
-                cell = divmod(cell_index, cell_y)
-                shelter_id = core.shelterDS.newShelter(
-                    {"cell": cell}, core.cellTracker
+                action = uniform_feasible_action(observation, placement_rng)
+                receipt = executor.execute(
+                    observation,
+                    PolicyDecision(
+                        action_index=action,
+                        strategy="uniform_random_reference",
+                    ),
                 )
-                if shelter_id is None:
-                    raise RuntimeError(
-                        f"Uniform reference failed to install feasible cell {cell_index}"
-                    )
-                shelter = core.shelterDS.shelterList[shelter_id]
-                if hasattr(core.cellTracker, "addShelter"):
-                    core.cellTracker.addShelter(cell, shelter)
-                core.pedDS.reroute_active_to_nearest_shelter(
-                    new_shelter=shelter
-                )
-                remaining_deployments -= 1
+                if receipt.installed:
+                    remaining_deployments -= 1
                 decision_index += 1
                 next_deployment_time += interval
 
             advance_one_timestep(core)
-            plain, exposure, casualty = controllable_time_mass(core, cohort)
-            complete_cost += time_step_minutes * (
-                plain + exposure + casualty
+            active_ids = {
+                int(getattr(pedestrian, "agentID"))
+                for pedestrian in core.pedDS.pedAgentList.values()
+                if not bool(getattr(pedestrian, "terminated", False))
+            }
+            plain, exposure, casualty = controllable_time_mass(core, active_ids)
+            complete_cost += time_step_minutes * weighted_objective_mass(
+                core, plain, exposure, casualty
             )
-            if plain == 0.0 and exposure == 0.0 and casualty == 0.0:
+            if (
+                plain == 0.0
+                and exposure == 0.0
+                and casualty == 0.0
+                and core.pedDS.currentShelteredPopulation() == 0
+            ):
                 break
 
         residual = estimate_remaining_time_to_safety(
             core,
             episode_horizon=self.episode_horizon,
-            pedestrian_ids=cohort,
+            pedestrian_ids={
+                int(getattr(pedestrian, "agentID"))
+                for pedestrian in core.pedDS.pedAgentList.values()
+                if not bool(getattr(pedestrian, "terminated", False))
+            },
             include_panicked=True,
             include_casualties=False,
         )
-        complete_cost += residual.hazard_weighted_person_minutes
+        complete_cost += weighted_objective_mass(
+            core,
+            residual.plain_person_minutes,
+            residual.hazard_exposure_person_minutes,
+        )
         tail_weight = float(getattr(core, "clearanceTailExtraWeight", 0.0))
         if tail_weight > 0.0:
             complete_cost += tail_weight * estimate_clearance_tail(
@@ -2257,7 +2992,7 @@ class CounterfactualBrancher:
         self,
         *,
         builder: RegionalObservationBuilder,
-        first_cell: int,
+        first_cell: Optional[int],
         decision_index: int,
         remaining_deployments: int,
         frozen_policy: FrozenResidualPolicy,
@@ -2276,28 +3011,26 @@ class CounterfactualBrancher:
             raise ValueError("Frozen rollout requires a deployment decision")
         interval = max(1, int(getattr(core, "shelterActionInterval", 1)))
         next_deployment_time = int(getattr(core.pedDS, "currTime", 0)) + interval
-        cohort = {
-            int(getattr(pedestrian, "agentID"))
-            for pedestrian in core.pedDS.pedAgentList.values()
-            if not bool(getattr(pedestrian, "terminated", False))
-        }
         time_step_minutes = max(
             1e-9, float(getattr(core, "timeStepMinutes", 1.0))
         )
         complete_cost = 0.0
 
-        _, cell_y = authoritative_grid_shape(core)
-        cell = divmod(int(first_cell), cell_y)
-        shelter_id = core.shelterDS.newShelter({"cell": cell}, core.cellTracker)
-        if shelter_id is None:
-            raise RuntimeError(
-                f"Frozen rollout failed to install feasible cell {first_cell}"
+        if first_cell is not None:
+            _, cell_y = authoritative_grid_shape(core)
+            cell = divmod(int(first_cell), cell_y)
+            shelter_id = core.shelterDS.newShelter(
+                {"cell": cell}, core.cellTracker
             )
-        shelter = core.shelterDS.shelterList[shelter_id]
-        if hasattr(core.cellTracker, "addShelter"):
-            core.cellTracker.addShelter(cell, shelter)
-        core.pedDS.reroute_active_to_nearest_shelter(new_shelter=shelter)
-        remaining_deployments -= 1
+            if shelter_id is None:
+                raise RuntimeError(
+                    f"Frozen rollout failed to install feasible cell {first_cell}"
+                )
+            shelter = core.shelterDS.shelterList[shelter_id]
+            if hasattr(core.cellTracker, "addShelter"):
+                core.cellTracker.addShelter(cell, shelter)
+            core.pedDS.reroute_active_to_nearest_shelter(new_shelter=shelter)
+            remaining_deployments -= 1
         decision_index += 1
         previous_observation, recurrent_state = frozen_policy.initial_context()
 
@@ -2323,43 +3056,64 @@ class CounterfactualBrancher:
                     previous_observation=previous_observation,
                     recurrent_state=recurrent_state,
                 )
-                candidate_cell = int(observation.candidate_cell_indices[action])
-                _, cell_y = authoritative_grid_shape(core)
-                cell = divmod(candidate_cell, cell_y)
-                shelter_id = core.shelterDS.newShelter(
-                    {"cell": cell}, core.cellTracker
-                )
-                if shelter_id is None:
-                    raise RuntimeError(
-                        "Frozen rollout selected an infeasible shelter cell"
+                if int(action) != int(observation.defer_action_index):
+                    candidate_cell = int(
+                        observation.candidate_cell_indices[action]
                     )
-                shelter = core.shelterDS.shelterList[shelter_id]
-                if hasattr(core.cellTracker, "addShelter"):
-                    core.cellTracker.addShelter(cell, shelter)
-                core.pedDS.reroute_active_to_nearest_shelter(
-                    new_shelter=shelter
-                )
+                    _, cell_y = authoritative_grid_shape(core)
+                    cell = divmod(candidate_cell, cell_y)
+                    shelter_id = core.shelterDS.newShelter(
+                        {"cell": cell}, core.cellTracker
+                    )
+                    if shelter_id is None:
+                        raise RuntimeError(
+                            "Frozen rollout selected an infeasible shelter cell"
+                        )
+                    shelter = core.shelterDS.shelterList[shelter_id]
+                    if hasattr(core.cellTracker, "addShelter"):
+                        core.cellTracker.addShelter(cell, shelter)
+                    core.pedDS.reroute_active_to_nearest_shelter(
+                        new_shelter=shelter
+                    )
+                    remaining_deployments -= 1
                 previous_observation = observation
-                remaining_deployments -= 1
                 decision_index += 1
                 next_deployment_time += interval
 
             advance_one_timestep(core)
-            plain, exposure, casualty = controllable_time_mass(core, cohort)
-            complete_cost += time_step_minutes * (
-                plain + exposure + casualty
+            active_ids = {
+                int(getattr(pedestrian, "agentID"))
+                for pedestrian in core.pedDS.pedAgentList.values()
+                if not bool(getattr(pedestrian, "terminated", False))
+            }
+            plain, exposure, casualty = controllable_time_mass(core, active_ids)
+            complete_cost += time_step_minutes * weighted_objective_mass(
+                core, plain, exposure, casualty
             )
-            if plain == 0.0 and exposure == 0.0 and casualty == 0.0:
+            if (
+                plain == 0.0
+                and exposure == 0.0
+                and casualty == 0.0
+                and core.pedDS.currentShelteredPopulation() == 0
+            ):
                 break
 
         residual = estimate_remaining_time_to_safety(
             core,
             episode_horizon=self.episode_horizon,
-            pedestrian_ids=cohort,
+            pedestrian_ids={
+                int(getattr(pedestrian, "agentID"))
+                for pedestrian in core.pedDS.pedAgentList.values()
+                if not bool(getattr(pedestrian, "terminated", False))
+            },
             include_panicked=True,
             include_casualties=False,
         )
-        complete_cost += residual.hazard_weighted_person_minutes
+        complete_cost += weighted_objective_mass(
+            core,
+            residual.plain_person_minutes,
+            residual.hazard_exposure_person_minutes,
+        )
         tail_weight = float(getattr(core, "clearanceTailExtraWeight", 0.0))
         if tail_weight > 0.0:
             complete_cost += tail_weight * estimate_clearance_tail(
@@ -2383,8 +3137,12 @@ class CounterfactualBrancher:
         decision_index: int,
         remaining_deployments: int,
         maximum_deployments: int,
+        mode: str = "belief",
     ) -> list[float]:
         """Estimate ``V_mu`` with independent complete uniform continuations."""
+        mode = str(mode).strip().lower()
+        if mode not in {"belief", "realized"}:
+            raise ValueError("Random-policy continuation mode must be belief or realized")
         seeds = tuple(int(seed) for seed in future_seeds)
         if not seeds:
             raise ValueError("Random-policy value requires at least one future")
@@ -2416,6 +3174,7 @@ class CounterfactualBrancher:
             hazard_timelines=tuple(() for _ in seeds),
             endpoint_spec=endpoint_spec,
             endpoint_builder=local_builder,
+            future_mode=mode,
         )
         try:
             if self.workers == 1:
@@ -2437,6 +3196,7 @@ class CounterfactualBrancher:
                     edge_flow=snapshot.edge_flow,
                     python_random_state=snapshot.python_random_state,
                     numpy_legacy_state=snapshot.numpy_legacy_state,
+                    future_mode=mode,
                 )
                 completed = self._pool().run(spawn_batch, tasks)
         finally:
@@ -2456,6 +3216,7 @@ class CounterfactualBrancher:
         remaining_deployments: int,
         maximum_deployments: int,
         frozen_policy: FrozenResidualPolicy,
+        mode: str = "realized",
     ) -> np.ndarray:
         """Return complete common-noise costs for cells under a frozen policy.
 
@@ -2463,9 +3224,15 @@ class CounterfactualBrancher:
         The live simulator is restored after the batch and each isolated task
         receives the same pre-action snapshot and keyed disturbance seed.
         """
-        cells = tuple(int(cell) for cell in cell_indices)
+        cells = tuple(
+            None if cell is None or int(cell) < 0 else int(cell)
+            for cell in cell_indices
+        )
         seeds = tuple(int(seed) for seed in future_seeds)
-        if len(cells) < 2 or len(cells) != len(set(cells)):
+        mode = str(mode).strip().lower()
+        if mode not in {"realized", "belief"}:
+            raise ValueError("mode must be realized or belief")
+        if not cells or len(cells) != len(set(cells)):
             raise ValueError("Rollout policy grading requires distinct candidate cells")
         if not seeds:
             raise ValueError("Rollout policy grading requires at least one future")
@@ -2501,6 +3268,7 @@ class CounterfactualBrancher:
             endpoint_spec=endpoint_spec,
             endpoint_builder=builder,
             rollout_policy=frozen_policy,
+            future_mode=mode,
         )
         try:
             if self.workers == 1:
@@ -2523,6 +3291,7 @@ class CounterfactualBrancher:
                     python_random_state=snapshot.python_random_state,
                     numpy_legacy_state=snapshot.numpy_legacy_state,
                     rollout_policy=frozen_policy,
+                    future_mode=mode,
                 )
                 completed = self._pool().run(spawn_batch, tasks)
         finally:
@@ -2534,6 +3303,74 @@ class CounterfactualBrancher:
         if not np.isfinite(costs).all():
             raise RuntimeError("Frozen rollout batch did not return every cost")
         return costs
+
+    def rollout_policy_costs_paired(
+        self,
+        cell_indices: Sequence[int],
+        *,
+        snapshot: SimulatorSnapshot,
+        future_seeds: Sequence[int],
+        decision_index: int,
+        remaining_deployments: int,
+        maximum_deployments: int,
+        frozen_policy,
+        mode: str = "realized",
+        futures_min: int = 2,
+    ) -> PairedRolloutCostEstimate:
+        """Return a fully paired estimate from a rectangular rollout design.
+
+        The previous implementation spent the same total simulation budget as
+        the rectangular design, but after a two-tape pilot it evaluated only a
+        changing subset of candidates on newly generated futures.  Candidate
+        means were therefore based on different hazard/regime tapes and the
+        reported ``paired_contrast_standard_error`` was reconstructed from
+        marginal standard errors.  A rare closure or ignition could consequently
+        look like an action effect.
+
+        The worker API is rectangular and the configured budget already equals
+        ``actions * futures``.  Use that budget honestly: every candidate is
+        evaluated on every supplied future and all statistics come from the
+        resulting paired matrix.
+        """
+        cells = tuple(int(cell) for cell in cell_indices)
+        seeds = tuple(int(seed) for seed in future_seeds)
+        minimum = min(int(futures_min), len(seeds))
+        if len(cells) < 2 or minimum < 2:
+            raise ValueError(
+                "Paired rollout grading requires two actions and two futures"
+            )
+        costs = self.rollout_policy_costs(
+            cells,
+            snapshot=snapshot,
+            future_seeds=seeds,
+            decision_index=decision_index,
+            remaining_deployments=remaining_deployments,
+            maximum_deployments=maximum_deployments,
+            frozen_policy=frozen_policy,
+            mode=mode,
+        )
+        # Local import keeps this simulator module independent of learner setup
+        # while reusing the one authoritative paired estimator.
+        from RolloutPolicyIteration import estimate_rollout_costs
+
+        estimate = estimate_rollout_costs(costs)
+        return PairedRolloutCostEstimate(
+            score=estimate.score,
+            mean_cost=estimate.mean_cost,
+            standard_error=estimate.standard_error,
+            paired_contrast_standard_error=(
+                estimate.paired_contrast_standard_error
+            ),
+            futures_spent=np.full(len(cells), len(seeds), dtype=np.int64),
+        )
+
+    def rollout_policy_costs_ocba(self, *args, **kwargs) -> PairedRolloutCostEstimate:
+        """Compatibility alias for the retired unpaired OCBA sampler.
+
+        All calls now execute :meth:`rollout_policy_costs_paired`; no
+        contender-specific allocation remains.
+        """
+        return self.rollout_policy_costs_paired(*args, **kwargs)
 
     # -- paired branches --------------------------------------------------
 
@@ -2611,7 +3448,10 @@ class CounterfactualBrancher:
         snapshot: Optional[SimulatorSnapshot] = None,
         endpoint_spec: Optional[EndpointObservationSpec] = None,
         reference_cell: Optional[int] = None,
-    ) -> list[list[PairedEffect]]:
+        mode: str = "realized",
+        allocation: str = "uniform",
+        futures_min: int = 2,
+    ):
         """Evaluate candidate contrasts for all shared futures in one batch.
 
         Physical branches are independent conditional on the decision snapshot
@@ -2658,7 +3498,58 @@ class CounterfactualBrancher:
             self.core,
             label="nmcc-parallel-full-candidate-tables",
         )
-        timelines = tuple(self._hazard_timeline(base, seed) for seed in seeds)
+        allocation = str(allocation).strip().lower()
+        if allocation not in {"uniform", "ocba"}:
+            raise ValueError("allocation must be uniform or ocba")
+        # The worker contract is a rectangular candidate-by-tape table.  The
+        # legacy ``ocba`` option used to break that pairing after its pilot and
+        # compare candidates observed on different disturbance tapes.  Because
+        # the nominal budget is already ``candidates * futures``, retain the
+        # interface but spend it as a complete common-future rectangle.
+        if allocation == "ocba" and int(futures_min) <= 0:
+            raise ValueError("futures_min must be positive for OCBA")
+        if allocation == "ocba":
+            minimum = min(int(futures_min), len(seeds))
+            if minimum < 2:
+                raise ValueError("OCBA requires at least two pilot futures")
+            tables = self.candidate_effects_many_futures(
+                cells,
+                future_seeds=seeds,
+                snapshot=base,
+                endpoint_spec=endpoint_spec,
+                reference_cell=reference_cell,
+                mode=mode,
+                allocation="uniform",
+            )
+            per_candidate = [
+                [tables[tape][position] for tape in range(len(seeds))]
+                for position in range(len(cells))
+            ]
+            means = np.empty(len(cells), dtype=np.float64)
+            errors = np.empty(len(cells), dtype=np.float64)
+            for position, effects in enumerate(per_candidate):
+                values = np.asarray(
+                    [
+                        effect.waited.hazard_weighted_time_to_safety_cost
+                        - effect.acted.hazard_weighted_time_to_safety_cost
+                        for effect in effects
+                    ],
+                    dtype=np.float64,
+                )
+                means[position] = float(values.mean())
+                errors[position] = float(
+                    values.std(ddof=1) / math.sqrt(values.size)
+                )
+            return PairedEffectEstimate(
+                cell_indices=cells,
+                mean_advantage=means,
+                paired_standard_error=errors,
+                futures_spent=np.full(len(cells), len(seeds), dtype=np.int64),
+                effects=tuple(tuple(effects) for effects in per_candidate),
+            )
+        timelines = tuple(
+            self._hazard_timeline(base, seed, mode=mode) for seed in seeds
+        )
         tasks = tuple(
             _PhysicalBranchTask(
                 tape_index=tape_index,
@@ -2687,6 +3578,7 @@ class CounterfactualBrancher:
             hazard_timelines=timelines,
             endpoint_spec=endpoint_spec,
             endpoint_builder=local_builder,
+            future_mode=mode,
         )
 
         try:
@@ -2708,6 +3600,7 @@ class CounterfactualBrancher:
                     edge_flow=base.edge_flow,
                     python_random_state=base.python_random_state,
                     numpy_legacy_state=base.numpy_legacy_state,
+                    future_mode=mode,
                 )
                 completed = self._pool().run(spawn_batch, tasks)
         finally:

@@ -92,7 +92,7 @@ class StaticGreedyTests(unittest.TestCase):
         installed = database.predeployStaticDemandGreedy(
             demand_by_cell=[10.0, 55.0],
             additions=1,
-            cellTracker=object(),
+            cellTracker=SimpleNamespace(getCellState=lambda _cell: 0),
         )
         self.assertEqual(installed, [0])
         self.assertEqual(database.shelterList[0].nodeMapped.OSMID, "high-demand")

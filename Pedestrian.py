@@ -36,6 +36,10 @@ class Pedestrian:
         
         self.group_id = 0
         self.group_size = 1
+        # Stable audit key for scalable training.  Multiple behavioral
+        # subcohorts may share one origin after panic splitting, but nobody is
+        # ever combined across distinct initial road nodes.
+        self.origin_node_osmid = None
 
         # Panic is permanent once triggered. Panicked pedestrians abandon
         # their shelter route and make a new local edge choice at every node.

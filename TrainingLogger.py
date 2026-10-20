@@ -11,6 +11,8 @@ import csv
 from collections import deque
 from typing import Dict
 
+CSV_SCHEMA_VERSION = 7
+
 CSV_COLUMNS = [
     "timestep",
     "reward",
@@ -71,7 +73,14 @@ CSV_COLUMNS = [
     "mean_safe_completion_time",
     "safe_completion_rate",
     "shelter_evacuation_rate",
+    "shelter_closures",
+    "closed_this_step",
+    "current_sheltered_population",
+    "cumulative_shelter_admissions",
+    "forced_reevacuated",
+    "reactivated_this_step",
     "total_shelter_capacity",
+    "operational_shelter_capacity",
     "shelter_utilization",
     "mean_effective_speed_m_per_minute",
     "mean_congestion_speed_ratio",
@@ -128,7 +137,7 @@ class trainingLog:
         os.replace(self.csv_path, legacy_path)
         print(
             f"[trainingLog] Detected CSV schema mismatch. Archived legacy file to {legacy_path} "
-            f"and starting a fresh progress.csv with schema v6.",
+            f"and starting a fresh progress.csv with schema v{CSV_SCHEMA_VERSION}.",
             flush=True,
         )
                 
@@ -226,7 +235,14 @@ class trainingLog:
             mean_safe_completion_time,
             safe_completion_rate,
             shelter_evacuation_rate,
+            int(metrics.get("shelter_closures", 0)),
+            int(metrics.get("closed_this_step", 0)),
+            int(metrics.get("current_sheltered_population", 0)),
+            int(metrics.get("cumulative_shelter_admissions", 0)),
+            int(metrics.get("forced_reevacuated", 0)),
+            int(metrics.get("reactivated_this_step", 0)),
             total_shelter_capacity,
+            float(metrics.get("operational_shelter_capacity", 0.0)),
             shelter_utilization,
             float(metrics.get("mean_effective_speed_m_per_minute", 0.0)),
             float(metrics.get("mean_congestion_speed_ratio", 1.0)),
@@ -272,7 +288,42 @@ class trainingLog:
             self.tb.add_scalar("ped/mean_safe_completion_time", mean_safe_completion_time, global_step=t)
             self.tb.add_scalar("ped/safe_completion_rate", safe_completion_rate, global_step=t)
             self.tb.add_scalar("ped/shelter_evacuation_rate", shelter_evacuation_rate, global_step=t)
+            self.tb.add_scalar(
+                "shelter/closures_cumulative",
+                float(metrics.get("shelter_closures", 0.0)),
+                global_step=t,
+            )
+            self.tb.add_scalar(
+                "shelter/closed_this_step",
+                float(metrics.get("closed_this_step", 0.0)),
+                global_step=t,
+            )
+            self.tb.add_scalar(
+                "shelter/current_sheltered_population",
+                float(metrics.get("current_sheltered_population", 0.0)),
+                global_step=t,
+            )
+            self.tb.add_scalar(
+                "shelter/admissions_cumulative",
+                float(metrics.get("cumulative_shelter_admissions", 0.0)),
+                global_step=t,
+            )
+            self.tb.add_scalar(
+                "shelter/forced_reevacuated_cumulative",
+                float(metrics.get("forced_reevacuated", 0.0)),
+                global_step=t,
+            )
+            self.tb.add_scalar(
+                "shelter/reactivated_this_step",
+                float(metrics.get("reactivated_this_step", 0.0)),
+                global_step=t,
+            )
             self.tb.add_scalar("shelter/total_capacity", total_shelter_capacity, global_step=t)
+            self.tb.add_scalar(
+                "shelter/operational_capacity",
+                float(metrics.get("operational_shelter_capacity", 0.0)),
+                global_step=t,
+            )
             self.tb.add_scalar("shelter/utilization", shelter_utilization, global_step=t)
             self.tb.add_scalar(
                 "congestion/mean_effective_speed_m_per_minute",

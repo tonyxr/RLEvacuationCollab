@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "description": "Pre-registered evaluation-only stress families. Each family isolates one mechanism in which a one-interval snapshot rule can be wrong and a policy with foresight can be right, and turns it up through one dose. Doses within a family share held-out tapes, so the dose response is a paired contrast. Training is unchanged; scenarios whose drivers never occur in the training curriculum are labelled out of support.",
+  "base_curriculum": "config/state_college_regime_v53.json",
+  "training_stage_ids": ["P"],
+  "validation_tapes": 10,
+  "held_out_tapes": 10,
+  "belief_futures": 4,
+  "deadline_thresholds": [-1e30, 0.2, 0.4, 0.6, 0.8],
+  "screening_overrides": {
+    "forecastEnsembleSize": 4,
+    "nmccPiMaxBranches": 6
+  },
+  "policy_seeds": 5,
+  "policies": [
+    "objective_greedy",
+    "forecast_greedy",
+    "deadline_greedy",
+    "random",
+    "belief_rollout",
+    "rl"
+  ],
+  "endpoint_only_policies": ["belief_rollout"],
+  "scenarios": {},
+  "stress_families": {
+    "aimed_wind_front": {
+      "mechanism": "Wind carries the front toward the population mass. A 15-minute snapshot sees sites that are safe now but lie in the 30-60 minute path of the front.",
+      "overrides": {"stressWindAim": "population_centroid"},
+      "dose_key": "hazardWindSpeedMPerMinute",
+      "doses": [0.0, 16.67, 33.33, 50.0],
+      "tuning_dose": 33.33
+    },
+    "threatened_cluster": {
+      "mechanism": "60% of people in a safe cluster, 25% in a small cluster directly downwind of the fire. Largest-demand and current-danger rules serve the large cluster first; the small cluster has a deadline.",
+      "overrides": {
+        "stressClusterShares": [0.6, 0.25],
+        "stressClusterRadiusM": 300.0,
+        "stressClusterMinSeparationM": 1500.0,
+        "stressThreatenedCluster": 1,
+        "stressWindAim": "threatened_cluster",
+        "hazardWindSpeedMPerMinute": 16.67
+      },
+      "dose_key": "stressThreatArrivalMinutes",
+      "doses": [20.0, 35.0, 50.0, 65.0],
+      "tuning_dose": 35.0
+    },
+    "congestion_cluster": {
+      "mechanism": "Half the population starts in one neighbourhood. Snapshot routing prices current link speeds; installing at the densest cell funnels everyone through the same links and the jam builds over 20-40 minutes.",
+      "overrides": {
+        "stressClusterShares": [0.5],
+        "stressClusterRadiusM": 300.0,
+        "stressWindAim": "population_centroid",
+        "hazardWindSpeedMPerMinute": 16.67
+      },
+      "dose_key": "pedVol",
+      "doses": [1000, 2500, 5000],
+      "tuning_dose": 2500,
+      "capacity_token_from_population": true
+    },
+    "panic_cliff": {
+      "mechanism": "A wind-driven front approaches the population. Panic is a threshold loss of control; a snapshot cost is linear in current danger.",
+      "overrides": {
+        "stressWindAim": "population_centroid",
+        "hazardWindSpeedMPerMinute": 33.33
+      },
+      "dose_key": "panicRate",
+      "doses": [0.25, 0.5, 0.75],
+      "tuning_dose": 0.5
+    },
+    "wind_shift_hedge": {
+      "mechanism": "A real (non-zero) wind shifts direction with 15-minute warnings that are missed 20% of the time. Snapshot rules commit to the current direction; a belief policy hedges or defers.",
+      "overrides": {
+        "stressWindAim": "population_centroid",
+        "hazardWindSpeedMPerMinute": 33.33
+      },
+      "dose_key": "hazardWindShiftRatePerMinute",
+      "doses": [0.0, 0.015, 0.03, 0.06],
+      "tuning_dose": 0.03
+    }
+  }
+}

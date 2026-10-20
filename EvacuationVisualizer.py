@@ -22,7 +22,7 @@ import numpy as np
 from CAProcessor import authoritative_grid_shape
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def resolve_milestones(spec, horizon: int) -> tuple[int, ...]:
@@ -62,6 +62,7 @@ class MilestoneSnapshot:
     simulation_time: int
     pedestrians: tuple[dict, ...]
     shelters: tuple[dict, ...]
+    hazards: tuple[dict, ...]
     cells: tuple[dict, ...]
     outcome: dict
     latest_decision: Optional[dict]
@@ -191,6 +192,22 @@ class EvacuationVisualizer:
     def _group_size(pedestrian) -> int:
         return max(1, int(getattr(pedestrian, "group_size", 1)))
 
+    def _active_marker_label(self) -> str:
+        return (
+            "Active origin-node cohort"
+            if int(getattr(self.core, "pedestrianGroupSize", 1)) > 1
+            else "Active pedestrian"
+        )
+
+    def _active_marker_unit(self) -> str:
+        group_size = max(1, int(getattr(self.core, "pedestrianGroupSize", 1)))
+        if group_size > 1:
+            return (
+                "one marker per active origin-node cohort; "
+                f"cohort weight recorded separately, maximum {group_size} people"
+            )
+        return "one marker per active pedestrian agent"
+
     def _pedestrian_rows(self, simulation_time: int) -> tuple[dict, ...]:
         rows = []
         for pedestrian in self.core.pedDS.pedAgentList.values():
@@ -231,6 +248,13 @@ class EvacuationVisualizer:
                     "capacity": float(getattr(shelter, "shelterCap", 0.0)),
                     "flow": float(getattr(shelter, "shelterFlow", 0.0)),
                     "status": int(getattr(shelter, "status", 0)),
+                    "overrun_time": getattr(shelter, "overrunTime", None),
+                    "overrun_danger_level": getattr(
+                        shelter, "overrunDangerLevel", None
+                    ),
+                    "forced_reevacuated_population": int(getattr(
+                        shelter, "forcedReevacuatedPopulation", 0
+                    )),
                     "initial_shelter": int(int(shelter_id) in self.initial_shelter_ids),
                     "absorbing_after_terminal": 0,
                     "deployment_mode": (
@@ -240,6 +264,38 @@ class EvacuationVisualizer:
                         if int(shelter_id) in self.static_predeployment_shelter_ids
                         else "dynamic"
                     ),
+                }
+            )
+        return tuple(rows)
+
+    def _hazard_rows(self, simulation_time: int) -> tuple[dict, ...]:
+        """Snapshot only the hazard sources that exist at this boundary."""
+        rows = []
+        for hazard_id, hazard in sorted(self.core.hazardDS.hazardList.items()):
+            node = getattr(hazard, "sourceNode", None)
+            source_cell = getattr(hazard, "sourceCell", None)
+            if node is not None:
+                x_m = float(node.nodeX)
+                y_m = float(node.nodeY)
+                source_osm_node_id = str(getattr(node, "OSMID", ""))
+            elif source_cell is not None:
+                i, j = (int(source_cell[0]), int(source_cell[1]))
+                tracker = self.core.cellTracker
+                x_m = 0.5 * float(tracker.xEdges[i] + tracker.xEdges[i + 1])
+                y_m = 0.5 * float(tracker.yEdges[j] + tracker.yEdges[j + 1])
+                source_osm_node_id = ""
+            else:
+                continue
+            rows.append(
+                {
+                    "simulation_time": int(simulation_time),
+                    "hazard_id": int(hazard_id),
+                    "source_osm_node_id": source_osm_node_id,
+                    "source_cell_i": -1 if source_cell is None else int(source_cell[0]),
+                    "source_cell_j": -1 if source_cell is None else int(source_cell[1]),
+                    "x_m": x_m,
+                    "y_m": y_m,
+                    "absorbing_after_terminal": 0,
                 }
             )
         return tuple(rows)
@@ -308,6 +364,7 @@ class EvacuationVisualizer:
                 simulation_time=int(simulation_time),
                 pedestrians=pedestrians,
                 shelters=self._shelter_rows(simulation_time),
+                hazards=self._hazard_rows(simulation_time),
                 cells=self._cell_rows(simulation_time, pedestrians),
                 outcome=self._outcome(simulation_time, pedestrians),
                 latest_decision=dict(self.decisions[-1]),
@@ -364,6 +421,7 @@ class EvacuationVisualizer:
                 simulation_time=simulation_time,
                 pedestrians=pedestrians,
                 shelters=shelters,
+                hazards=self._hazard_rows(simulation_time),
                 cells=cells,
                 outcome=self._outcome(simulation_time, pedestrians),
                 latest_decision=None if latest_decision is None else dict(latest_decision),
@@ -382,6 +440,7 @@ class EvacuationVisualizer:
                     simulation_time=0,
                     pedestrians=snapshot.pedestrians,
                     shelters=snapshot.shelters,
+                    hazards=snapshot.hazards,
                     cells=snapshot.cells,
                     outcome=dict(snapshot.outcome),
                     latest_decision=None,
@@ -500,13 +559,15 @@ class EvacuationVisualizer:
             )
 
         if snapshot.shelters:
-            initial = [row for row in snapshot.shelters if row["deployment_mode"] == "initial"]
+            operational = [row for row in snapshot.shelters if int(row["status"]) != 2]
+            overrun = [row for row in snapshot.shelters if int(row["status"]) == 2]
+            initial = [row for row in operational if row["deployment_mode"] == "initial"]
             static = [
                 row
-                for row in snapshot.shelters
+                for row in operational
                 if row["deployment_mode"] == "static_predeployment"
             ]
-            dynamic = [row for row in snapshot.shelters if row["deployment_mode"] == "dynamic"]
+            dynamic = [row for row in operational if row["deployment_mode"] == "dynamic"]
             if initial:
                 axis.scatter(
                     [row["x_m"] for row in initial], [row["y_m"] for row in initial],
@@ -525,15 +586,20 @@ class EvacuationVisualizer:
                     marker="s", s=38 if compact else 55, c="#7b3294", edgecolors="white",
                     linewidths=0.55, zorder=6,
                 )
-
-        for hazard in self.core.hazardDS.hazardList.values():
-            node = getattr(hazard, "sourceNode", None)
-            if node is not None:
+            if overrun:
                 axis.scatter(
-                    [float(node.nodeX)], [float(node.nodeY)], marker="X",
-                    s=25 if compact else 38, c="#6a040f", edgecolors="white",
-                    linewidths=0.45, zorder=7,
+                    [row["x_m"] for row in overrun],
+                    [row["y_m"] for row in overrun],
+                    marker="X", s=52 if compact else 78, c="#111111",
+                    edgecolors="#fdae61", linewidths=0.8, zorder=8,
                 )
+
+        for hazard in snapshot.hazards:
+            axis.scatter(
+                [float(hazard["x_m"])], [float(hazard["y_m"])], marker="X",
+                s=25 if compact else 38, c="#6a040f", edgecolors="white",
+                linewidths=0.45, zorder=7,
+            )
 
         axis.set_xlim(*self.x_limits)
         # Local y is distance south from the map's northern boundary.
@@ -629,10 +695,11 @@ class EvacuationVisualizer:
             self._render_axis(axis, snapshot, compact=True)
         self._add_danger_colorbar(fig, list(axes[0]), compact=True)
         legend = [
-            Line2D([0], [0], marker="o", color="none", markerfacecolor="#d7191c", label="Active pedestrian", markersize=6),
+            Line2D([0], [0], marker="o", color="none", markerfacecolor="#d7191c", label=self._active_marker_label(), markersize=6),
             Line2D([0], [0], marker="^", color="none", markerfacecolor="#2166ac", label="Initial shelter", markersize=7),
             Line2D([0], [0], marker="*", color="none", markerfacecolor="#00a6ca", label="Sequential shelter", markersize=8),
             Line2D([0], [0], marker="s", color="none", markerfacecolor="#7b3294", label="Static t=0 shelter", markersize=7),
+            Line2D([0], [0], marker="X", color="none", markerfacecolor="#111111", markeredgecolor="#fdae61", label="Overrun shelter", markersize=7),
             Line2D([0], [0], color="#f1b514", linestyle="--", label="Latest priority cell"),
             Line2D([0], [0], marker="X", color="none", markerfacecolor="#6a040f", label="Hazard source", markersize=6),
         ]
@@ -832,7 +899,7 @@ class EvacuationVisualizer:
             compact=True,
         )
         legend = [
-            Line2D([0], [0], marker="o", color="none", markerfacecolor="#d7191c", markeredgecolor="white", label="Active pedestrian", markersize=6),
+            Line2D([0], [0], marker="o", color="none", markerfacecolor="#d7191c", markeredgecolor="white", label=self._active_marker_label(), markersize=6),
             Line2D([0], [0], color="#f1b514", linestyle="--", label="Selected priority cell"),
             Line2D([0], [0], marker="o", color="none", markeredgecolor="#f1b514", markerfacecolor="none", label="Implemented candidate", markersize=8),
             Line2D([0], [0], marker="^", color="none", markerfacecolor="#2166ac", label="Common initial shelter", markersize=7),
@@ -901,6 +968,14 @@ class EvacuationVisualizer:
                 }
                 for row in terminal.cells
             )
+            hazards = tuple(
+                {
+                    **row,
+                    "simulation_time": int(milestone),
+                    "absorbing_after_terminal": 1,
+                }
+                for row in terminal.hazards
+            )
             outcome = {
                 **terminal.outcome,
                 "simulation_time": int(milestone),
@@ -913,6 +988,7 @@ class EvacuationVisualizer:
                     simulation_time=int(milestone),
                     pedestrians=tuple(),
                     shelters=shelters,
+                    hazards=hazards,
                     cells=cells,
                     outcome=outcome,
                     latest_decision=(
@@ -941,11 +1017,16 @@ class EvacuationVisualizer:
 
         pedestrian_path = os.path.join(self.output_dir, "milestone_pedestrians.csv")
         shelter_path = os.path.join(self.output_dir, "milestone_shelters.csv")
+        hazard_path = os.path.join(self.output_dir, "milestone_hazards.csv")
         cell_path = os.path.join(self.output_dir, "milestone_cells.csv")
         decision_path = os.path.join(self.output_dir, "deployment_decisions.csv")
         road_path = os.path.join(self.output_dir, "osm_road_segments.csv")
         outcome_path = os.path.join(self.output_dir, "milestone_outcomes.csv")
         decision_cell_path = os.path.join(self.output_dir, "decision_epoch_cells.csv")
+        decision_hazard_path = os.path.join(
+            self.output_dir,
+            "decision_epoch_hazards.csv",
+        )
         decision_pedestrian_path = os.path.join(
             self.output_dir,
             "decision_epoch_pedestrians.csv.gz",
@@ -964,7 +1045,18 @@ class EvacuationVisualizer:
             (
                 "simulation_time", "shelter_id", "osm_node_id", "x_m", "y_m",
                 "cell_i", "cell_j", "capacity", "flow", "status", "initial_shelter",
-                "deployment_mode", "absorbing_after_terminal",
+                "overrun_time", "overrun_danger_level",
+                "forced_reevacuated_population", "deployment_mode",
+                "absorbing_after_terminal",
+            ),
+        )
+        self._write_rows(
+            hazard_path,
+            (row for snapshot in self.snapshots for row in snapshot.hazards),
+            (
+                "simulation_time", "hazard_id", "source_osm_node_id", "x_m",
+                "y_m", "source_cell_i", "source_cell_j",
+                "absorbing_after_terminal",
             ),
         )
         self._write_rows(
@@ -1012,6 +1104,7 @@ class EvacuationVisualizer:
             ("segment_id", "start_x_m", "start_y_m", "end_x_m", "end_y_m"),
         )
         decision_cell_rows = []
+        decision_hazard_rows = []
         static_strategy = str(self.core.rl.deployment_strategy) in {
             "none",
             "static_greedy",
@@ -1033,6 +1126,15 @@ class EvacuationVisualizer:
                         **cell,
                     }
                 )
+            for hazard in snapshot.hazards:
+                decision_hazard_rows.append(
+                    {
+                        "decision_index": 0 if decision is None else decision["decision_index"],
+                        "selected_cell": -1 if decision is None else decision["selected_cell"],
+                        "candidate_osm_node_id": "" if decision is None else decision["candidate_osm_node_id"],
+                        **hazard,
+                    }
+                )
         self._write_rows(
             decision_cell_path,
             decision_cell_rows,
@@ -1041,6 +1143,16 @@ class EvacuationVisualizer:
                 "candidate_osm_node_id", "cell_index", "cell_i", "cell_j",
                 "x_min_m", "x_max_m", "y_min_m", "y_max_m", "hazard_state",
                 "danger", "active_population", "absorbing_after_terminal",
+            ),
+        )
+        self._write_rows(
+            decision_hazard_path,
+            decision_hazard_rows,
+            (
+                "decision_index", "simulation_time", "selected_cell",
+                "candidate_osm_node_id", "hazard_id", "source_osm_node_id",
+                "source_cell_i", "source_cell_j", "x_m", "y_m",
+                "absorbing_after_terminal",
             ),
         )
         def decision_pedestrian_rows():
@@ -1076,11 +1188,13 @@ class EvacuationVisualizer:
         artifact_paths = [
             pedestrian_path,
             shelter_path,
+            hazard_path,
             cell_path,
             decision_path,
             road_path,
             outcome_path,
             decision_cell_path,
+            decision_hazard_path,
             decision_pedestrian_path,
             *render_paths,
         ]
@@ -1179,7 +1293,7 @@ class EvacuationVisualizer:
                 },
                 "active_pedestrians": {
                     "marker": "red circle",
-                    "unit": "one marker per active pedestrian agent",
+                    "unit": self._active_marker_unit(),
                     "terminated_agents_plotted": False,
                 },
             },

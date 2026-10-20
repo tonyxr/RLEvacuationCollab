@@ -52,14 +52,31 @@ class PopulationCohortTests(unittest.TestCase):
             [4, 4, 1],
         )
 
+    def test_initialization_consumes_variable_initial_node_groups(self):
+        store = PedDS(9, maximum_group_size=4)
+        store.initPedestrianAgent(
+            _MapStub(),
+            _CellStub(),
+            64.0,
+            birth_node_osmids=[1, 1, 2, 2],
+            group_sizes=[4, 1, 3, 1],
+        )
+        self.assertEqual(
+            [agent.group_size for agent in store.pedAgentList.values()],
+            [4, 1, 3, 1],
+        )
+        self.assertEqual(set(store.origin_groups), {1, 2})
+        self.assertEqual(store.initial_agent_count, 4)
+
     def test_population_origin_plan_must_match_represented_agent_count(self):
         store = PedDS(9, maximum_group_size=4)
-        with self.assertRaisesRegex(ValueError, "exactly one node"):
+        with self.assertRaisesRegex(ValueError, "one group size"):
             store.initPedestrianAgent(
                 _MapStub(),
                 _CellStub(),
                 64.0,
                 birth_node_osmids=[1, 2],
+                group_sizes=[4],
             )
 
     def test_partial_cohort_casualties_preserve_survivors(self):

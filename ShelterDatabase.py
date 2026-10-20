@@ -36,6 +36,12 @@ class ShelterDS:
         # capacity token. This separates the location decision from resource
         # quantity and makes RL/heuristic comparisons capacity-fair.
         self.deploymentCapacityToken = None
+        # Integer CA danger level at which an installed shelter permanently
+        # fails for the episode.  Core owns the public configuration and sets
+        # this value before shelters are initialized.
+        self.hazardOverrunDangerLevel = 4
+        self.currentSimulationTime = 0
+        self.hazardOverrunCount = 0
 
     def configuredShelterCapacity(self, node) -> int:
         token = self.deploymentCapacityToken
@@ -288,12 +294,57 @@ class ShelterDS:
                 raise RuntimeError(
                     f"Unavailable shelter {shelter_id} retains reservations"
                 )
+            if int(getattr(shelter, "status", 0)) == Shelter.OVERRUN and flow != 0:
+                raise RuntimeError(
+                    f"Overrun shelter {shelter_id} retains {flow} occupants"
+                )
         missing = set(self.reservationsByShelter) - set(self.shelterList)
         if missing:
             raise RuntimeError("Reservation references a missing shelter")
         total_missing = set(self.reservedPopulationByShelter) - set(self.shelterList)
         if total_missing:
             raise RuntimeError("Reservation total references a missing shelter")
+
+    def assertPopulationMatchedAssignment(
+        self,
+        unassigned_population,
+        required_population,
+        *,
+        network_disruption_active=False,
+        context="Complete shelter budget",
+    ) -> None:
+        """Enforce the final-assignment invariant for matched-capacity runs.
+
+        A complete, operational shelter budget must assign every rational
+        pedestrian.  Nonzero unassigned population is a valid physical
+        outcome only after hazard-overrun damage, an active road-network
+        disruption, or a resulting loss of operational capacity.  Keeping
+        this rule here makes initialization, sequential deployment, and the
+        experiment runner apply the same lifecycle-aware postcondition.
+        """
+        if unassigned_population is None:
+            raise RuntimeError(
+                f"{context} did not record final unassigned rational population"
+            )
+        unassigned = int(unassigned_population)
+        if unassigned <= 0:
+            return
+        required = max(0, int(required_population))
+        operational_capacity = sum(
+            int(getattr(shelter, "shelterCap", 0))
+            for shelter in self.shelterList.values()
+            if int(getattr(shelter, "status", 0)) != Shelter.OVERRUN
+        )
+        lifecycle_disruption = bool(
+            int(getattr(self, "hazardOverrunCount", 0)) > 0
+            or network_disruption_active
+        )
+        if lifecycle_disruption or operational_capacity < required:
+            return
+        raise RuntimeError(
+            f"{context} had sufficient operational network and capacity but "
+            f"left rational pedestrians unassigned: {unassigned}"
+        )
         
     
     def remainingCandidateCount(self) -> int:
@@ -437,22 +488,66 @@ class ShelterDS:
         # Iteratively compare the Euclidean distance between the given (X, Y) and each open shelter's X and Y in the shelter's list (cross-cell evacuation is very possible here), 
         # return the ideal shelter entity. 
             
-    """
-    Simple status update:
-        - If a shelter reaches capacity => status = 1 
-        - (optiona, may develop later) extend with hazard impact to set status = 2
-    """
     def shelterStatusUpdate(self):
+        """Refresh capacity-full status without reopening overrun shelters."""
         for shelter in self.shelterList.values():
             if shelter.shelterFlow >= shelter.shelterCap and getattr(shelter, "status", 0) == 0:
-                shelter.status = 1
-                
-        # Step 1: (if statement): if scenario 1, change shelter status to full (status = 1).
+                shelter.status = Shelter.FULL
         
-        # Step 2: (if statement): if scenario 2, change shelter status to damaged (status = 2). 
-        
-        # Step 3: (Optional) If a shelter becomes unavailable to new pedestrian evacuees, 
-        # it is removed from the available list and added to the closed list (so guidance knows which shelter to direct pedestrians away from).
+    def closeHazardOverrunShelters(self, cellTracker, simulation_time=None):
+        """Permanently close every shelter overrun by the current CA state.
+
+        This is the shelter-side half of one closure transaction: status and
+        reservations are changed here; ``PedDS`` then reactivates the exact
+        resident cohorts and zeros occupancy before validating invariants.
+        """
+        if cellTracker is None:
+            raise ValueError("cellTracker is required for hazard closure")
+        threshold = int(self.hazardOverrunDangerLevel)
+        if threshold < 1 or threshold > 5:
+            raise ValueError("hazardOverrunDangerLevel must be in [1, 5]")
+        now = (
+            int(self.currentSimulationTime)
+            if simulation_time is None
+            else int(simulation_time)
+        )
+        self.currentSimulationTime = now
+        transitions = []
+        for shelter_id, shelter in sorted(self.shelterList.items()):
+            if int(getattr(shelter, "status", Shelter.OPEN)) == Shelter.OVERRUN:
+                continue
+            danger = int(cellTracker.getCellState(shelter.cellLocated))
+            if danger < threshold:
+                continue
+            reservation_ids = tuple(
+                sorted(self.reservationsByShelter.get(int(shelter_id), {}))
+            )
+            released_population = sum(
+                int(self._release_by_id(pedestrian_id))
+                for pedestrian_id in reservation_ids
+            )
+            if shelter.markOverrun(
+                simulation_time=now,
+                danger_level=danger,
+            ):
+                self.hazardOverrunCount += 1
+            transitions.append(
+                (shelter, int(released_population), int(danger))
+            )
+        return tuple(transitions)
+
+    def _fail_new_shelter_if_overrun(self, shelter, cellTracker):
+        """Apply the same physical rule to a site installed in active fire."""
+        danger = int(cellTracker.getCellState(shelter.cellLocated))
+        if danger < int(self.hazardOverrunDangerLevel):
+            return False
+        if shelter.markOverrun(
+            simulation_time=int(self.currentSimulationTime),
+            danger_level=danger,
+        ):
+            self.hazardOverrunCount += 1
+            return True
+        return False
     
     def newShelter(self, action, cellTracker):
         """
@@ -499,6 +594,7 @@ class ShelterDS:
         self.shelterByOSMID[node.OSMID] = sh
         
         self.shelterByCell[ci][cj].append(sh)
+        self._fail_new_shelter_if_overrun(sh, cellTracker)
             
         return sid
         # Step 1: Receive the action package from the RL actor.
@@ -515,7 +611,6 @@ class ShelterDS:
         Candidate identities are stable for the episode.  The cell is supplied
         as an integrity check, not as a second optimization stage.
         """
-        del cellTracker
         if self.shelterCanByCell is None or self.shelterByCell is None:
             return None
         ci, cj = int(cell[0]), int(cell[1])
@@ -545,6 +640,7 @@ class ShelterDS:
         self.shelterList[shelter_id] = shelter
         self.shelterByOSMID[node.OSMID] = shelter
         self.shelterByCell[ci][cj].append(shelter)
+        self._fail_new_shelter_if_overrun(shelter, cellTracker)
         return shelter_id
 
     def _candidate_index(self, cell, cellTracker):

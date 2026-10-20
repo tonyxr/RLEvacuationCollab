@@ -45,7 +45,7 @@ def observation(*, active, danger, remaining_capacity, mask):
 
 
 class BenchmarkPolicyTests(unittest.TestCase):
-    def test_objective_greedy_uses_exact_values_and_feasible_mask(self):
+    def test_objective_greedy_uses_supplied_values_and_feasible_mask(self):
         state = observation(
             active=(10, 8, 1, 1),
             danger=(0, 0, 0, 0),
@@ -244,12 +244,81 @@ class BenchmarkPolicyTests(unittest.TestCase):
             train_mode=False,
             target_active_shelters=2,
         )
-        objective_bridge._objective_greedy_values = lambda _: np.asarray(
+        objective_bridge._public_regional_objective_values = lambda _: np.asarray(
             (0.1, 0.2, 0.9, 0.3), dtype=np.float64
         )
         objective_decision = objective_bridge._select_action(hazard_state)
         self.assertEqual(objective_decision.strategy, "objective_greedy")
         self.assertEqual(objective_decision.action_index, 2)
+
+    def test_public_regional_objective_does_not_call_exact_branch_evaluator(self):
+        state = observation(
+            active=(10, 8, 1, 1),
+            danger=(0.0, 0.2, 0.8, 0.0),
+            remaining_capacity=(0, 0, 0, 0),
+            mask=(True, True, True, False),
+        )
+        state = replace(
+            state,
+            candidate_capacities=np.asarray((5, 5, 1, 0), dtype=np.float32),
+            candidate_forecast_danger=np.asarray(
+                (0.0, 0.3, 0.9, 0.0), dtype=np.float32
+            ),
+            remaining_evacuation_debt_by_cell=np.asarray(
+                (0.04, 0.08, 0.12, 0.0), dtype=np.float32
+            ),
+            slow_tail_time_by_cell=np.asarray(
+                (0.0, 3.0, 4.0, 0.0), dtype=np.float32
+            ),
+        )
+        candidate_grid = [[[], []], [[], []]]
+        candidate_id = 10
+        for i in range(2):
+            for j in range(2):
+                candidate_grid[i][j].append(
+                    SimpleNamespace(
+                        OSMID=candidate_id,
+                        nodeCap=5,
+                        nodeX=float(i),
+                        nodeY=float(j),
+                    )
+                )
+                candidate_id += 1
+        core = SimpleNamespace(
+            cellX=2,
+            cellY=2,
+            maxSpeed=10.0,
+            stopTime=11,
+            clearanceTailExtraWeight=0.25,
+            casualtyPriorityKappa=2.0,
+            address="test",
+            pedDS=SimpleNamespace(
+                pedAgentList={1: SimpleNamespace(group_size=20, terminated=False)},
+                result={"arrival": 0, "evacuated": 0, "casualty": 0},
+            ),
+            shelterDS=SimpleNamespace(
+                shelterList={}, shelterByCell=[[[], []], [[], []]],
+                shelterCanByCell=candidate_grid,
+            ),
+            cellTracker=SimpleNamespace(
+                cellXNum=2,
+                cellYNum=2,
+                xEdges=np.asarray((0.0, 1.0, 2.0)),
+                yEdges=np.asarray((0.0, 1.0, 2.0)),
+            ),
+        )
+        bridge = RLBridge(
+            core,
+            deployment_strategy="objective_greedy",
+            train_mode=False,
+            target_active_shelters=2,
+        )
+        bridge._objective_greedy_values = lambda _: (_ for _ in ()).throw(
+            AssertionError("exact branch evaluator must not be used")
+        )
+        values = bridge._public_regional_objective_values(state)
+        self.assertTrue(np.isfinite(values[:3]).all())
+        self.assertEqual(bridge._select_action(state).action_index, 2)
 
 
 if __name__ == "__main__":

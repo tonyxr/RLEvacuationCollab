@@ -77,6 +77,26 @@ class RolloutPolicyIterationTests(unittest.TestCase):
         target = RPI.estimate_rollout_costs(costs)
         self.assertGreater(target.paired_contrast_standard_error, 0.0)
 
+    def test_common_future_shocks_do_not_change_scores_or_paired_noise(self):
+        action_costs = np.asarray(
+            (
+                (0.20, 0.30, 0.40),
+                (0.22, 0.31, 0.42),
+                (0.19, 0.29, 0.39),
+                (0.21, 0.32, 0.41),
+            ),
+            dtype=np.float64,
+        )
+        common_shock = np.asarray((0.0, 100.0, -50.0, 250.0))[:, None]
+        baseline = RPI.estimate_rollout_costs(action_costs)
+        shifted = RPI.estimate_rollout_costs(action_costs + common_shock)
+        np.testing.assert_allclose(shifted.score, baseline.score, atol=1e-12)
+        self.assertAlmostEqual(
+            shifted.paired_contrast_standard_error,
+            baseline.paired_contrast_standard_error,
+            places=12,
+        )
+
     def test_cost_estimate_preserves_between_state_effect_size(self):
         near_tie = np.asarray(
             ((0.500, 0.501), (0.510, 0.511), (0.490, 0.491)),

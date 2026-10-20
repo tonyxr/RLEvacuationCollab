@@ -2,10 +2,10 @@
 """Pooled multicity learner training and matched, city-stratified backtesting.
 
 One residual policy is trained on a balanced interleaving of city maps. Every
-city uses the identical observation fields, 8x8 regional context graph,
-20-slot exact-candidate action contract, reward equation, and deployment
-budget rule. Held-out scenarios are paired within city and never used for
-training or convergence decisions.
+city uses the identical observation fields, configured n-by-n regional context
+graph, exact-candidate action contract, reward equation, and deployment budget
+rule. Held-out scenarios are paired within city and never used for training or
+convergence decisions.
 """
 
 from __future__ import annotations
@@ -77,6 +77,7 @@ POLICY_DYNAMICS_SOURCES = (
 )
 DYNAMIC_STRATEGIES = (
     "rl",
+    "rl_forecast_ablated",
     "objective_greedy",
     "risk_reduction",
     "route_saving",
@@ -85,9 +86,13 @@ DYNAMIC_STRATEGIES = (
     "accessibility_deficit",
     "random",
     "initial_only",
+    "forecast_greedy",
+    "regime_oracle_greedy",
+    "deadline_greedy",
+    "belief_rollout",
 )
 STATIC_STRATEGIES = ("static_greedy", "rl_precommit")
-LEARNED_STRATEGIES = ("rl", "rl_precommit")
+LEARNED_STRATEGIES = ("rl", "rl_forecast_ablated", "rl_precommit")
 PRIMARY_BENCHMARK_STRATEGY = "objective_greedy"
 
 

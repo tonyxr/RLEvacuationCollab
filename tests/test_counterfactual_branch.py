@@ -15,6 +15,7 @@ it set out to replace.
 """
 
 import unittest
+from unittest import mock
 import subprocess
 import sys
 import time
@@ -25,6 +26,7 @@ import CounterfactualBranch as CB
 import nmcc_testbed
 from CAProcessor import authoritative_grid_shape
 from DecisionInterface import RegionalObservationBuilder
+from HazardDatabase import HazardRegimeConfig, HazardRegimeProcess
 from RewardProcessor import RewardProcessor
 
 
@@ -55,6 +57,297 @@ def brancher_for(core, horizon=5):
 
 
 class SnapshotFidelityTests(unittest.TestCase):
+    def test_parallel_core_accepts_production_transition_horizon(self):
+        core = build_core(population=40, stop_time=12, hazard_count=1)
+        regime = HazardRegimeProcess(
+            HazardRegimeConfig(
+                enabled=True,
+                episode_horizon=int(core.stopTime) - 1,
+            ),
+            np.random.default_rng(73),
+            core.cellTracker,
+            core.mapDS,
+        )
+        core.hazardDS.set_regime(regime)
+        snapshot = CB.capture(core, label="production-regime-horizon")
+
+        portable = CB._portable_branch_core(core, snapshot)
+
+        self.assertEqual(
+            portable.hazardDS.regime.config.episode_horizon,
+            int(portable.stopTime) - 1,
+        )
+
+    def test_hazard_frame_replays_closure_routing_epoch_exactly(self):
+        core = build_core(
+            population=40,
+            stop_time=12,
+            hazard_count=1,
+            shelter_capacity_token=20,
+        )
+        edge_id = int(next(iter(core.mapDS.edgeListByLocalID)))
+        core.mapDS.close_edge(edge_id, until=5)
+        frame = CB._capture_hazard_frame(core)
+        self.assertEqual(frame.routing_version, core.mapDS.routing_version)
+
+        core.mapDS.reopen_edge(edge_id)
+        self.assertGreater(core.mapDS.routing_version, frame.routing_version)
+        CB._apply_hazard_frame(core, frame)
+
+        self.assertEqual(core.mapDS.closed_edges, {edge_id: 5})
+        self.assertEqual(core.mapDS.routing_version, frame.routing_version)
+        # Reapplying the same frame must not manufacture another routing event.
+        CB._apply_hazard_frame(core, frame)
+        self.assertEqual(core.mapDS.routing_version, frame.routing_version)
+
+    def test_closure_reopen_branch_order_restores_exact_routing_epoch(self):
+        core = build_core(
+            population=40,
+            stop_time=12,
+            hazard_count=1,
+            shelter_capacity_token=20,
+        )
+        edge_id = int(next(iter(core.mapDS.edgeListByLocalID)))
+        core.pedDS._last_assignment_routing_version = int(
+            core.mapDS.routing_version
+        )
+        snapshot = CB.capture(core, label="closure-reopen-order")
+
+        def control_branch():
+            CB.restore(core, snapshot)
+            with mock.patch.object(
+                core.pedDS,
+                "_reassign_active_to_nearest_shelters",
+                wraps=core.pedDS._reassign_active_to_nearest_shelters,
+            ) as reassign:
+                core.pedDS.pedestrianNetworkInteraction()
+            return reassign.call_count, CB.live_state_digest(core)
+
+        def closure_branch():
+            CB.restore(core, snapshot)
+            core.mapDS.close_edge(edge_id, until=5)
+            core.pedDS.pedestrianNetworkInteraction()
+            core.mapDS.reopen_edge(edge_id)
+            core.pedDS.pedestrianNetworkInteraction()
+            # Cache entries from this alternate topology must not leak into the
+            # next branch when its snapshot epoch is restored.
+            core.mapDS._shortest_path_osmid_cache["stale"] = object()
+            core.mapDS._distance_to_target_cache["stale"] = object()
+            core.mapDS._routing_tree_to_target_cache["stale"] = object()
+
+        before_count, before_digest = control_branch()
+        closure_branch()
+        self.assertGreater(core.mapDS.routing_version, snapshot.routing_version)
+        after_count, after_digest = control_branch()
+
+        self.assertEqual(before_count, 0)
+        self.assertEqual(after_count, 0)
+        self.assertEqual(after_digest, before_digest)
+        self.assertEqual(core.mapDS.closed_edges, dict(snapshot.closures))
+        self.assertEqual(core.mapDS.routing_version, snapshot.routing_version)
+        self.assertEqual(
+            core.pedDS._last_assignment_routing_version,
+            snapshot.routing_version,
+        )
+        for cache in (
+            core.mapDS._shortest_path_osmid_cache,
+            core.mapDS._distance_to_target_cache,
+            core.mapDS._routing_tree_to_target_cache,
+        ):
+            self.assertNotIn("stale", cache)
+
+    def test_portable_worker_requires_complete_simulation_contract(self):
+        core = build_core(population=40, stop_time=12, hazard_count=1)
+        snapshot = CB.capture(core, label="missing-portable-contract")
+        del core.actionSpace
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "missing simulation-contract attributes: actionSpace",
+        ):
+            CB._portable_branch_core(core, snapshot)
+
+    def test_portable_worker_rejects_cross_store_contract_drift(self):
+        cases = (
+            (
+                "timestep",
+                lambda core, snapshot: setattr(
+                    snapshot.state["pedDS"], "timeStepMinutes", 0.5
+                ),
+            ),
+            (
+                "capacity token",
+                lambda core, snapshot: setattr(
+                    snapshot.state["shelterDS"], "deploymentCapacityToken", 777
+                ),
+            ),
+            (
+                "thresholds disagree",
+                lambda core, snapshot: setattr(
+                    snapshot.state["pedDS"],
+                    "shelter_damage_danger_threshold",
+                    3,
+                ),
+            ),
+            (
+                "object graph is incoherent",
+                lambda core, snapshot: setattr(
+                    snapshot.state["pedDS"], "shelterDS", object()
+                ),
+            ),
+        )
+        for message, mutate in cases:
+            with self.subTest(contract=message):
+                core = build_core(
+                    population=40,
+                    stop_time=12,
+                    hazard_count=1,
+                    shelter_capacity_token=20,
+                )
+                snapshot = CB.capture(core, label=f"drift-{message}")
+                mutate(core, snapshot)
+                with self.assertRaisesRegex(RuntimeError, message):
+                    CB._portable_branch_core(core, snapshot)
+
+    def test_portable_worker_preserves_contract_and_shared_store_identity(self):
+        core = build_core(
+            grid=6,
+            cell_x=3,
+            cell_y=3,
+            population=40,
+            stop_time=12,
+            hazard_count=1,
+            shelter_capacity_token=20,
+        )
+        core.activePersonTimeWeight = 0.5
+        core.hazardExposureTimeWeight = 2.0
+        core.clearanceTailFraction = 0.2
+        core.clearanceTailExtraWeight = 0.25
+        snapshot = CB.capture(core, label="portable-contract")
+        portable = CB._portable_branch_core(core, snapshot)
+
+        self.assertEqual(authoritative_grid_shape(portable), (3, 3))
+        self.assertEqual(portable.shelterCapacityToken, 20)
+        self.assertEqual(portable.shelterDS.deploymentCapacityToken, 20)
+        self.assertEqual(portable.activePersonTimeWeight, 0.5)
+        self.assertEqual(portable.hazardExposureTimeWeight, 2.0)
+        self.assertEqual(portable.clearanceTailFraction, 0.2)
+        self.assertEqual(portable.clearanceTailExtraWeight, 0.25)
+        self.assertIs(portable.pedDS.mapDS, portable.mapDS)
+        self.assertIs(portable.pedDS.cellTracker, portable.cellTracker)
+        self.assertIs(portable.pedDS.hazardDS, portable.hazardDS)
+        self.assertIs(portable.pedDS.shelterDS, portable.shelterDS)
+        self.assertIs(portable.pedDS.forceTracker, portable.forceTracker)
+        self.assertIs(portable.hazardDS.cellTracker, portable.cellTracker)
+
+    def test_live_digest_covers_reward_closure_and_motion_ledgers(self):
+        core = build_core(
+            population=40,
+            stop_time=12,
+            hazard_count=1,
+            shelter_capacity_token=20,
+        )
+
+        def assert_mutation_changes_digest(mutate, restore):
+            before = CB.live_state_digest(core)
+            mutate()
+            self.assertNotEqual(CB.live_state_digest(core), before)
+            restore()
+            self.assertEqual(CB.live_state_digest(core), before)
+
+        assert_mutation_changes_digest(
+            lambda: setattr(core.pedDS, "expectedCasualtyIntensityStep", 0.25),
+            lambda: setattr(core.pedDS, "expectedCasualtyIntensityStep", 0.0),
+        )
+        assert_mutation_changes_digest(
+            lambda: setattr(core.shelterDS, "hazardOverrunCount", 1),
+            lambda: setattr(core.shelterDS, "hazardOverrunCount", 0),
+        )
+        assert_mutation_changes_digest(
+            lambda: setattr(core.shelterDS, "currentSimulationTime", 1),
+            lambda: setattr(core.shelterDS, "currentSimulationTime", 0),
+        )
+        pedestrian = next(iter(core.pedDS.pedAgentList.values()))
+        old_edge_remain = float(pedestrian.edge_remain)
+        assert_mutation_changes_digest(
+            lambda: setattr(pedestrian, "edge_remain", old_edge_remain + 1.0),
+            lambda: setattr(pedestrian, "edge_remain", old_edge_remain),
+        )
+        edge = next(iter(core.mapDS.edgeListByLocalID.values()))
+        old_flow = edge.edgeFlow
+        assert_mutation_changes_digest(
+            lambda: setattr(edge, "edgeFlow", old_flow + 1),
+            lambda: setattr(edge, "edgeFlow", old_flow),
+        )
+        old_heat = float(core.cellTracker.heatByCell[0])
+        assert_mutation_changes_digest(
+            lambda: core.cellTracker.heatByCell.__setitem__(0, old_heat + 1.0),
+            lambda: core.cellTracker.heatByCell.__setitem__(0, old_heat),
+        )
+
+    def test_restore_resets_congestion_bookkeeping_with_edge_flows(self):
+        core = build_core(population=40, stop_time=12, hazard_count=1)
+        CB.advance_one_timestep(core)
+        snapshot = CB.capture(core, label="congestion-state")
+        expected_keys = set(core.congestionModel._last_occupied_keys)
+        expected_flow = np.asarray(snapshot.edge_flow).copy()
+
+        core.congestionModel._last_occupied_keys = {("synthetic-leak",)}
+        for edge in core.mapDS.edgeListByLocalID.values():
+            edge.edgeFlow = 987
+            edge.congestionOccupancy = 654
+        CB.restore(core, snapshot)
+
+        self.assertEqual(core.congestionModel._last_occupied_keys, expected_keys)
+        _node_flow, restored_flow = CB._capture_map_flow(
+            CB._iter_map_nodes(core), CB._iter_map_edges(core)
+        )
+        np.testing.assert_array_equal(restored_flow, expected_flow)
+
+    def test_sheltered_resident_registry_replays_overrun_bitwise(self):
+        core = build_core(
+            population=20,
+            group_size=5,
+            stop_time=20,
+            hazard_count=1,
+            shelter_capacity_token=20,
+        )
+        pedestrian = next(iter(core.pedDS.pedAgentList.values()))
+        shelter, _reserved = core.shelterDS.reservationFor(pedestrian)
+        self.assertIsNotNone(shelter)
+        for active in core.pedDS.pedAgentList.values():
+            core.shelterDS.releaseReservation(active)
+        self.assertEqual(
+            core.shelterDS.reserveShelter(pedestrian, shelter),
+            int(pedestrian.group_size),
+        )
+        pedestrian.routeFollowing = core.mapDS.shortestPath(
+            core.pedDS._route_anchor_node(pedestrian), shelter.nodeMapped
+        )
+        core.pedDS.loadShelterLookup(core.shelterDS.shelterByOSMID)
+        core.pedDS.startDocument()
+        self.assertFalse(core.pedDS.arrive_node(pedestrian, shelter.nodeMapped))
+        core.pedDS.docuStatus()
+        self.assertGreater(core.pedDS.currentShelteredPopulation(), 0)
+
+        core.cellTracker.setCellState(shelter.cellLocated, 4)
+        snapshot = CB.capture(core, label="resident-overrun")
+        before = CB.live_state_digest(core)
+
+        core.pedDS.startDocument()
+        first = core.pedDS.resolveHazardShelterClosures()
+        core.pedDS.docuStatus()
+        first_digest = CB.live_state_digest(core)
+        self.assertGreater(first["reactivated_population"], 0)
+        self.assertEqual(shelter.status, 2)
+
+        CB.restore(core, snapshot)
+        self.assertEqual(CB.live_state_digest(core), before)
+        core.pedDS.startDocument()
+        second = core.pedDS.resolveHazardShelterClosures()
+        core.pedDS.docuStatus()
+        self.assertEqual(second, first)
+        self.assertEqual(CB.live_state_digest(core), first_digest)
+
     def test_worker_protocol_read_has_a_bounded_deadline(self):
         process = subprocess.Popen(
             (sys.executable, "-c", "import time; time.sleep(5)"),
@@ -95,6 +388,31 @@ class SnapshotFidelityTests(unittest.TestCase):
         )
         self.assertEqual(len(costs), 4)
         self.assertAlmostEqual(costs[0], costs[1], places=12)
+        self.assertTrue(np.isfinite(costs).all())
+        self.assertTrue(all(cost > 0.0 for cost in costs))
+        self.assertEqual(CB.live_state_digest(core), digest)
+
+    def test_uniform_reference_treats_defer_as_timing_not_cell_zero(self):
+        core = build_core(
+            population=40,
+            stop_time=12,
+            hazard_count=1,
+            candidate_count=20,
+            shelter_capacity_token=20,
+        )
+        core.actionSpace = "region_defer"
+        core.shelterActionInterval = 3
+        runner = brancher_for(core, horizon=3)
+        snapshot = CB.capture(core, label="uniform-reference-defer-test")
+        digest = CB.live_state_digest(core)
+        costs = runner.random_policy_costs(
+            snapshot=snapshot,
+            future_seeds=tuple(range(16)),
+            decision_index=0,
+            remaining_deployments=2,
+            maximum_deployments=2,
+        )
+        self.assertEqual(len(costs), 16)
         self.assertTrue(np.isfinite(costs).all())
         self.assertTrue(all(cost > 0.0 for cost in costs))
         self.assertEqual(CB.live_state_digest(core), digest)
@@ -205,6 +523,16 @@ class SnapshotFidelityTests(unittest.TestCase):
 
     def test_parallel_multi_future_tables_equal_serial_tables_exactly(self):
         core = build_core(population=160)
+        # Spawned workers must receive the exact declared objective.  These
+        # deliberately non-default values would expose a silent 1/1/zero-tail
+        # fallback in the portable branch core.
+        core.activePersonTimeWeight = 0.5
+        core.hazardExposureTimeWeight = 2.0
+        core.clearanceTailFraction = 0.2
+        core.clearanceTailExtraWeight = 0.25
+        core.shelterOverrunDangerLevel = 3
+        core.pedDS.shelter_damage_danger_threshold = 3
+        core.shelterDS.hazardOverrunDangerLevel = 3
         for _ in range(6):
             CB.advance_one_timestep(core)
         before = CB.live_state_digest(core)
@@ -267,6 +595,11 @@ class SnapshotFidelityTests(unittest.TestCase):
                 self.assertAlmostEqual(
                     serial_effect.reward_difference,
                     parallel_effect.reward_difference,
+                    places=12,
+                )
+                self.assertAlmostEqual(
+                    serial_effect.acted.hazard_weighted_time_to_safety_cost,
+                    parallel_effect.acted.hazard_weighted_time_to_safety_cost,
                     places=12,
                 )
                 np.testing.assert_array_equal(
@@ -638,6 +971,10 @@ class CausalSignalTests(unittest.TestCase):
             panic_rate=1.0,
             casualty_rate=(100, 0),
         )
+        # This test isolates casualty-ledger wiring, not the production
+        # 6/15/30/50-minute severity calibration. Use an explicit accelerated
+        # source-local profile so a short synthetic branch contains exposure.
+        core.hazardDS.severity_transition_minutes = (1.0, 2.0, 3.0, 4.0)
         for _ in range(8):
             CB.advance_one_timestep(core)
         runner = brancher_for(core, horizon=6)

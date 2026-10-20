@@ -172,22 +172,37 @@ def sample_population_origins(
     if maximum_group_size <= 0:
         raise ValueError("maximum_group_size must be positive")
 
+    rng = np.random.default_rng(int(seed) & ((1 << 64) - 1))
+    # One represented cohort is anchored at one sampled initial road node.
+    # This is the declared scalable approximation: every physical quantity is
+    # person-weighted, while the simulator reviews at most ceil(P / group_size)
+    # moving objects.  Individual mode (size one) remains bit-for-bit the same
+    # construction with one sampled origin per person.
     group_sizes = []
     remaining = total_population
     while remaining > 0:
         size = min(maximum_group_size, remaining)
         group_sizes.append(int(size))
         remaining -= size
-    rng = np.random.default_rng(int(seed) & ((1 << 64) - 1))
-    origin_indices = rng.integers(0, node_count, size=len(group_sizes), endpoint=False)
+    origin_indices = rng.integers(
+        0,
+        node_count,
+        size=len(group_sizes),
+        endpoint=False,
+    )
     node_population = np.zeros(node_count, dtype=float)
-    np.add.at(node_population, origin_indices, np.asarray(group_sizes, dtype=float))
+    np.add.at(
+        node_population,
+        origin_indices,
+        np.asarray(group_sizes, dtype=float),
+    )
     if int(round(float(node_population.sum()))) != total_population:
         raise RuntimeError("Population-origin plan does not conserve represented people")
     return {
         "origin_indices": [int(index) for index in origin_indices],
         "group_sizes": group_sizes,
         "node_population": node_population,
+        "grouping": "bounded_initial_node_cohorts",
     }
 
 

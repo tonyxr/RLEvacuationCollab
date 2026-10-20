@@ -295,9 +295,28 @@ class PanicBehaviorTests(unittest.TestCase):
         self.assertIs(chosen, edge_right)
         self.assertEqual(store._step["panic_herd_choices"], 1)
 
-    def test_nonzero_panic_rejects_cohort_approximation(self):
-        with self.assertRaisesRegex(ValueError, "individual pedestrians"):
-            PedDS(10, maximum_group_size=5).configure_panic(rate=0.1)
+    def test_cohort_panic_splits_origin_group_and_conserves_population(self):
+        node = SimpleNamespace(OSMID=11)
+        store = PedDS(10, maximum_group_size=10)
+        store.cellTracker = _CellTracker(state=3)
+        store.configure_panic(rate=0.5, random_seed=7)
+        pedestrian = self._pedestrian(node)
+        pedestrian.group_size = 10
+        pedestrian.origin_node_osmid = 11
+        store.pedAgentList[0] = pedestrian
+        store.origin_groups[11].add(0)
+        store._next_agent_id = 1
+        with mock.patch.object(store, "_panic_susceptible_count", return_value=4):
+            self.assertEqual(store.updatePanicStates(), 4)
+        cohorts = list(store.pedAgentList.values())
+        self.assertEqual(sum(item.group_size for item in cohorts), 10)
+        self.assertEqual(
+            sorted((item.panicked, item.group_size) for item in cohorts),
+            [(False, 6), (True, 4)],
+        )
+        self.assertEqual(store._step["panic_eligible_first_exposure"], 10)
+        self.assertEqual(store._step["panic_onset"], 4)
+        self.assertEqual(len(store.origin_groups[11]), 2)
 
 
 class IntersectionConsolidationTests(unittest.TestCase):

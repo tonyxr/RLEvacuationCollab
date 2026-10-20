@@ -180,8 +180,11 @@ class RewardProcessor:
 
         new_safe = int(action_after.safe_completed - start.safe_completed)
         new_casualties = int(action_after.casualties - start.casualties)
-        if new_safe < 0 or new_casualties < 0:
-            raise ValueError("Cumulative population outcomes must be monotone")
+        # Safe completion is a stock once shelters can be overrun: residents
+        # legitimately return to the active population and the diagnostic may
+        # be negative.  Casualties remain an absorbing cumulative outcome.
+        if new_casualties < 0:
+            raise ValueError("Cumulative casualties must be monotone")
 
         return RewardBreakdown(
             total=float(total),

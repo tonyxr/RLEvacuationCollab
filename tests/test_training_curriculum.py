@@ -16,6 +16,21 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class TrainingCurriculumTests(unittest.TestCase):
+    def test_v62_overrun_resilient_capacity_survives_one_site_loss(self):
+        curriculum = load_training_curriculum(
+            ROOT
+            / "config"
+            / "state_college_spokane_regime_v62_overrun_resilient_2500_full.json"
+        )
+        self.assertEqual(curriculum.learner_overrides["shelterFailureReserveCount"], 1)
+        self.assertEqual(curriculum.learner_overrides["shelterCapacitySurplus"], 500)
+        for stage in curriculum.stages:
+            variant = stage.variants[0].overrides
+            planned = variant["initShelterVol"] + variant["maxAdditionalShelters"]
+            token = variant["shelterCapacityToken"]
+            self.assertEqual(planned * token, variant["pedVol"] + 500)
+            self.assertGreaterEqual((planned - 1) * token, variant["pedVol"])
+
     def test_v51_rollout_curricula_use_one_policy_iteration_stage(self):
         for filename, episodes, rollout, branches, tapes in (
             ("state_college_training_smoke_250_rollout_pi_v51.json", 4, 2, 4, 1),

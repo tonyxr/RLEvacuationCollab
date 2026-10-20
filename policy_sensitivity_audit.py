@@ -93,7 +93,7 @@ def load_policy(path: str | Path) -> tuple[EvacPolicy, Mapping]:
         actor_prior=str(actor_prior.get("kind", "none")),
         actor_prior_scale=float(actor_prior.get("scale", 0.0)),
         actor_prior_feature_index=(
-            CANDIDATE_FEATURE_NAMES.index("exact_assignment_gain_fraction")
+            CANDIDATE_FEATURE_NAMES.index("public_regional_objective_score")
             if str(actor_prior.get("kind", "none")) == "objective_greedy"
             else 0
         ),

@@ -11,11 +11,11 @@ import torch
 
 import CounterfactualBranch as CB
 import nmcc_testbed
-from RLBridge import RLBridge
+from RLBridge import MODEL_VERSION, RLBridge
 
 
 class DirectRLNMCCTests(unittest.TestCase):
-    def test_objective_greedy_uses_exact_immediate_nmcc_objective_without_mutation(self):
+    def test_actor_prior_uses_exact_immediate_nmcc_objective_without_mutation(self):
         core = nmcc_testbed.build(
             grid=7,
             cell_x=3,
@@ -46,7 +46,6 @@ class DirectRLNMCCTests(unittest.TestCase):
         )
         digest_before = CB.live_state_digest(core)
         values = bridge._objective_greedy_values(observation)
-        decision = bridge._select_action(observation)
         digest_after = CB.live_state_digest(core)
         feasible = np.flatnonzero(observation.action_mask)
         effects = bridge._objective_greedy_brancher.candidate_effects(
@@ -68,10 +67,9 @@ class DirectRLNMCCTests(unittest.TestCase):
         self.assertTrue(np.isfinite(values[feasible]).all())
         np.testing.assert_allclose(values[feasible], expected)
         self.assertTrue(np.all((values[feasible] > 0.0) & (values[feasible] <= 1.0)))
-        self.assertEqual(
-            decision.action_index,
-            int(feasible[int(np.argmax(values[feasible]))]),
-        )
+        # These exact same-state values are an RL input/prior.  The deployable
+        # objective-greedy benchmark deliberately uses only public regional
+        # summaries, so its selected action need not maximize this vector.
 
     def test_objective_greedy_complete_ledger_keeps_panicked_debt(self):
         core = nmcc_testbed.build(
@@ -304,7 +302,7 @@ class DirectRLNMCCTests(unittest.TestCase):
             self.assertEqual(result["rollout_pi_actor_replay_episodes"], 1.0)
             self.assertEqual(result["rollout_pi_actor_replay_transitions"], 2.0)
             self.assertEqual(result["sequence_episodes"], 1.0)
-            self.assertEqual(payload["model_signature"]["version"], 57)
+            self.assertEqual(payload["model_signature"]["version"], MODEL_VERSION)
             self.assertEqual(
                 payload["model_signature"]["residual_correction"],
                 "unbounded_linear_actor_readout",
@@ -321,7 +319,7 @@ class DirectRLNMCCTests(unittest.TestCase):
             self.assertNotIn("approximate_kl", header)
             self.assertNotIn("value_loss", header)
 
-    def test_rollout_policy_target_does_not_self_grade_with_critic(self):
+    def test_rollout_policy_target_is_simulator_graded_while_critic_trains(self):
         core = nmcc_testbed.build(
             grid=7,
             cell_x=3,
@@ -386,13 +384,14 @@ class DirectRLNMCCTests(unittest.TestCase):
             )
             self.assertNotIn("nmcc_pi_continuation_loss", result)
             self.assertTrue(
-                all(
-                    torch.equal(critic_before[name], parameter.detach())
+                any(
+                    not torch.equal(critic_before[name], parameter.detach())
                     for name, parameter in bridge.policy.named_parameters()
                     if name in critic_before
                 )
             )
-            self.assertEqual(result["critic_gradient_steps"], 0.0)
+            self.assertGreater(result["critic_gradient_steps"], 0.0)
+            self.assertEqual(result["rollout_pi_target_coverage"], 1.0)
 
     def test_forward_nmcc_requires_exactly_one_decision_interval(self):
         core = nmcc_testbed.build(

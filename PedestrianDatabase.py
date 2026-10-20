@@ -8,6 +8,7 @@
 
 import numpy as np
 import math
+import copy
 from Pedestrian import Pedestrian
 from SocialForce import ForceProcessor
 from collections import defaultdict
@@ -65,6 +66,9 @@ class PedDS:
             panic_onset=0,
             panic_herd_choices=0,
             panic_random_choices=0,
+            shelter_admissions=0,
+            forced_reevacuated=0,
+            shelter_closures=0,
         )
         self.result = dict(self._step)
         self.evacuationTimeSum = 0.0
@@ -77,11 +81,25 @@ class PedDS:
         self.safeCompletionTimeHistogram = defaultdict(int)
         self.travelDistanceByOutcome = defaultdict(float)
         self.travelPopulationByOutcome = defaultdict(int)
+        # Shelter safety is not absorbing: an overrun site releases its
+        # residents back into the active simulation.  Preserve each admitted
+        # cohort (including partial group admissions) so this transition is
+        # identity- and mass-conserving rather than reconstructing people from
+        # an aggregate shelter-flow counter.
+        self.shelteredOccupants = defaultdict(dict)
+        self.cumulativeShelterAdmissions = 0
+        self.cumulativeForcedReevacuated = 0
+        self.shelter_damage_danger_threshold = 4
         
         self.shelter_osmid_map = None
         
         self.groups = defaultdict(set)
+        self.origin_groups = defaultdict(set)
+        self.initial_agent_count = 0
+        self._next_agent_id = 0
         self._route_distance_cache = {}
+        self._route_distance_cache_version = -1
+        self._last_assignment_routing_version = -1
         self.hazard_random_seed = 0
         self.panic_random_seed = 0
         self.panic_rate = 0.0
@@ -164,10 +182,6 @@ class PedDS:
             raise ValueError("panic herd probability must be finite and in [0, 1]")
         if not 0 <= danger_threshold <= 5:
             raise ValueError("panic danger threshold must lie in [0, 5]")
-        if rate > 0.0 and self.maximum_group_size != 1:
-            raise ValueError(
-                "panic behavior requires individual pedestrians (maximum_group_size=1)"
-            )
         self.panic_rate = rate
         self.panic_herd_probability = herd_probability
         self.panic_danger_threshold = danger_threshold
@@ -183,8 +197,67 @@ class PedDS:
             "herd_choice_probability": self.panic_herd_probability,
             "random_choice_probability": 1.0 - self.panic_herd_probability,
             "herd_rule": "incident physical edge with greatest frozen active occupancy",
-            "population_representation": "individual_required_when_rate_positive",
+            "population_representation": (
+                "bounded_initial_node_cohorts"
+                if self.maximum_group_size > 1
+                else "individual"
+            ),
+            "cohort_panic_handling": (
+                "exact_binomial_split_at_first_qualifying_exposure"
+                if self.maximum_group_size > 1
+                else "individual_fixed_susceptibility"
+            ),
         }
+
+    def _panic_susceptible_count(self, pedestrian_id: int, population: int) -> int:
+        """Draw the fixed susceptible mass of one represented cohort.
+
+        The keyed binomial draw is invariant to policy iteration order and is
+        evaluated only at first qualifying exposure.  Partial cohorts are then
+        split, allowing rational and panicked people from one origin to evolve
+        separately without returning to person-by-person simulation.
+        """
+        population = max(1, int(population))
+        if population == 1:
+            return int(
+                self._panic_susceptibility_uniform(pedestrian_id)
+                < self.panic_rate
+            )
+        mask = (1 << 64) - 1
+        seed = int(self.panic_random_seed) & mask
+        seed ^= (0xA24BAED4963EE407 * (int(pedestrian_id) + 1)) & mask
+        rng = np.random.default_rng(seed)
+        return int(rng.binomial(population, self.panic_rate))
+
+    def _split_panicked_subcohort(self, pedestrian, panicked_population: int):
+        """Split one exposed cohort while preserving its physical state."""
+        total = max(1, int(getattr(pedestrian, "group_size", 1)))
+        panicked_population = int(panicked_population)
+        if not 0 < panicked_population < total:
+            raise ValueError("A partial panic split must divide the cohort")
+        pedestrian.group_size = int(total - panicked_population)
+        pedestrian.panic_eligibility_evaluated = True
+
+        panicked = copy.copy(pedestrian)
+        next_id = int(self._next_agent_id)
+        while next_id in self.pedAgentList:
+            next_id += 1
+        panicked.agentID = next_id
+        self._next_agent_id = next_id + 1
+        panicked.group_id = int(panicked.agentID) + 1
+        panicked.group_size = int(panicked_population)
+        panicked.panicked = True
+        panicked.panic_onset_time = int(self.currTime)
+        panicked.panic_eligibility_evaluated = True
+        panicked.routeFollowing = None
+        panicked.panic_next_edge = None
+
+        self.pedAgentList[int(panicked.agentID)] = panicked
+        self.groups[int(panicked.group_id)].add(int(panicked.agentID))
+        origin = getattr(panicked, "origin_node_osmid", None)
+        if origin is not None:
+            self.origin_groups[int(origin)].add(int(panicked.agentID))
+        return panicked
 
     def _panic_uniform(self, pedestrian_id: int, counter: int, channel: int) -> float:
         """Counter-based U(0,1) draw invariant to policy iteration order."""
@@ -290,6 +363,10 @@ class PedDS:
         dst = int(getattr(end_node, "OSMID", -2))
         if src == dst:
             return 0.0
+        routing_version = int(getattr(self.mapDS, "routing_version", 0))
+        if routing_version != int(self._route_distance_cache_version):
+            self._route_distance_cache.clear()
+            self._route_distance_cache_version = routing_version
         key = (src, dst)
         if key in self._route_distance_cache:
             return float(self._route_distance_cache[key])
@@ -409,15 +486,18 @@ class PedDS:
         capacity commitment untouched. Capacity released by a genuine
         improvement can be reused in a later allocation pass.
 
-        Pedestrians who still cannot obtain capacity retain their existing
-        provisional route, or receive one shortest path to the nearest
-        operational shelter. If no operational shelter exists, invalid
-        reservations are released and existing provisional movement is left
-        unchanged until a shelter becomes available. Provisional movement is
-        never treated as shelter access by the reward estimator.
+        Pedestrians who still cannot obtain capacity receive one shortest path
+        to a reachable operational shelter when possible. If none exists,
+        reservations and any route aimed at a failed shelter are cleared; the
+        cohort remains active and is retried after a routing-version change or
+        a later deployment. Uncommitted movement is never treated as shelter
+        access by the reward estimator.
         """
         if self.mapDS is None or self.shelterDS is None:
             raise RuntimeError("Pedestrian, map, and shelter databases must be connected first")
+        self._last_assignment_routing_version = int(
+            getattr(self.mapDS, "routing_version", 0)
+        )
         active = sorted(
             (
                 pedestrian
@@ -440,23 +520,37 @@ class PedDS:
             key=lambda shelter: int(shelter.shelterID),
         )
         if new_shelter is not None and new_shelter not in shelters:
-            raise ValueError("new_shelter must be an operational installed shelter")
+            # A site installed into an already-overrun cell consumes the
+            # deployment token but is immediately unavailable.  Treat it as a
+            # physically bad action, not as an invalid simulator call.
+            new_shelter = None
 
         self.shelterDS.reconcileReservations(self.pedAgentList.values())
         if not shelters:
+            for pedestrian in active:
+                route = getattr(pedestrian, "routeFollowing", None)
+                target = getattr(route, "endNode", None) if route is not None else None
+                target_shelter = self.shelterDS.shelterByOSMID.get(
+                    getattr(target, "OSMID", None)
+                )
+                if target_shelter is not None:
+                    pedestrian.routeFollowing = None
             self.shelterDS.assertCapacityInvariant()
             return 0, 0
 
         self._route_distance_cache = {}
+        self._route_distance_cache_version = int(
+            getattr(self.mapDS, "routing_version", 0)
+        )
         anchors = {}
         distances = {}
         for pedestrian in active:
             pedestrian_id = int(pedestrian.agentID)
             anchor = self._route_anchor_node(pedestrian)
             if anchor is None:
-                raise RuntimeError(
-                    f"Active pedestrian {pedestrian.agentID} has no routing anchor"
-                )
+                self.shelterDS.releaseReservation(pedestrian)
+                pedestrian.routeFollowing = None
+                continue
             anchors[pedestrian_id] = anchor
             reachable = False
             for shelter in shelters:
@@ -467,9 +561,11 @@ class PedDS:
                     )
                     reachable = True
             if not reachable:
-                raise RuntimeError(
-                    f"Active pedestrian {pedestrian.agentID} cannot reach an operational shelter"
-                )
+                # Hazard/road closures can temporarily isolate a cohort.  It
+                # remains active and is retried on a later transition rather
+                # than turning a physical shortage into a runtime failure.
+                self.shelterDS.releaseReservation(pedestrian)
+                pedestrian.routeFollowing = None
 
         changed_population = 0
         # Each pass may expose capacity at an old shelter after a strictly
@@ -479,6 +575,8 @@ class PedDS:
             proposals = []
             for pedestrian in active:
                 pedestrian_id = int(pedestrian.agentID)
+                if pedestrian_id not in anchors:
+                    continue
                 population = max(1, int(getattr(pedestrian, "group_size", 1)))
                 current_shelter, reserved = self.shelterDS.reservationFor(
                     pedestrian
@@ -587,25 +685,49 @@ class PedDS:
         # provisional shortest path so every rational active pedestrian moves.
         for pedestrian in active:
             pedestrian_id = int(pedestrian.agentID)
+            if pedestrian_id not in anchors:
+                self.shelterDS.releaseReservation(pedestrian)
+                pedestrian.routeFollowing = None
+                continue
             reserved_shelter, reserved = self.shelterDS.reservationFor(pedestrian)
             population = max(1, int(getattr(pedestrian, "group_size", 1)))
             route = getattr(pedestrian, "routeFollowing", None)
             route_target = getattr(route, "endNode", None) if route is not None else None
             route_target_osmid = getattr(route_target, "OSMID", None)
-            if reserved_shelter is not None and int(reserved) >= population:
+            if (
+                reserved_shelter is not None
+                and int(reserved) >= population
+                and (
+                    pedestrian_id,
+                    int(reserved_shelter.shelterID),
+                ) in distances
+            ):
                 destination = reserved_shelter
             else:
+                if reserved_shelter is not None:
+                    self.shelterDS.releaseReservation(pedestrian)
                 operational_targets = {
                     getattr(shelter.nodeMapped, "OSMID", None) for shelter in shelters
                 }
-                if route_target_osmid in operational_targets:
+                reachable_destinations = tuple(
+                    shelter
+                    for shelter in shelters
+                    if (pedestrian_id, int(shelter.shelterID)) in distances
+                )
+                if (
+                    route_target_osmid in operational_targets
+                    and any(
+                        getattr(shelter.nodeMapped, "OSMID", None)
+                        == route_target_osmid
+                        for shelter in reachable_destinations
+                    )
+                ):
+                    continue
+                if not reachable_destinations:
+                    pedestrian.routeFollowing = None
                     continue
                 destination = min(
-                    (
-                        shelter
-                        for shelter in shelters
-                        if (pedestrian_id, int(shelter.shelterID)) in distances
-                    ),
+                    reachable_destinations,
                     key=lambda shelter: (
                         distances[pedestrian_id, int(shelter.shelterID)],
                         int(shelter.shelterID),
@@ -703,11 +825,19 @@ class PedDS:
         route = getattr(ped, "routeFollowing", None)
         target = getattr(route, "endNode", None) if route is not None else None
         if target is None:
-            return False
+            next_sh = self._closest_open_shelter_from_ped(ped)
+            return bool(
+                next_sh is not None
+                and self._reroute_pedestrian_to_shelter(ped, next_sh)
+            )
 
         target_sh = self.shelterDS.shelterByOSMID.get(getattr(target, "OSMID", None))
         if target_sh is None:
-            return False
+            next_sh = self._closest_open_shelter_from_ped(ped)
+            return bool(
+                next_sh is not None
+                and self._reroute_pedestrian_to_shelter(ped, next_sh)
+            )
         assigned_shelter, assigned_population = self.shelterDS.reservationFor(ped)
         if assigned_shelter is target_sh and int(assigned_population) > 0:
             return False
@@ -774,6 +904,9 @@ class PedDS:
                     "panic_onset",
                     "panic_herd_choices",
                     "panic_random_choices",
+                    "shelter_admissions",
+                    "forced_reevacuated",
+                    "shelter_closures",
                 )
             }
             self.expectedCasualtyIntensityStep = 0.0
@@ -827,22 +960,33 @@ class PedDS:
                 getattr(ped, "panicked", False)
             ) or bool(getattr(ped, "panic_eligibility_evaluated", False)):
                 continue
-            if int(getattr(ped, "group_size", 1)) != 1:
-                raise RuntimeError("panic onset encountered a non-individual pedestrian")
             danger = int(self.cellTracker.getCellState(ped.currCell))
             if danger < self.panic_danger_threshold:
                 continue
+            population = max(1, int(getattr(ped, "group_size", 1)))
             ped.panic_eligibility_evaluated = True
-            self.bump("panic_eligible_first_exposure", 1)
-            if self._panic_susceptibility_uniform(ped.agentID) < self.panic_rate:
+            self.bump("panic_eligible_first_exposure", population)
+            susceptible = self._panic_susceptible_count(
+                int(ped.agentID), population
+            )
+            if susceptible <= 0:
+                continue
+            if susceptible < population:
+                panicked = self._split_panicked_subcohort(ped, susceptible)
+                if self.shelterDS is not None:
+                    # Reconcile below clamps the rational cohort's reservation
+                    # to its reduced size.  The new panicked cohort never
+                    # inherits that reservation.
+                    self.shelterDS.releaseReservation(panicked)
+            else:
                 ped.panicked = True
                 ped.panic_onset_time = int(self.currTime)
                 ped.routeFollowing = None
                 ped.panic_next_edge = None
                 if self.shelterDS is not None:
                     self.shelterDS.releaseReservation(ped)
-                self.bump("panic_onset", 1)
-                onsets += 1
+            self.bump("panic_onset", susceptible)
+            onsets += susceptible
         return onsets
 
     def active_panicked_count(self) -> int:
@@ -923,6 +1067,230 @@ class PedDS:
     """Load the active shelter lookup used for node-arrival admission."""
     def loadShelterLookup(self, shByOSMID):
         self.shelter_osmid_map = shByOSMID
+
+    def currentShelteredPopulation(self) -> int:
+        """Population currently safe in shelters that have not failed."""
+        return int(sum(
+            int(record["population"])
+            for residents in self.shelteredOccupants.values()
+            for record in residents.values()
+        ))
+
+    def shelteredPedestrianIDs(self) -> set[int]:
+        return {
+            int(pedestrian_id)
+            for residents in self.shelteredOccupants.values()
+            for pedestrian_id in residents
+        }
+
+    def _allocate_sheltered_agent_id(self) -> int:
+        occupied = set(int(key) for key in self.pedAgentList)
+        occupied.update(self.shelteredPedestrianIDs())
+        candidate = int(self._next_agent_id)
+        while candidate in occupied:
+            candidate += 1
+        self._next_agent_id = candidate + 1
+        return candidate
+
+    def _register_shelter_occupant(
+        self,
+        ped,
+        shelter,
+        population,
+        *,
+        split_from_active=False,
+    ):
+        """Archive the exact cohort state represented by one admission."""
+        population = int(population)
+        if population <= 0:
+            raise ValueError("Shelter occupant population must be positive")
+        if split_from_active:
+            occupant = copy.copy(ped)
+            occupant.agentID = self._allocate_sheltered_agent_id()
+            occupant.group_id = int(occupant.agentID) + 1
+            occupant.group_size = population
+            self.groups[int(occupant.group_id)].add(int(occupant.agentID))
+            origin = getattr(occupant, "origin_node_osmid", None)
+            if origin is not None:
+                self.origin_groups[int(origin)].add(int(occupant.agentID))
+        else:
+            occupant = ped
+            if int(getattr(occupant, "group_size", 1)) != population:
+                raise RuntimeError("Full shelter admission changed cohort mass")
+        shelter_id = int(shelter.shelterID)
+        pedestrian_id = int(occupant.agentID)
+        residents = self.shelteredOccupants[shelter_id]
+        if pedestrian_id in residents:
+            raise RuntimeError("Pedestrian is already registered in a shelter")
+        event_time = float(self.currTime + 1) * float(self.timeStepMinutes)
+        residents[pedestrian_id] = {
+            "pedestrian": occupant,
+            "population": population,
+            "admission_time": event_time,
+            "distance_at_admission": float(
+                getattr(occupant, "distance_travelled_m", 0.0)
+            ),
+        }
+        self.cumulativeShelterAdmissions += population
+        self.bump("shelter_admissions", population)
+        return occupant
+
+    def _reverse_shelter_completion(self, record) -> None:
+        """Remove one no-longer-valid shelter completion from every ledger."""
+        population = int(record["population"])
+        event_time = float(record["admission_time"])
+        distance = float(record["distance_at_admission"])
+        self.bump("evacuated", -population)
+        self.evacuationTimeSum -= event_time * population
+        self.evacuationCount -= population
+        self.safeCompletionTimeSum -= event_time * population
+        self.safeCompletionCount -= population
+        remaining = int(self.safeCompletionTimeHistogram.get(event_time, 0)) - population
+        if remaining > 0:
+            self.safeCompletionTimeHistogram[event_time] = remaining
+        else:
+            self.safeCompletionTimeHistogram.pop(event_time, None)
+        self.travelDistanceByOutcome["Evacuated"] -= distance * population
+        self.travelPopulationByOutcome["Evacuated"] -= population
+        for name, value in (
+            ("evacuationCount", self.evacuationCount),
+            ("safeCompletionCount", self.safeCompletionCount),
+            (
+                "travelPopulationByOutcome['Evacuated']",
+                self.travelPopulationByOutcome["Evacuated"],
+            ),
+        ):
+            if int(value) < 0:
+                raise RuntimeError(f"Shelter closure made {name} negative")
+        if abs(self.evacuationTimeSum) < 1e-9:
+            self.evacuationTimeSum = 0.0
+        if abs(self.safeCompletionTimeSum) < 1e-9:
+            self.safeCompletionTimeSum = 0.0
+        if abs(self.travelDistanceByOutcome["Evacuated"]) < 1e-9:
+            self.travelDistanceByOutcome["Evacuated"] = 0.0
+
+    def _reactivate_shelter_occupant(self, shelter, record):
+        pedestrian = record["pedestrian"]
+        pedestrian_id = int(pedestrian.agentID)
+        if pedestrian_id in self.pedAgentList:
+            raise RuntimeError("Shelter closure would duplicate an active pedestrian")
+        pedestrian.group_size = int(record["population"])
+        pedestrian.terminated = False
+        pedestrian.evacuated = False
+        pedestrian.arrival = False
+        pedestrian.casualty = False
+        pedestrian.unfinished = False
+        pedestrian.currNode = shelter.nodeMapped
+        pedestrian.currEdge = None
+        pedestrian.currCell = tuple(shelter.cellLocated)
+        pedestrian.atNode = True
+        pedestrian.lastX = float(shelter.nodeMapped.nodeX)
+        pedestrian.lastY = float(shelter.nodeMapped.nodeY)
+        pedestrian.routeFollowing = None
+        pedestrian.edge_remain = 0.0
+        pedestrian.edge_vec = None
+        pedestrian.edge_dest_node = None
+        pedestrian.edge_dest_mode = None
+        pedestrian.panic_next_edge = None
+        pedestrian.currSpeed = float(self.maxSpeed or 0.0)
+        pedestrian.desired_speed = float(self.maxSpeed or 0.0)
+        pedestrian.speed_danger_level = None
+        self.pedAgentList[pedestrian_id] = pedestrian
+        self.groups[int(getattr(pedestrian, "group_id", pedestrian_id))].add(
+            pedestrian_id
+        )
+        origin = getattr(pedestrian, "origin_node_osmid", None)
+        if origin is not None:
+            self.origin_groups[int(origin)].add(pedestrian_id)
+        return pedestrian
+
+    def assertShelterOccupancyInvariant(self) -> None:
+        """Cross-check resident identity, flow, and active-population disjointness."""
+        active_ids = set(int(key) for key in self.pedAgentList)
+        resident_ids = self.shelteredPedestrianIDs()
+        if active_ids & resident_ids:
+            raise RuntimeError("A pedestrian cannot be active and sheltered")
+        for shelter_id, shelter in self.shelterDS.shelterList.items():
+            residents = self.shelteredOccupants.get(int(shelter_id), {})
+            resident_population = sum(
+                int(record["population"]) for record in residents.values()
+            )
+            if resident_population != int(shelter.shelterFlow):
+                raise RuntimeError(
+                    f"Shelter {shelter_id} flow disagrees with resident registry: "
+                    f"{shelter.shelterFlow} != {resident_population}"
+                )
+            if int(getattr(shelter, "status", 0)) == 2 and resident_population:
+                raise RuntimeError("An overrun shelter retains residents")
+
+    def resolveHazardShelterClosures(self, *, simulation_time=None):
+        """Close overrun shelters, reactivate residents, and reroute atomically.
+
+        ``simulation_time`` is the boundary reached by the hazard transition
+        that triggered this check.  Callers advancing a transition must pass
+        that boundary explicitly; the default retains the current-boundary
+        semantics needed by direct state edits and initialization.
+        """
+        if self.shelterDS is None or self.cellTracker is None:
+            return {
+                "closed_shelters": 0,
+                "released_reservations": 0,
+                "reactivated_population": 0,
+            }
+        self.startDocument()
+        threshold = int(getattr(self, "shelter_damage_danger_threshold", 4))
+        self.shelterDS.hazardOverrunDangerLevel = threshold
+        transitions = self.shelterDS.closeHazardOverrunShelters(
+            self.cellTracker,
+            simulation_time=(
+                int(self.currTime)
+                if simulation_time is None
+                else int(simulation_time)
+            ),
+        )
+        released = 0
+        reactivated = 0
+        for shelter, released_population, _danger in transitions:
+            released += int(released_population)
+            shelter_id = int(shelter.shelterID)
+            residents = self.shelteredOccupants.pop(shelter_id, {})
+            expected_flow = sum(
+                int(record["population"]) for record in residents.values()
+            )
+            if expected_flow != int(shelter.shelterFlow):
+                raise RuntimeError(
+                    f"Cannot close shelter {shelter_id}: resident registry "
+                    f"contains {expected_flow}, flow is {shelter.shelterFlow}"
+                )
+            for pedestrian_id in sorted(residents):
+                record = residents[pedestrian_id]
+                population = int(record["population"])
+                self._reverse_shelter_completion(record)
+                self._reactivate_shelter_occupant(shelter, record)
+                reactivated += population
+            shelter.shelterFlow = 0
+            shelter.forcedReevacuatedPopulation = int(
+                getattr(shelter, "forcedReevacuatedPopulation", 0)
+            ) + expected_flow
+        if transitions:
+            self.bump("shelter_closures", len(transitions))
+        if reactivated:
+            self.bump("forced_reevacuated", reactivated)
+            self.cumulativeForcedReevacuated += reactivated
+
+        # Reservations to failed shelters were released above.  Routes are
+        # repaired using only reachable operational shelters; if none exists,
+        # a cohort remains active and unassigned rather than being deleted or
+        # counted safe.
+        if transitions:
+            self._reassign_active_to_nearest_shelters()
+        self.shelterDS.assertCapacityInvariant()
+        self.assertShelterOccupancyInvariant()
+        return {
+            "closed_shelters": int(len(transitions)),
+            "released_reservations": int(released),
+            "reactivated_population": int(reactivated),
+        }
     
     """Resolve pedestrian arrival at a network node or active shelter."""
     def arrive_node(self, ped, node, *, validate_capacity=True):
@@ -972,6 +1340,12 @@ class PedDS:
                         return True
                     return bool(self.reroute_if_target_shelter_unavailable(ped))
                 if admitted < group_size:
+                    self._register_shelter_occupant(
+                        ped,
+                        sh,
+                        admitted,
+                        split_from_active=True,
+                    )
                     self.travelDistanceByOutcome["Evacuated"] += (
                         float(getattr(ped, "distance_travelled_m", 0.0)) * admitted
                     )
@@ -987,6 +1361,12 @@ class PedDS:
                     self.safeCompletionTimeHistogram[event_time] += admitted
                     ped.group_size = int(group_size - admitted)
                     return bool(self.reroute_if_target_shelter_unavailable(ped))
+                self._register_shelter_occupant(
+                    ped,
+                    sh,
+                    group_size,
+                    split_from_active=False,
+                )
                 self.terminatePedestrianAgent(ped, "Evacuated")
                 return False
             status = self.shelterDS.updateShelterFlow(
@@ -995,6 +1375,12 @@ class PedDS:
                 validate=validate_capacity,
             )
             if status == 0:
+                self._register_shelter_occupant(
+                    ped,
+                    sh,
+                    group_size,
+                    split_from_active=False,
+                )
                 self.terminatePedestrianAgent(ped, "Evacuated")
                 return False
             else:
@@ -1019,6 +1405,17 @@ class PedDS:
         else:
             if ped.routeFollowing is None:
                 return False
+            remaining_edges = getattr(ped.routeFollowing, "edgeRemained", None)
+            if (
+                remaining_edges
+                and self.mapDS is not None
+                and self.mapDS.is_edge_closed(remaining_edges[0])
+            ):
+                destination = getattr(ped.routeFollowing, "endNode", None)
+                replacement = self.mapDS.shortestPath(ped.currNode, destination)
+                if replacement is None:
+                    return False
+                ped.routeFollowing = replacement
             try:
                 e = ped.routeFollowing.getNextEdge()
             except (IndexError, AttributeError):
@@ -1049,6 +1446,7 @@ class PedDS:
         maxSpeed,
         *,
         birth_node_osmids=None,
+        group_sizes=None,
     ):
         """
         Initialize each pedestrian at a sampled birth node. Core immediately
@@ -1063,23 +1461,39 @@ class PedDS:
         self.maxSpeed = float(maxSpeed)
 
         planned_births = None
+        planned_group_sizes = None
         if birth_node_osmids is not None:
             planned_births = tuple(int(value) for value in birth_node_osmids)
-            expected_agents = int(
-                math.ceil(float(max(0, self.pedNum)) / float(self.maximum_group_size))
-            )
-            if len(planned_births) != expected_agents:
-                raise ValueError(
-                    "The population-origin plan must contain exactly one node "
-                    "for every represented pedestrian agent"
+            if group_sizes is None:
+                planned_group_sizes = tuple(
+                    min(
+                        int(self.maximum_group_size),
+                        int(self.pedNum) - index * int(self.maximum_group_size),
+                    )
+                    for index in range(len(planned_births))
                 )
+            else:
+                planned_group_sizes = tuple(int(value) for value in group_sizes)
+            if len(planned_births) != len(planned_group_sizes):
+                raise ValueError(
+                    "The population-origin plan must contain one group size for "
+                    "every represented pedestrian agent"
+                )
+            if any(
+                size <= 0 or size > int(self.maximum_group_size)
+                for size in planned_group_sizes
+            ):
+                raise ValueError("Population-origin group sizes are out of bounds")
+            if sum(planned_group_sizes) != int(self.pedNum):
+                raise ValueError("Population-origin groups do not conserve population")
         
         pedID = 0
         remaining_population = int(max(0, self.pedNum))
         while remaining_population > 0:
-            represented_population = min(
-                int(self.maximum_group_size),
-                remaining_population,
+            represented_population = (
+                min(int(self.maximum_group_size), remaining_population)
+                if planned_group_sizes is None
+                else int(planned_group_sizes[pedID])
             )
             group_id = pedID + 1
             #print("Current agent id, ", str(pedID))
@@ -1115,7 +1529,9 @@ class PedDS:
             
             newAgent.group_id = int(group_id)
             newAgent.group_size = int(represented_population)
+            newAgent.origin_node_osmid = int(birthNode.OSMID)
             self.groups[newAgent.group_id].add(agentID)
+            self.origin_groups[int(birthNode.OSMID)].add(agentID)
             
             newAgent.edge_remain = 0.0 # at node, edge_remain = 0
             newAgent.edge_vec = None
@@ -1124,6 +1540,9 @@ class PedDS:
             
             self.pedAgentList[agentID] = newAgent
             remaining_population -= represented_population
+
+        self.initial_agent_count = int(len(self.pedAgentList))
+        self._next_agent_id = int(pedID)
 
         initialized_population = sum(
             max(1, int(getattr(pedestrian, "group_size", 1)))
@@ -1386,6 +1805,23 @@ class PedDS:
         self.startDocument()
         if self.mapDS is None or self.cellTracker is None:
             return 0
+
+        # A regime road reopening/closure changes reachability even when no
+        # shelter is newly installed.  Recompute destinations once per routing
+        # version so isolated re-evacuees resume movement when a path becomes
+        # available without paying an O(P*S) reassignment cost every minute.
+        routing_version = int(getattr(self.mapDS, "routing_version", 0))
+        if (
+            self.shelterDS is not None
+            and routing_version != int(self._last_assignment_routing_version)
+        ):
+            self._reassign_active_to_nearest_shelters()
+        elif self.shelterDS is None:
+            # PedDS also supports the lower-level, shelter-free movement mode
+            # used by congestion experiments.  No assignment exists to
+            # refresh in that mode, but remember the observed routing version
+            # so attaching a shelter database later has a clean boundary.
+            self._last_assignment_routing_version = routing_version
 
         active_at_start = [
             ped

@@ -123,7 +123,10 @@ class PedestrianCongestionTests(unittest.TestCase):
         store = PedDS(30)
         store.maxSpeed = 4.0
         store.pedAgentList = {1: pedestrian}
-        store.mapDS = SimpleNamespace(edgeListByLocalID={1: edge})
+        store.mapDS = SimpleNamespace(
+            edgeListByLocalID={1: edge},
+            is_edge_closed=lambda candidate: False,
+        )
         store.cellTracker = SimpleNamespace(locateCell=lambda x, y: (0, 0))
         store.congestionModel = self.model
 

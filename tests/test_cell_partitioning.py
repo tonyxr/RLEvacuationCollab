@@ -114,11 +114,30 @@ class CellPartitioningTests(unittest.TestCase):
         second = sample_population_origins(17, 103, 10, 20260930)
         self.assertEqual(first["origin_indices"], second["origin_indices"])
         self.assertEqual(first["group_sizes"], [10] * 10 + [3])
+        by_node = {}
+        for node, size in zip(first["origin_indices"], first["group_sizes"]):
+            by_node[node] = by_node.get(node, 0) + size
+        self.assertEqual(
+            by_node,
+            {
+                index: int(value)
+                for index, value in enumerate(first["node_population"])
+                if value > 0
+            },
+        )
         np.testing.assert_array_equal(
             first["node_population"], second["node_population"]
         )
         self.assertEqual(int(first["node_population"].sum()), 103)
         self.assertEqual(len(first["origin_indices"]), 11)
+
+    def test_individual_origin_order_is_unchanged_by_grouping_support(self):
+        plan = sample_population_origins(17, 103, 1, 20260930)
+        expected = np.random.default_rng(20260930).integers(
+            0, 17, size=103, endpoint=False
+        )
+        self.assertEqual(plan["origin_indices"], expected.tolist())
+        self.assertEqual(plan["group_sizes"], [1] * 103)
 
     def test_population_adaptive_requires_valid_population_weights(self):
         coordinates = np.arange(10, dtype=float)

@@ -9,6 +9,7 @@
 """
 
 from Cell import Cell
+import math
 import numpy as np
 
 
@@ -424,6 +425,8 @@ class CellTracker:
                 sh_cap = 0.0
                 
                 for sh in cell.shelterList:
+                    if int(getattr(sh, "status", 0)) == 2:
+                        continue
                     sh_flow += float(getattr(sh, "shelterFlow", 0.0))
                     sh_cap += float(getattr(sh, "shelterCap", 0.0))
 
@@ -584,6 +587,29 @@ class CellTracker:
         if isinstance(cellID, list):
             cellID = tuple(cellID)
         return self.cellList[cellID].getCenter()
+
+    def minimumDistanceToCell(self, point, cellID):
+        """Return the metric distance from ``point`` to a cell footprint.
+
+        Distance to the footprint, rather than distance to its centre, keeps
+        source-local hazard severity meaningful when population-adaptive cuts
+        produce cells with very different widths.  A point inside the cell has
+        distance zero.  The implementation uses the authoritative axis edges,
+        so it is valid for every rectangular ``cellXNum`` by ``cellYNum`` grid.
+        """
+        cell_i, cell_j = self._cell_id(cellID)
+        if self.xEdges is None or self.yEdges is None:
+            raise RuntimeError("Call initialCut() before measuring cell distance")
+        if not isinstance(point, (tuple, list, np.ndarray)) or len(point) != 2:
+            raise ValueError("point must be a finite (x, y) pair")
+        x, y = float(point[0]), float(point[1])
+        if not np.isfinite((x, y)).all():
+            raise ValueError("point must be a finite (x, y) pair")
+        x_min, x_max = float(self.xEdges[cell_i]), float(self.xEdges[cell_i + 1])
+        y_min, y_max = float(self.yEdges[cell_j]), float(self.yEdges[cell_j + 1])
+        dx = max(x_min - x, 0.0, x - x_max)
+        dy = max(y_min - y, 0.0, y - y_max)
+        return float(math.hypot(dx, dy))
     
     """the following two functions are called by HazardDatabase"""
     def setHeat(self, cellID, value):

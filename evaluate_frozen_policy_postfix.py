@@ -29,12 +29,17 @@ DEFAULT_STRATEGIES = (
     "initial_only",
 )
 REGISTERED_STRATEGIES = DEFAULT_STRATEGIES + (
+    "rl_forecast_ablated",
     "risk_reduction",
     "hazard_weighted",
     "accessibility_deficit",
     "route_saving",
     "static_greedy",
     "rl_precommit",
+    "forecast_greedy",
+    "regime_oracle_greedy",
+    "deadline_greedy",
+    "belief_rollout",
 )
 
 
@@ -222,7 +227,11 @@ def main() -> int:
                         f"pair={replication}/{args.replications} strategy={strategy}",
                         flush=True,
                     )
-                    learned_strategy = strategy in ("rl", "rl_precommit")
+                    learned_strategy = strategy in (
+                        "rl",
+                        "rl_forecast_ablated",
+                        "rl_precommit",
+                    )
                     policy_replication = 1 if learned_strategy else 0
                     phase_group = "policy_001" if learned_strategy else "benchmarks"
                     jobs.append(

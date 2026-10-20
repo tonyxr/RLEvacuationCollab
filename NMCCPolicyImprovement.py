@@ -97,6 +97,86 @@ def reseed_exogenous(core, seed: int) -> None:
         core.pedDS.panic_random_seed = (key ^ 0x9E3779B97F4A7C15) & mask
 
 
+def region_defer_panel_costs(
+    brancher,
+    cells: Sequence[int],
+    *,
+    snapshot,
+    future_seeds: Sequence[int],
+    decision_index: int,
+    remaining_deployments: int,
+    maximum_deployments: int,
+    frozen_policy,
+    mode: str = "realized",
+    allocation: str = "uniform",
+    futures_min: int = 2,
+):
+    """Grade a region-plus-defer panel on one rectangular CRN design.
+
+    ``-1`` is the defer action; non-negative values are flattened region ids.
+    Every contender is evaluated on every supplied future.  ``"ocba"`` is
+    accepted only as a legacy configuration spelling for the same paired,
+    uniform allocation; it no longer triggers contender-specific sampling.
+    The wrapper keeps the policy-improvement contract in this module while the
+    reusable worker implementation remains in ``CounterfactualBranch``.
+    """
+    panel = tuple(int(cell) for cell in cells)
+    if not panel or len(panel) != len(set(panel)):
+        raise ValueError("The NMCC region/defer panel must be non-empty and unique")
+    allocation = str(allocation).strip().lower()
+    if allocation == "ocba":
+        return brancher.rollout_policy_costs_paired(
+            panel,
+            snapshot=snapshot,
+            future_seeds=future_seeds,
+            decision_index=decision_index,
+            remaining_deployments=remaining_deployments,
+            maximum_deployments=maximum_deployments,
+            frozen_policy=frozen_policy,
+            mode=mode,
+            futures_min=futures_min,
+        )
+    if allocation != "uniform":
+        raise ValueError("allocation must be uniform or ocba")
+    costs = brancher.rollout_policy_costs(
+        panel,
+        snapshot=snapshot,
+        future_seeds=future_seeds,
+        decision_index=decision_index,
+        remaining_deployments=remaining_deployments,
+        maximum_deployments=maximum_deployments,
+        frozen_policy=frozen_policy,
+        mode=mode,
+    )
+    # Local import avoids coupling the simulator utility module to the learner
+    # at import time and preserves the established uniform estimator exactly.
+    from RolloutPolicyIteration import estimate_rollout_costs
+
+    estimate = estimate_rollout_costs(costs)
+    return CB.PairedRolloutCostEstimate(
+        score=estimate.score,
+        mean_cost=estimate.mean_cost,
+        standard_error=estimate.standard_error,
+        paired_contrast_standard_error=(
+            estimate.paired_contrast_standard_error
+        ),
+        futures_spent=np.full(costs.shape[1], costs.shape[0], dtype=np.int64),
+    )
+
+
+def effective_future_allocation(allocation: str) -> str:
+    """Return the truthful runtime name for a configured allocation.
+
+    Archived configurations used ``"ocba"`` for an unpaired adaptive sampler.
+    That sampler is retired: both supported configuration spellings now execute
+    a complete candidate-by-future common-random-number rectangle.
+    """
+    configured = str(allocation).strip().lower()
+    if configured not in {"uniform", "ocba"}:
+        raise ValueError("allocation must be uniform or ocba")
+    return "paired_uniform"
+
+
 # -----------------------------------------------------------------------------
 # Episode clock: the decision schedule and reward accounting of RLBridge
 # -----------------------------------------------------------------------------

@@ -1300,3 +1300,80 @@ provenance and must be revalidated against the current MDP before reuse.
   training and 20-scenario deterministic matched evaluation. Assess held-out
   cost, improvement over objective-greedy, forward-looking branch changes,
   action diversity, target-fit KL, and retained-policy KL together.
+
+## Current priority — v58 fair-information Gate 1 (2026-10-14)
+
+- [x] Give the actor prior and objective-greedy one shared public-regional
+  candidate score; remove exact per-person assignment gain from actor input.
+- [x] Make deadline-greedy use the same enriched observation and validate its
+  defer threshold against never-defer by paired one-SE selection.
+- [x] Bound Gate 1 to the top six public contenders plus defer, four belief
+  futures, ten held-out tapes per family and five hindsight tapes.
+- [x] Match the smoke grid and objective weights to production, persist partial
+  screen outputs, and record source/config digests in every screen manifest.
+- [x] Reconcile the uniform online/reference action rule, log defer count and
+  use belief rather than hidden realized regimes for the random potential.
+- [x] Put static demand-greedy on the common capacity-arrival schedule instead
+  of pre-deploying its full shelter budget at time zero.
+- [x] Pass the fresh repository-wide suite (330 tests) in `.venv`.
+- [x] Grade actor rollout targets with belief futures (v59,
+  `nmccPiTargetFutureMode`); realized grading is a named hindsight ablation.
+- [x] Rerun the full suite in `.venv` after v60; all 337 tests pass. A clean
+  commit remains a separate repository-state task because the working tree
+  contains the complete uncommitted v53r-v60 redesign.
+- [ ] Production-configuration smoke (250 people), an eight-episode uniform-
+  policy zero-line check (mean return 0 within SE), and one 2,500-person
+  iteration to time the exhaustive 16x16 panel.
+- [x] Replace the current-intensity copy in `belief_particles` with a
+  marked-Poisson Bayesian posterior updated from observed stochastic-CA front
+  transitions. Actor forecasts, belief rollout, random-reference futures and
+  actor rollout targets now sample the same public-information posterior;
+  realized intensity remains confined to physical simulation and named
+  hindsight diagnostics.
+- [ ] Run the bounded Gate-1 panel from a clean committed digest. Treat
+  hindsight and realized-regime policies only as ceilings/information-value
+  diagnostics, and compare RL superiority only against deployable public-
+  information policies on matched tapes.
+
+## Current priority — v61 source-local severity and shelter overrun (2026-10-18)
+
+- [x] Use one elapsed-minute severity rule in runtime, branch simulation and
+  forecasts: levels change after 6/15/30/50 minutes, with level 5 restricted
+  to source cells, level 4 restricted to footprints within 100 m of a source,
+  and all other impacted cells capped at level 3.
+- [x] Permanently close an operational shelter when its cell reaches the
+  configured danger threshold (default 4), remove its capacity, and release
+  every in-transit reservation.
+- [x] Preserve admitted cohort identity, reverse the invalid safe-completion
+  stock, reactivate each resident at the failed shelter, expose it during the
+  same transition and reroute it when operational capacity is reachable.
+- [x] Apply the same lifecycle in live episodes and simulator-graded branches;
+  prevent terminal shortcuts while sheltered residents remain at risk.
+- [x] Persist closure, re-evacuation and operational-capacity diagnostics in
+  progress logs, episode summaries and visualization exports.
+- [x] Pass the dedicated lifecycle, branch replay, hazard, learner and full
+  repository regression suites.
+- [ ] Retrain a v61 policy from scratch; v60 and earlier checkpoints encode
+  different severity and absorbing-shelter transition dynamics.
+- [ ] Evaluate v61 on matched seeds and report both final safe completions and
+  forced re-evacuation/overrun outcomes for RL and every benchmark.
+
+## Current priority — v63 shelter-overrun anticipation (2026-10-18)
+
+- [x] Forecast the first danger-threshold crossing from public hazard state and
+  identify the next threatened operational shelter cell without reading the
+  realized regime tape.
+- [x] Expose current residents, en-route reservations, crossing probability,
+  lead time, expected re-evacuation/rerouting burden and surviving capacity to
+  the actor at cell, global and candidate resolution.
+- [x] Split reservation outcomes by grouped-cohort ETA against the full
+  first-passage CDF so arrivals before failure are counted as future
+  re-evacuation rather than only rerouting.
+- [x] Preserve one complete cost ledger and grade actor actions with paired
+  full-horizon belief rollouts; do not add a second shelter-failure penalty.
+- [x] Remove hidden-future, live-map mutation, routing snapshot, congestion
+  snapshot and incomplete future-allocation defects; pass all 396 tests.
+- [ ] Train a fresh v63 policy from scratch, then evaluate on matched seeds
+  with shelter-overrun count, forced re-evacuation, rerouted reservations,
+  surviving capacity, complete objective cost and forecast ablation. The run
+  remains intentionally stopped pending an explicit restart request.

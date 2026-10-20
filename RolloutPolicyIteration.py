@@ -9,8 +9,8 @@ the two learner-side operations needed by rollout policy iteration:
 * paired cost estimates and conservative categorical targets made from
   complete common-random-number rollouts.
 
-The base score is the exact same-state objective-greedy assignment gain already
-present in ``RegionalObservation.candidate_assignment_gain``.  The neural
+The base score is the public, observation-matched regional objective score in
+``RegionalObservation.candidate_public_objective_score``.  The neural
 actor learns only the correction justified by the simulator-graded rollout.
 """
 
@@ -27,10 +27,40 @@ import torch
 from DecisionInterface import (
     HAZARD_FEATURE_SLICE,
     INFRA_FEATURE_SLICE,
+    MOMENTUM_FEATURE_NAMES,
     PED_FEATURE_SLICE,
     RegionalObservation,
 )
 from GNN import fit_gnn
+
+
+@dataclass(frozen=True)
+class ObjectiveGreedyContinuationPolicy:
+    """Serializable, memory-free continuation used by the two planners."""
+
+    def initial_context(self):
+        return None, None
+
+    def select(
+        self,
+        observation: RegionalObservation,
+        *,
+        previous_observation=None,
+        recurrent_state=None,
+    ):
+        del previous_observation, recurrent_state
+        feasible = np.flatnonzero(np.asarray(observation.action_mask, dtype=bool))
+        defer = int(getattr(observation, "defer_action_index", -1))
+        feasible = feasible[feasible != defer]
+        if feasible.size == 0:
+            if defer >= 0 and bool(observation.action_mask[defer]):
+                return defer, None
+            raise RuntimeError("Objective-greedy continuation has no feasible action")
+        gains = np.asarray(
+            observation.candidate_public_objective_score, dtype=np.float64
+        )
+        action = int(feasible[int(np.argmax(gains[feasible]))])
+        return action, None
 
 
 def momentum_array(
@@ -40,12 +70,12 @@ def momentum_array(
     initial_population: int,
     shelter_action_interval: int,
 ) -> np.ndarray:
-    """Return the four existing causal momentum rates without changing them."""
+    """Return causal rates, including re-evacuation risk and safe capacity."""
     if previous is None:
-        return np.zeros(4, dtype=np.float32)
+        return np.zeros(len(MOMENTUM_FEATURE_NAMES), dtype=np.float32)
     elapsed = int(current.simulation_time) - int(previous.simulation_time)
     if elapsed <= 0:
-        return np.zeros(4, dtype=np.float32)
+        return np.zeros(len(MOMENTUM_FEATURE_NAMES), dtype=np.float32)
 
     population = float(max(1, int(initial_population)))
     interval_scale = float(max(1, int(shelter_action_interval))) / float(elapsed)
@@ -89,6 +119,14 @@ def momentum_array(
             previous_congestion - current_congestion,
             previous_route - current_route,
             previous_exposure - current_exposure,
+            (
+                previous.forecast_reevacuation_population_fraction
+                - current.forecast_reevacuation_population_fraction
+            ),
+            (
+                current.forecast_safe_capacity_coverage_fraction
+                - previous.forecast_safe_capacity_coverage_fraction
+            ),
         ),
         dtype=np.float32,
     )

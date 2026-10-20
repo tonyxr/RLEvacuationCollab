@@ -34,6 +34,7 @@ from DecisionInterface import (
     UniformRegionalPolicy,
     estimate_remaining_hazard_weighted_travel_time,
     estimate_remaining_time_to_safety,
+    public_regional_objective_values,
 )
 from EvacuationVisualizer import EvacuationVisualizer, resolve_milestones
 from GNN import EvacPolicy, fit_gnn, grid_edge_index
@@ -222,11 +223,11 @@ class RewardTests(unittest.TestCase):
         self.assertEqual(reward.total, 0.0)
         self.assertEqual(RewardProcessor().evacuation_time_weight, 0.0)
 
-    def test_outcomes_must_be_monotone(self):
+    def test_casualties_must_be_monotone_while_safe_stock_may_fall(self):
         processor = RewardProcessor()
         with self.assertRaisesRegex(ValueError, "monotone"):
             processor.evaluate(
-                before=OutcomeSnapshot(2, 0, 2, 0, 1, 1.0),
+                before=OutcomeSnapshot(2, 1, 2, 0, 0, 0.0),
                 after=OutcomeSnapshot(1, 0, 1, 0, 2, 2.0),
                 remaining_risk_time_before=10.0,
                 remaining_risk_time_after=10.0,
@@ -486,6 +487,128 @@ class HazardCouplingTests(unittest.TestCase):
         self.assertFalse(hazard.active)
         self.assertEqual(tracker.getCellState((0, 0)), 2)
 
+    def test_source_local_severity_caps_follow_cell_footprint_distance(self):
+        tracker = CellTracker(4, 1)
+        tracker.initialCut(
+            800.0,
+            100.0,
+            xEdges=(0.0, 100.0, 200.0, 400.0, 800.0),
+            yEdges=(0.0, 100.0),
+        )
+        self.assertEqual(
+            tracker.minimumDistanceToCell((50.0, 50.0), (0, 0)), 0.0
+        )
+        self.assertEqual(
+            tracker.minimumDistanceToCell((50.0, 50.0), (1, 0)), 50.0
+        )
+        self.assertEqual(
+            tracker.minimumDistanceToCell((50.0, 50.0), (2, 0)), 150.0
+        )
+        for cell in tracker.cell_ids():
+            tracker.setCellState(cell, 1)
+        hazards = HazardDS(0, [0, 0], [0, 0], [0, 0])
+        hazards.setCellTracker(tracker)
+        hazard = SimpleNamespace(
+            active=True,
+            spreadRate=0.0,
+            sourceNode=SimpleNamespace(nodeX=50.0, nodeY=50.0),
+            sourceCell=(0, 0),
+            impactedCells=list(tracker.cell_ids()),
+            cellImpactStep={cell: 0 for cell in tracker.cell_ids()},
+            cellFirstImpactStep={cell: 0 for cell in tracker.cell_ids()},
+            step=0,
+            age=0,
+            lifespan=100,
+        )
+        hazards.hazardList = {0: hazard}
+        for _ in range(50):
+            hazards.spreadUpdate()
+        self.assertEqual(tracker.getCellState((0, 0)), 5)
+        self.assertEqual(tracker.getCellState((1, 0)), 4)
+        self.assertEqual(tracker.getCellState((2, 0)), 3)
+        self.assertEqual(tracker.getCellState((3, 0)), 3)
+
+    def test_severity_thresholds_use_physical_minutes_not_step_count(self):
+        def level_after(time_step, steps):
+            tracker = CellTracker(1, 1)
+            tracker.initialCut(100.0, 100.0)
+            tracker.setCellState((0, 0), 1)
+            hazards = HazardDS(
+                0,
+                [0, 0],
+                [0, 0],
+                [0, 0],
+                time_step_minutes=time_step,
+            )
+            hazards.setCellTracker(tracker)
+            hazards.hazardList = {
+                0: SimpleNamespace(
+                    active=True,
+                    spreadRate=0.0,
+                    sourceNode=None,
+                    sourceCell=(0, 0),
+                    impactedCells=[(0, 0)],
+                    cellImpactStep={(0, 0): 0},
+                    cellFirstImpactStep={(0, 0): 0},
+                    step=0,
+                    age=0,
+                    lifespan=200,
+                )
+            }
+            for _ in range(steps):
+                hazards.spreadUpdate()
+            return tracker.getCellState((0, 0))
+
+        self.assertEqual(level_after(1.0, 30), 4)
+        self.assertEqual(level_after(0.5, 60), 4)
+
+    def test_overlapping_hazards_aggregate_by_maximum_severity(self):
+        tracker = CellTracker(3, 1)
+        tracker.initialCut(600.0, 100.0)
+        for cell in tracker.cell_ids():
+            tracker.setCellState(cell, 1)
+        hazards = HazardDS(0, [0, 0], [0, 0], [0, 0])
+        hazards.cell_state_evolution_mode = "stochastic"
+        hazards.setCellTracker(tracker)
+
+        def source(hazard_id, source_cell, x):
+            return SimpleNamespace(
+                active=True,
+                spreadRate=0.0,
+                sourceNode=SimpleNamespace(nodeX=x, nodeY=50.0),
+                sourceCell=source_cell,
+                impactedCells=[source_cell, (1, 0)],
+                cellImpactStep={source_cell: 0, (1, 0): 0},
+                cellFirstImpactStep={source_cell: 0, (1, 0): 0},
+                step=0,
+                age=0,
+                lifespan=100,
+                hazardID=hazard_id,
+            )
+
+        hazards.hazardList = {
+            0: source(0, (0, 0), 100.0),
+            1: source(1, (2, 0), 500.0),
+        }
+        for _ in range(50):
+            hazards.spreadUpdate()
+        self.assertEqual(tracker.getCellState((0, 0)), 5)
+        self.assertEqual(tracker.getCellState((1, 0)), 4)
+        self.assertEqual(tracker.getCellState((2, 0)), 5)
+
+    def test_latent_ignition_forecast_uses_its_own_severity_clock(self):
+        tracker = CellTracker(2, 1)
+        tracker.initialCut(600.0, 100.0)
+        hazards = HazardDS(0, [0, 0], [0, 0], [0, 0])
+        hazards.setCellTracker(tracker)
+        before = tracker.state_vector().copy()
+        forecast = hazards.forecast_danger_by_cell(
+            50, future_ignitions=((1, (0, 0)),)
+        )
+        self.assertEqual(float(forecast[0]), 1.0)
+        self.assertLessEqual(float(forecast[1]), 0.6 + 1e-7)
+        np.testing.assert_array_equal(tracker.state_vector(), before)
+
 
 class SharedDecisionInterfaceTests(unittest.TestCase):
     def test_active_population_benchmark_uses_only_feasible_cells(self):
@@ -576,37 +699,128 @@ class SharedDecisionInterfaceTests(unittest.TestCase):
             lower = -1.0 if index in signed_global else 0.0
             self.assertGreaterEqual(float(value), lower)
             self.assertLessEqual(float(value), 1.0)
-        signed_candidate = CANDIDATE_FEATURE_NAMES.index(
-            "exact_assignment_gain_fraction"
-        )
-        unsigned_candidates = np.delete(candidates, signed_candidate, axis=1)
         self.assertTrue(
             np.logical_and(
-                unsigned_candidates >= 0.0,
-                unsigned_candidates <= 1.0,
-            ).all()
-        )
-        self.assertTrue(
-            np.logical_and(
-                candidates[:, signed_candidate] >= -2.0,
-                candidates[:, signed_candidate] <= 2.0,
+                candidates >= 0.0,
+                candidates <= 1.0,
             ).all()
         )
 
-    def test_exact_assignment_gain_preserves_bad_shelter_signal(self):
+    def test_public_objective_score_is_exposed_to_actor(self):
         observation = replace(
             make_observation(),
-            candidate_assignment_gain=np.asarray(
-                (0.2, -0.4, 0.0, 0.0), dtype=np.float32
+            candidate_public_objective_score=np.asarray(
+                (0.2, 0.4, 0.0, 0.0), dtype=np.float32
             ),
         )
         feature_index = CANDIDATE_FEATURE_NAMES.index(
-            "exact_assignment_gain_fraction"
+            "public_regional_objective_score"
         )
         self.assertAlmostEqual(
             float(observation.candidate_features()[1, feature_index]),
-            -0.4,
+            0.4,
             places=6,
+        )
+
+    def test_overrun_reevacuation_state_and_candidate_response_are_observed(self):
+        observation = replace(
+            make_observation(active=(4, 4, 4, 4)),
+            operational_shelter_capacity_by_cell=np.asarray(
+                (0.0, 8.0, 0.0, 0.0), dtype=np.float32
+            ),
+            sheltered_population_by_cell=np.asarray(
+                (0.0, 4.0, 0.0, 0.0), dtype=np.float32
+            ),
+            enroute_reserved_population_by_cell=np.asarray(
+                (0.0, 2.0, 0.0, 0.0), dtype=np.float32
+            ),
+            forecast_overrun_probability_by_cell=np.asarray(
+                (0.0, 0.75, 0.0, 0.0), dtype=np.float32
+            ),
+            forecast_next_shelter_overrun_probability_by_cell=np.asarray(
+                (0.0, 1.0, 0.0, 0.0), dtype=np.float32
+            ),
+            forecast_overrun_lead_time_fraction_by_cell=np.asarray(
+                (1.0, 0.25, 1.0, 1.0), dtype=np.float32
+            ),
+            forecast_reevacuation_population_by_cell=np.asarray(
+                (0.0, 3.0, 0.0, 0.0), dtype=np.float32
+            ),
+            forecast_enroute_reroute_population_by_cell=np.asarray(
+                (0.0, 1.5, 0.0, 0.0), dtype=np.float32
+            ),
+            candidate_capacities=np.full(4, 10.0, dtype=np.float32),
+            candidate_forecast_overrun_probability=np.asarray(
+                (0.0, 0.75, 0.0, 0.0), dtype=np.float32
+            ),
+            candidate_forecast_next_overrun_probability=np.asarray(
+                (0.0, 1.0, 0.0, 0.0), dtype=np.float32
+            ),
+            candidate_forecast_overrun_lead_time_fraction=np.asarray(
+                (1.0, 0.25, 1.0, 1.0), dtype=np.float32
+            ),
+            candidate_forecast_reevacuation_response=np.asarray(
+                (0.1, 0.8, 0.2, 0.0), dtype=np.float32
+            ),
+            forecast_reevacuation_population_fraction=3.0 / 16.0,
+            forecast_enroute_reroute_population_fraction=1.5 / 16.0,
+            forecast_safe_capacity_coverage_fraction=0.80,
+            next_shelter_overrun_probability=1.0,
+            next_shelter_overrun_lead_time_fraction=0.25,
+        )
+        cells, global_features = observation.policy_features()
+        candidates = observation.candidate_features()
+        self.assertAlmostEqual(
+            float(cells[1, CELL_FEATURE_NAMES.index("forecast_overrun_probability")]),
+            0.75,
+        )
+        self.assertAlmostEqual(
+            float(cells[1, CELL_FEATURE_NAMES.index("forecast_reevacuation_population_fraction")]),
+            3.0 / 16.0,
+        )
+        self.assertAlmostEqual(
+            float(global_features[GLOBAL_FEATURE_NAMES.index("forecast_safe_capacity_coverage_fraction")]),
+            0.80,
+        )
+        self.assertAlmostEqual(
+            float(candidates[1, CANDIDATE_FEATURE_NAMES.index("forecast_reevacuation_response_fraction")]),
+            0.80,
+        )
+        values = public_regional_objective_values(
+            observation,
+            clearance_tail_weight=0.25,
+            casualty_priority_kappa=2.0,
+        )
+        self.assertGreater(float(values[1]), float(values[0]))
+
+    def test_reservation_eta_splits_rerouting_from_future_reevacuation(self):
+        builder = RegionalObservationBuilder(
+            make_core(),
+            initial_population=16,
+            horizon=10,
+            maximum_deployments=2,
+        )
+        crossing_cdf = np.zeros((5, 4), dtype=np.float32)
+        crossing_cdf[:, 0] = (0.0, 0.2, 0.4, 0.8, 1.0)
+        reservation_arrivals = (
+            ((1, 2), (3, 4)),
+            (),
+            (),
+            (),
+        )
+        reevacuation, reroute = builder._forecast_shelter_transition_burdens(
+            np.asarray((4.0, 0.0, 0.0, 0.0), dtype=np.float32),
+            np.asarray((6.0, 0.0, 0.0, 0.0), dtype=np.float32),
+            reservation_arrivals,
+            crossing_cdf,
+        )
+        # Four current residents are at risk. Of the two people arriving at
+        # step 1, 80% arrive before the closure; of the four arriving at step
+        # 3, 20% do. The complementary mass is rerouted before admission.
+        self.assertAlmostEqual(float(reevacuation[0]), 6.4, places=5)
+        self.assertAlmostEqual(float(reroute[0]), 3.6, places=5)
+        self.assertAlmostEqual(
+            float(reevacuation[0] + reroute[0]), 10.0, places=5
         )
 
     def test_features_expose_congestion_delay_and_available_capacity(self):
@@ -632,6 +846,10 @@ class SharedDecisionInterfaceTests(unittest.TestCase):
         self.assertNotIn("wind_speed_fraction", GLOBAL_FEATURE_NAMES)
         self.assertIn("wind_east_velocity_fraction", GLOBAL_FEATURE_NAMES)
         self.assertIn("wind_north_velocity_fraction", GLOBAL_FEATURE_NAMES)
+        self.assertIn("closure_warning_incidence_fraction", CELL_FEATURE_NAMES)
+        self.assertIn("closed_road_incidence_fraction", CELL_FEATURE_NAMES)
+        self.assertIn("forecast_expected_danger", CANDIDATE_FEATURE_NAMES)
+        self.assertIn("is_defer_action", CANDIDATE_FEATURE_NAMES)
 
     def test_policy_observes_the_spatial_clearance_tail_it_is_optimized_on(self):
         observation = replace(
@@ -697,6 +915,9 @@ class FakeCellTracker:
 
     def addShelter(self, cell, shelter):
         self.added.append((tuple(cell), shelter))
+
+    def getCellState(self, cell):
+        return int(round(float(self.dangerLevelByCell[self.flatten_cell(cell)]) * 5.0))
 
     def cellUpdate(self, pedDS=None, forceTracker=None):
         del forceTracker
@@ -945,6 +1166,20 @@ class ObservationAndExecutionTests(unittest.TestCase):
         shelter = Shelter(0, node, (0, 0), 10, 6, 0)
         core.shelterDS.shelterList = {0: shelter}
         core.shelterDS.shelterByCell[0][0].append(shelter)
+        core.shelterOverrunDangerLevel = 4
+        core.cellTracker.dangerLevelByCell[0] = 0.6
+        core.hazardDS.belief_overrun_first_passage_by_cell = (
+            lambda _horizon, _threshold, **_kwargs: {
+                "expected": np.asarray((0.75, 0.0, 0.0, 0.0), dtype=np.float32),
+                "momentum": np.asarray((0.15, 0.0, 0.0, 0.0), dtype=np.float32),
+                "escalation_probability": np.asarray((1.0, 0.0, 0.0, 0.0), dtype=np.float32),
+                "uncertainty": np.asarray((0.25, 0.0, 0.0, 0.0), dtype=np.float32),
+                "crossing_probability": np.asarray((0.75, 0.0, 0.0, 0.0), dtype=np.float32),
+                "next_overrun_probability": np.asarray((1.0, 0.0, 0.0, 0.0), dtype=np.float32),
+                "next_priority_overrun_probability": np.asarray((1.0, 0.0, 0.0, 0.0), dtype=np.float32),
+                "conditional_expected_first_crossing_steps": np.asarray((1.0, 11.0, 11.0, 11.0), dtype=np.float32),
+            }
+        )
         builder = RegionalObservationBuilder(
             core,
             initial_population=2,
@@ -958,6 +1193,22 @@ class ObservationAndExecutionTests(unittest.TestCase):
         )
         self.assertAlmostEqual(observation.remaining_capacity_by_cell[0], 4.0)
         self.assertAlmostEqual(observation.shelter_utilization_by_cell[0], 0.6)
+        self.assertAlmostEqual(
+            observation.sheltered_population_by_cell[0], 6.0
+        )
+        self.assertAlmostEqual(
+            observation.forecast_overrun_probability_by_cell[0], 0.75, places=6
+        )
+        self.assertAlmostEqual(
+            observation.forecast_reevacuation_population_by_cell[0], 4.5, places=5
+        )
+        self.assertAlmostEqual(
+            observation.forecast_reevacuation_population_fraction, 1.0
+        )
+        self.assertGreater(
+            float(np.max(observation.candidate_forecast_reevacuation_response)),
+            0.0,
+        )
 
     def test_builder_aggregates_routes_and_wellness_without_person_nodes(self):
         core = make_core()
@@ -1591,12 +1842,24 @@ class BridgeTests(unittest.TestCase):
         current.mean_route_time_by_cell[:] = (4.0, 3.0, 0.0, 0.0)
         previous.forecast_danger_by_cell[:] = (0.1, 0.1, 0.0, 0.0)
         current.forecast_danger_by_cell[:] = (0.5, 0.4, 0.0, 0.0)
+        previous = replace(
+            previous,
+            forecast_reevacuation_population_fraction=0.30,
+            forecast_safe_capacity_coverage_fraction=0.65,
+        )
+        current = replace(
+            current,
+            forecast_reevacuation_population_fraction=0.10,
+            forecast_safe_capacity_coverage_fraction=0.80,
+        )
         values = bridge._momentum_array(previous, current)
-        self.assertEqual(values.shape, (4,))
+        self.assertEqual(values.shape, (6,))
         self.assertGreater(values[0], 0.0)
         self.assertGreater(values[1], 0.0)
         self.assertGreater(values[2], 0.0)
         self.assertLess(values[3], 0.0)
+        self.assertGreater(values[4], 0.0)
+        self.assertGreater(values[5], 0.0)
 
     def test_nmcc_backward_targets_span_all_eight_installations(self):
         bridge = RLBridge(
@@ -1804,7 +2067,7 @@ class BridgeTests(unittest.TestCase):
         self.assertFalse(environment._stage_contract().train_actor)
         self.assertTrue(policy_improvement._stage_contract().train_actor)
         self.assertFalse(policy_improvement._stage_contract().use_continuation)
-        self.assertFalse(policy_improvement._stage_contract().train_value)
+        self.assertTrue(policy_improvement._stage_contract().train_value)
         self.assertEqual(
             {
                 name.split(".", 1)[0]
@@ -1834,7 +2097,10 @@ class BridgeTests(unittest.TestCase):
         )
         self.assertEqual(
             metadata["critic_target"],
-            "not_used_by_rollout_policy_improvement",
+            (
+                "complete_episode_smdp_monte_carlo_return_to_go_with_"
+                "realized_regime_baseline"
+            ),
         )
 
     def test_uniform_site_nmcc_credit_does_not_change_on_policy_critic_target(self):
@@ -2132,6 +2398,7 @@ class BridgeTests(unittest.TestCase):
             checkpoint = os.path.join(directory, "policy.pt")
             diagnostics = os.path.join(directory, "ppo.csv")
             training_core = make_core()
+            training_core.actionSpace = "region_defer"
             trained = RLBridge(
                 training_core,
                 train_mode=True,
@@ -2155,6 +2422,7 @@ class BridgeTests(unittest.TestCase):
             trained.end_episode()
 
             evaluation_core = make_core()
+            evaluation_core.actionSpace = "region_defer"
             precommitted = RLBridge(
                 evaluation_core,
                 train_mode=False,
@@ -2168,7 +2436,10 @@ class BridgeTests(unittest.TestCase):
             receipts = precommitted.precommit_all()
             self.assertEqual(len(receipts), 2)
             self.assertEqual(precommitted.deployments_made, 2)
+            self.assertEqual(precommitted.tokens_remaining, 0)
             self.assertEqual(precommitted.remaining_deployments, 0)
+            self.assertTrue(all(receipt.installed for receipt in receipts))
+            self.assertTrue(all(receipt.executed_cell >= 0 for receipt in receipts))
             self.assertIsNotNone(precommitted.precommit_initial_observation_digest)
             first_boundary = precommitted.step(simulation_time=1)
             self.assertEqual(first_boundary["decision_made"], 0)
@@ -2190,7 +2461,7 @@ class BridgeTests(unittest.TestCase):
             values[feasible] = -feasible.astype(float)
             return values
 
-        bridge._objective_greedy_values = stable_initial_ranking
+        bridge._public_regional_objective_values = stable_initial_ranking
         schedule = bridge.precommit_static_schedule()
         self.assertEqual(schedule, (("100", 0), ("101", 1)))
         self.assertEqual(bridge.deployments_made, 0)
@@ -2200,7 +2471,7 @@ class BridgeTests(unittest.TestCase):
 
         # Changing the scorer after commitment cannot change the open-loop
         # execution order because no later observation is used to re-rank it.
-        bridge._objective_greedy_values = lambda observation: np.arange(
+        bridge._public_regional_objective_values = lambda observation: np.arange(
             observation.number_of_actions,
             dtype=float,
         )
@@ -2209,6 +2480,26 @@ class BridgeTests(unittest.TestCase):
         second = bridge.step(simulation_time=10)
         self.assertEqual(first["candidate_osm_node_id"], "100")
         self.assertEqual(second["candidate_osm_node_id"], "101")
+        self.assertEqual(bridge.deployment_times, [5, 10])
+        self.assertEqual(bridge.remaining_deployments, 0)
+
+    def test_static_greedy_precommits_demand_sites_but_not_capacity(self):
+        core = make_core()
+        bridge = RLBridge(
+            core,
+            train_mode=False,
+            deployment_strategy="static_greedy",
+            target_active_shelters=2,
+            shelter_action_interval=5,
+            first_decision_time=5,
+        )
+        schedule = bridge.precommit_static_schedule()
+        self.assertEqual(len(schedule), 2)
+        self.assertEqual(core.shelterDS.shelterList, {})
+        self.assertEqual(bridge.deployments_made, 0)
+        self.assertEqual(bridge.step(simulation_time=1)["decision_made"], 0)
+        bridge.step(simulation_time=5)
+        bridge.step(simulation_time=10)
         self.assertEqual(bridge.deployment_times, [5, 10])
         self.assertEqual(bridge.remaining_deployments, 0)
 
@@ -2910,6 +3201,7 @@ class AccountingAndDiagnosticsTests(unittest.TestCase):
                 output_dir=os.path.join(directory, "visualization"),
             )
             self.assertTrue(visualizer.observe(0))
+            core.hazardDS.hazardList[1] = SimpleNamespace(sourceNode=second_node)
             core.shelterDS.newShelter({"cell": (0, 0)}, core.cellTracker)
             self.assertTrue(
                 visualizer.observe(
@@ -2929,9 +3221,11 @@ class AccountingAndDiagnosticsTests(unittest.TestCase):
             for filename in (
                 "milestone_pedestrians.csv",
                 "milestone_shelters.csv",
+                "milestone_hazards.csv",
                 "milestone_cells.csv",
                 "milestone_outcomes.csv",
                 "decision_epoch_cells.csv",
+                "decision_epoch_hazards.csv",
                 "decision_epoch_pedestrians.csv.gz",
                 "deployment_decisions.csv",
                 "osm_road_segments.csv",
@@ -2986,7 +3280,20 @@ class AccountingAndDiagnosticsTests(unittest.TestCase):
                 [float(row["danger"]) for row in decision_cells],
                 [0.10, 0.25, 0.50, 0.90],
             )
-            self.assertEqual(manifest["schema_version"], 4)
+            with open(
+                os.path.join(directory, "visualization", "milestone_hazards.csv"),
+                newline="",
+            ) as handle:
+                milestone_hazards = list(csv.DictReader(handle))
+            self.assertEqual(
+                [row["hazard_id"] for row in milestone_hazards if row["simulation_time"] == "0"],
+                ["0"],
+            )
+            self.assertEqual(
+                [row["hazard_id"] for row in milestone_hazards if row["simulation_time"] == "5"],
+                ["0", "1"],
+            )
+            self.assertEqual(manifest["schema_version"], 5)
             self.assertEqual(manifest["speed_units"], "metres_per_minute")
             self.assertEqual(
                 manifest["visual_encoding"]["active_pedestrians"]["unit"],

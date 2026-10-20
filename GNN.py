@@ -63,6 +63,9 @@ class GNNInput:
     batch: Optional[torch.Tensor] = None
     candidate_cell_index: Optional[torch.Tensor] = None
     candidate_features: Optional[torch.Tensor] = None
+    # Realized exogenous-tape summaries are available to the value baseline
+    # during training, but are deliberately absent from every actor path.
+    critic_exogenous: Optional[torch.Tensor] = None
 
 
 @dataclass
@@ -191,6 +194,7 @@ def fit_gnn(
     batch: Optional[torch.Tensor] = None,
     candidate_cell_index: Optional[torch.Tensor] = None,
     candidate_features: Optional[torch.Tensor] = None,
+    critic_exogenous: Optional[torch.Tensor] = None,
 ) -> GNNInput:
     """Validate and package a packed, variable-size regional graph batch."""
     tensors = {"x_ped": x_ped, "x_hazard": x_hazard, "x_infra": x_infra}
@@ -212,6 +216,14 @@ def fit_gnn(
         if x_global.ndim != 2 or x_global.size(0) != graph_count:
             raise ValueError(
                 f"x_global must have shape ({graph_count}, features), got {tuple(x_global.shape)}"
+            )
+    if critic_exogenous is not None:
+        if critic_exogenous.ndim == 1:
+            critic_exogenous = critic_exogenous.unsqueeze(0)
+        if critic_exogenous.ndim != 2 or critic_exogenous.size(0) != graph_count:
+            raise ValueError(
+                "critic_exogenous must have shape "
+                f"({graph_count}, features), got {tuple(critic_exogenous.shape)}"
             )
 
     edge_index = _normalize_edge_index(edge_index, batch, name="edge_index")
@@ -270,6 +282,7 @@ def fit_gnn(
         batch=batch,
         candidate_cell_index=candidate_cell_index,
         candidate_features=candidate_features,
+        critic_exogenous=critic_exogenous,
     )
 
 
@@ -395,6 +408,7 @@ class EvacPolicy(nn.Module):
         actor_prior_scale: float = 0.0,
         actor_prior_feature_index: int = 7,
         auxiliary_models_enabled: bool = True,
+        d_critic_exogenous: int = 0,
     ):
         super().__init__()
         dimensions = {
@@ -418,10 +432,13 @@ class EvacPolicy(nn.Module):
         self.d_momentum = int(d_momentum)
         self.temporal_dim = int(temporal_dim)
         self.auxiliary_models_enabled = bool(auxiliary_models_enabled)
+        self.d_critic_exogenous = int(d_critic_exogenous)
         if self.d_global < 0:
             raise ValueError("d_global must be non-negative")
         if self.d_momentum < 0:
             raise ValueError("d_momentum must be non-negative")
+        if self.d_critic_exogenous < 0:
+            raise ValueError("d_critic_exogenous must be non-negative")
         self.actor_prior = str(actor_prior)
         if self.actor_prior not in ACTOR_PRIORS:
             raise ValueError(f"actor_prior must be one of {ACTOR_PRIORS}, got {actor_prior!r}")
@@ -504,7 +521,15 @@ class EvacPolicy(nn.Module):
         self.actor_cell = nn.Linear(actor_dim, 1)
         nn.init.zeros_(self.actor_cell.weight)
         nn.init.zeros_(self.actor_cell.bias)
-        critic_input_dim = decision_context_dim + self.temporal_dim
+        self.defer_head = nn.Sequential(
+            nn.Linear(decision_context_dim, actor_dim),
+            nn.GELU(),
+            nn.Linear(actor_dim, 1),
+        )
+        nn.init.zeros_(self.defer_head[-1].weight)
+        nn.init.zeros_(self.defer_head[-1].bias)
+        public_value_input_dim = decision_context_dim + self.temporal_dim
+        critic_input_dim = public_value_input_dim + self.d_critic_exogenous
         self.critic_trunk = nn.Sequential(
             nn.Linear(critic_input_dim, 2 * actor_dim),
             nn.GELU(),
@@ -533,7 +558,7 @@ class EvacPolicy(nn.Module):
         # then frozen while the ordinary critic learns policy savings relative
         # to the uniform-feasible-site reference.
         self.random_reference_trunk = nn.Sequential(
-            nn.Linear(critic_input_dim, 2 * actor_dim),
+            nn.Linear(public_value_input_dim, 2 * actor_dim),
             nn.GELU(),
             nn.LayerNorm(2 * actor_dim),
             nn.Linear(2 * actor_dim, actor_dim),
@@ -612,6 +637,7 @@ class EvacPolicy(nn.Module):
         "global_actor_context",
         "temporal_actor_context",
         "actor_cell",
+        "defer_head",
     )
     CRITIC_HEAD_MODULES = (
         "critic_trunk",
@@ -858,6 +884,17 @@ class EvacPolicy(nn.Module):
             + self.temporal_actor_context(hidden).unsqueeze(1)
         )
         raw_actor_logits = self.actor_cell(F.gelu(candidate_hidden)).squeeze(-1)
+        # The v53r action table contains one extra leading action. Its score is
+        # a dedicated pooled-graph/global decision, independent of an arbitrary
+        # host cell. Legacy cell-only tables take the original path bit for bit.
+        node_counts = graph_node_counts(batch)
+        defer_enabled = bool(
+            raw_actor_logits.size(1) == int(node_counts[0].item()) + 1
+            and torch.all(node_counts == node_counts[0])
+        )
+        if defer_enabled:
+            raw_actor_logits = raw_actor_logits.clone()
+            raw_actor_logits[:, 0] = self.defer_head(decision_context).squeeze(-1)
         # The simulator grades complete rollout costs and converts them into a
         # conservative categorical target. Keep the residual logit linear so
         # that the M-step can represent that distribution without saturation.
@@ -895,6 +932,9 @@ class EvacPolicy(nn.Module):
         else:
             prior_feature = torch.zeros_like(relative_active)
         prior_logits = self.actor_prior_scale * prior_feature
+        if defer_enabled:
+            prior_logits = prior_logits.clone()
+            prior_logits[:, 0] = 0.0
         return (
             prior_logits + learned_residual,
             prior_logits,
@@ -974,6 +1014,33 @@ class EvacPolicy(nn.Module):
             (hidden, memory),
         )
 
+    def _critic_input(
+        self,
+        g: GNNInput,
+        decision_context: torch.Tensor,
+        hidden: torch.Tensor,
+    ) -> torch.Tensor:
+        """Build the value-only input without leaking its tape to the actor."""
+        public = torch.cat((decision_context, hidden), dim=-1)
+        if self.d_critic_exogenous == 0:
+            return public
+        exogenous = g.critic_exogenous
+        if exogenous is None:
+            exogenous = public.new_zeros(
+                (public.size(0), self.d_critic_exogenous)
+            )
+        else:
+            exogenous = exogenous.to(device=public.device, dtype=public.dtype)
+            if exogenous.ndim == 1:
+                exogenous = exogenous.unsqueeze(0)
+            expected = (public.size(0), self.d_critic_exogenous)
+            if tuple(exogenous.shape) != expected:
+                raise ValueError(
+                    f"critic_exogenous must have shape {expected}, "
+                    f"got {tuple(exogenous.shape)}"
+                )
+        return torch.cat((public, exogenous), dim=-1)
+
     def forward_nmcc_continuation_recurrent(
         self,
         g: GNNInput,
@@ -988,7 +1055,7 @@ class EvacPolicy(nn.Module):
             momentum_features,
         )
         critic_hidden = self.critic_trunk(
-            torch.cat((decision_context, hidden), dim=-1)
+            self._critic_input(g, decision_context, hidden)
         )
         value = torch.stack(
             tuple(
@@ -1017,7 +1084,7 @@ class EvacPolicy(nn.Module):
             momentum_features,
         )
         critic_hidden = self.critic_trunk(
-            torch.cat((decision_context, hidden), dim=-1)
+            self._critic_input(g, decision_context, hidden)
         )
         random_reference_hidden = self.random_reference_trunk(
             torch.cat((decision_context, hidden), dim=-1)
@@ -1077,7 +1144,7 @@ class EvacPolicy(nn.Module):
             hidden=hidden,
         )
         critic_hidden = self.critic_trunk(
-            torch.cat((decision_context, hidden), dim=-1)
+            self._critic_input(g, decision_context, hidden)
         )
         component_values = torch.stack(
             tuple(

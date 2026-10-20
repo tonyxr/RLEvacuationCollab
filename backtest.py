@@ -43,6 +43,7 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 RUNS_ROOT = os.path.join(PROJECT_ROOT, "runs")
 DYNAMIC_STRATEGIES = (
     "rl",
+    "rl_forecast_ablated",
     "objective_greedy",
     "risk_reduction",
     "route_saving",
@@ -51,9 +52,13 @@ DYNAMIC_STRATEGIES = (
     "accessibility_deficit",
     "random",
     "initial_only",
+    "forecast_greedy",
+    "regime_oracle_greedy",
+    "deadline_greedy",
+    "belief_rollout",
 )
 STATIC_STRATEGIES = ("static_greedy", "rl_precommit")
-LEARNED_STRATEGIES = ("rl", "rl_precommit")
+LEARNED_STRATEGIES = ("rl", "rl_forecast_ablated", "rl_precommit")
 PRIMARY_BENCHMARK_STRATEGY = "objective_greedy"
 
 EVALUATION_METRICS = {
@@ -269,23 +274,26 @@ def _run_episode(
                 f"expected {required_capacity}"
             )
         unassigned = core.finalInstallationUnassignedRationalPopulation
-        if unassigned is None or int(unassigned) != 0:
-            raise RuntimeError(
-                "Final shelter installation did not verify zero unassigned "
-                f"rational population: {unassigned}"
-            )
-    if strategy == "initial_only":
+        core.shelterDS.assertPopulationMatchedAssignment(
+            unassigned,
+            core.pedVol,
+            network_disruption_active=bool(
+                getattr(core.mapDS, "closed_edges", {})
+            ),
+            context="Final shelter installation",
+        )
+    if strategy in {"initial_only", "static_greedy"}:
         expected_additions = int(core.targetActiveShelters) - int(
             core.initShelterVol
         )
         if int(core.rl.maximum_deployments) != expected_additions:
             raise RuntimeError(
-                "initial_only must start with the common initial shelters and "
+                f"{strategy} must start with the common initial shelters and "
                 "retain the complete sequential installation budget"
             )
         if len(core.rl.static_precommit_schedule) != expected_additions:
             raise RuntimeError(
-                "initial_only must commit every scheduled site at time zero"
+                f"{strategy} must commit every scheduled site at time zero"
             )
         expected_times = tuple(
             int(core.shelterActionInterval) * index
@@ -293,7 +301,7 @@ def _run_episode(
         )
         if tuple(core.rl.deployment_times) != expected_times:
             raise RuntimeError(
-                "initial_only did not execute its precommitted sites on the "
+                f"{strategy} did not execute its precommitted sites on the "
                 f"common schedule: expected {expected_times}, observed "
                 f"{tuple(core.rl.deployment_times)}"
             )
