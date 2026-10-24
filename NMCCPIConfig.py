@@ -84,6 +84,25 @@ NMCC_PI_CORE_FIELDS = (
         DEFAULT_NMCC_PI_REPLAY_MAX_EPISODES,
     ),
     (
+        "nmccPiReplayMaxIterations",
+        "nmcc_pi_replay_max_iterations",
+        int,
+        0,
+    ),
+    (
+        "nmccPiReplayHalfLifeIterations",
+        "nmcc_pi_replay_half_life_iterations",
+        float,
+        0.0,
+    ),
+    ("nmccPiEarlyDecisions", "nmcc_pi_early_decisions", int, 3),
+    (
+        "nmccPiEarlyDecisionWeight",
+        "nmcc_pi_early_decision_weight",
+        float,
+        1.0,
+    ),
+    (
         "nmccPiReplayEpochs",
         "nmcc_pi_replay_epochs",
         int,

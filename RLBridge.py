@@ -222,6 +222,7 @@ class ActorReplayEpisode:
     target_scores: torch.Tensor
     exact_masks: torch.Tensor
     eta_floors: torch.Tensor
+    iteration: int = 0
 
 
 @dataclass
@@ -232,6 +233,7 @@ class ActorFitEpisode:
     target_probabilities: torch.Tensor
     target_scores: torch.Tensor
     exact_masks: torch.Tensor
+    frame_weights: torch.Tensor
 
 
 @dataclass
@@ -401,6 +403,10 @@ class RLBridge:
         nmcc_pi_fit_tolerance: float = DEFAULT_NMCC_PI_FIT_TOLERANCE,
         nmcc_pi_branch_horizon: int = DEFAULT_NMCC_PI_BRANCH_HORIZON,
         nmcc_pi_replay_max_episodes: int = DEFAULT_NMCC_PI_REPLAY_MAX_EPISODES,
+        nmcc_pi_replay_max_iterations: int = 0,
+        nmcc_pi_replay_half_life_iterations: float = 0.0,
+        nmcc_pi_early_decisions: int = 3,
+        nmcc_pi_early_decision_weight: float = 1.0,
         nmcc_pi_replay_epochs: int = DEFAULT_NMCC_PI_REPLAY_EPOCHS,
         nmcc_pi_validation_fraction: float = DEFAULT_NMCC_PI_VALIDATION_FRACTION,
         exploration_rate_start: float = DEFAULT_EXPLORATION_RATE_START,
@@ -584,6 +590,30 @@ class RLBridge:
             raise ValueError("nmcc_pi_branch_horizon must be non-negative")
         self.nmcc_pi_replay_max_episodes = self._positive_int(
             "nmcc_pi_replay_max_episodes", nmcc_pi_replay_max_episodes
+        )
+        self.nmcc_pi_replay_max_iterations = int(
+            nmcc_pi_replay_max_iterations
+        )
+        if self.nmcc_pi_replay_max_iterations < 0:
+            raise ValueError(
+                "nmcc_pi_replay_max_iterations must be non-negative"
+            )
+        self.nmcc_pi_replay_half_life_iterations = float(
+            nmcc_pi_replay_half_life_iterations
+        )
+        if (
+            not np.isfinite(self.nmcc_pi_replay_half_life_iterations)
+            or self.nmcc_pi_replay_half_life_iterations < 0.0
+        ):
+            raise ValueError(
+                "nmcc_pi_replay_half_life_iterations must be finite and non-negative"
+            )
+        self.nmcc_pi_early_decisions = int(nmcc_pi_early_decisions)
+        if self.nmcc_pi_early_decisions < 0:
+            raise ValueError("nmcc_pi_early_decisions must be non-negative")
+        self.nmcc_pi_early_decision_weight = self._positive_float(
+            "nmcc_pi_early_decision_weight",
+            nmcc_pi_early_decision_weight,
         )
         self.nmcc_pi_replay_epochs = self._positive_int(
             "nmcc_pi_replay_epochs", nmcc_pi_replay_epochs
@@ -1544,6 +1574,16 @@ class RLBridge:
                 "actor_replay_episodes": int(
                     self.nmcc_pi_replay_max_episodes
                 ),
+                "actor_replay_iterations": int(
+                    self.nmcc_pi_replay_max_iterations
+                ),
+                "actor_replay_half_life_iterations": float(
+                    self.nmcc_pi_replay_half_life_iterations
+                ),
+                "early_decisions": int(self.nmcc_pi_early_decisions),
+                "early_decision_weight": float(
+                    self.nmcc_pi_early_decision_weight
+                ),
                 "correction_gate": False,
                 "fallback_controller": False,
             },
@@ -1755,6 +1795,20 @@ class RLBridge:
                     self.nmcc_pi_replay_max_episodes
                     if self.nmcc_policy_improvement
                     else 0
+                ),
+                "actor_replay_iterations": (
+                    self.nmcc_pi_replay_max_iterations
+                    if self.nmcc_policy_improvement
+                    else 0
+                ),
+                "actor_replay_half_life_iterations": (
+                    self.nmcc_pi_replay_half_life_iterations
+                    if self.nmcc_policy_improvement
+                    else 0.0
+                ),
+                "early_decisions": int(self.nmcc_pi_early_decisions),
+                "early_decision_weight": float(
+                    self.nmcc_pi_early_decision_weight
                 ),
                 "critic_epochs": self.critic_epochs,
                 "minibatch_size": self.minibatch_size,
@@ -2036,6 +2090,7 @@ class RLBridge:
             "target_scores": episode.target_scores.detach().cpu(),
             "exact_masks": episode.exact_masks.detach().cpu(),
             "eta_floors": episode.eta_floors.detach().cpu(),
+            "iteration": int(episode.iteration),
         }
 
     def _deserialize_frame(
@@ -2122,7 +2177,13 @@ class RLBridge:
     def _deserialize_actor_replay_episode(
         self, payload: dict
     ) -> ActorReplayEpisode:
-        expected = {"frames", "target_scores", "exact_masks", "eta_floors"}
+        expected = {
+            "frames",
+            "target_scores",
+            "exact_masks",
+            "eta_floors",
+            "iteration",
+        }
         if not isinstance(payload, dict) or set(payload) != expected:
             raise ValueError("checkpoint actor-replay episode fields do not match")
         frames = tuple(
@@ -2132,6 +2193,7 @@ class RLBridge:
         scores = payload["target_scores"]
         masks = payload["exact_masks"]
         floors = payload["eta_floors"]
+        iteration = payload["iteration"]
         if (
             not frames
             or not torch.is_tensor(scores)
@@ -2144,6 +2206,9 @@ class RLBridge:
             or not bool(torch.isfinite(scores).all())
             or not bool(torch.isfinite(floors).all())
             or bool(torch.any(floors <= 0.0))
+            or not isinstance(iteration, int)
+            or isinstance(iteration, bool)
+            or iteration < 0
         ):
             raise ValueError("checkpoint actor-replay episode is invalid")
         return ActorReplayEpisode(
@@ -2151,6 +2216,7 @@ class RLBridge:
             target_scores=scores.detach().cpu(),
             exact_masks=masks.detach().cpu(),
             eta_floors=floors.detach().cpu(),
+            iteration=int(iteration),
         )
 
     def _validate_frame(self, frame: ObservationFrame) -> None:
@@ -5989,6 +6055,7 @@ class RLBridge:
         "rollout_pi_uniform_panel_actions",
         "rollout_pi_actor_replay_episodes",
         "rollout_pi_actor_replay_transitions",
+        "rollout_pi_actor_replay_iterations_spanned",
         "rollout_pi_rollout_horizon_timesteps",
         "rollout_pi_physical_branch_seconds",
         "rollout_pi_branch_workers",
@@ -6128,6 +6195,15 @@ class RLBridge:
             "rollout_pi_actor_replay_episodes": float(len(self.actor_replay)),
             "rollout_pi_actor_replay_transitions": float(
                 sum(len(episode.frames) for episode in self.actor_replay)
+            ),
+            "rollout_pi_actor_replay_iterations_spanned": (
+                float(
+                    int(self.actor_rollout_updates)
+                    - min(episode.iteration for episode in self.actor_replay)
+                    + 1
+                )
+                if self.actor_replay
+                else 0.0
             ),
             "rollout_pi_rollout_horizon_timesteps": mean(
                 "rollout_horizon_timesteps"
@@ -6390,14 +6466,12 @@ class RLBridge:
         transitions: Sequence[Transition],
         episodes: Sequence[Sequence[int]],
     ) -> None:
-        """Store one internally consistent frozen-policy iteration.
+        """Aggregate recent simulator evidence and rebuild current targets.
 
-        A rollout cost is :math:`Q^{pi_k}(s,a)`: its later decisions were made
-        by the actor frozen for the batch that produced it.  Costs from an older
-        actor cannot be made on-policy merely by recomputing probabilities.
-        Consequently actor evidence is replaced at every policy iteration,
-        never mixed across continuation policies.  The reference-value replay
-        remains separate because its uniform continuation policy is fixed.
+        Stored rollout scores retain the policy iteration whose frozen actor
+        graded them. Recent iterations are kept together, down-weighted by
+        age during fitting, and converted to categorical targets from the
+        current actor rather than replaying stale probabilities.
         """
         current_iteration: list[ActorReplayEpisode] = []
         for episode in episodes:
@@ -6445,21 +6519,32 @@ class RLBridge:
                             for index in indices
                         ]
                     ),
+                    iteration=int(self.actor_rollout_updates),
                 )
             )
+        keep_iterations = int(self.nmcc_pi_replay_max_iterations)
+        self.actor_replay = [
+            episode
+            for episode in self.actor_replay
+            if keep_iterations > 0
+            and episode.iteration
+            >= int(self.actor_rollout_updates) - keep_iterations
+        ] + current_iteration
         maximum = int(self.nmcc_pi_replay_max_episodes)
-        self.actor_replay = current_iteration[-maximum:]
+        self.actor_replay = self.actor_replay[-maximum:]
 
     def _actor_fit_episodes(self) -> list[ActorFitEpisode]:
-        """Build targets for the current frozen-policy iteration.
-
-        Every retained branch score was generated with this actor as its frozen
-        continuation. Each episode is replayed in order so its recurrent state
-        reflects all shelter actions represented in the saved observations.
-        """
+        """Rebuild targets under the current actor with recency/stage weights."""
         result: list[ActorFitEpisode] = []
+        now = int(self.actor_rollout_updates)
+        half_life = float(self.nmcc_pi_replay_half_life_iterations)
         with torch.no_grad():
             for replay in self.actor_replay:
+                episode_weight = (
+                    0.5 ** ((now - int(replay.iteration)) / half_life)
+                    if half_life > 0.0
+                    else 1.0
+                )
                 recurrent_state = None
                 targets = []
                 for frame, scores, exact_mask, eta_floor in zip(
@@ -6501,6 +6586,19 @@ class RLBridge:
                         target_probabilities=torch.stack(targets),
                         target_scores=replay.target_scores,
                         exact_masks=replay.exact_masks,
+                        frame_weights=torch.as_tensor(
+                            [
+                                episode_weight
+                                * (
+                                    float(self.nmcc_pi_early_decision_weight)
+                                    if decision_index
+                                    < int(self.nmcc_pi_early_decisions)
+                                    else 1.0
+                                )
+                                for decision_index in range(len(replay.frames))
+                            ],
+                            dtype=torch.float32,
+                        ),
                     )
                 )
         return result
@@ -6518,15 +6616,23 @@ class RLBridge:
         diagnostic and has no gradient authority.
         """
         losses = []
+        frame_weights = []
         correct_weight = 0.0
         comparison_weight = 0.0
         for episode in episodes:
             recurrent_state = None
-            for frame, target_probability, target_scores, exact_mask in zip(
-                episode.frames,
-                episode.target_probabilities,
-                episode.target_scores,
-                episode.exact_masks,
+            for index, (
+                frame,
+                target_probability,
+                target_scores,
+                exact_mask,
+            ) in enumerate(
+                zip(
+                    episode.frames,
+                    episode.target_probabilities,
+                    episode.target_scores,
+                    episode.exact_masks,
+                )
             ):
                 logits, _, _, recurrent_state = (
                     self.policy.forward_nmcc_actor_recurrent(
@@ -6596,7 +6702,11 @@ class RLBridge:
                     top_choice_margin = torch.square(
                         torch.relu(target_log_odds - fitted_log_odds)
                     )
-                losses.append(categorical_kl + 0.1 * top_choice_margin)
+                weight = float(episode.frame_weights[index])
+                losses.append(
+                    weight * (categorical_kl + 0.1 * top_choice_margin)
+                )
+                frame_weights.append(weight)
                 actions = torch.nonzero(
                     exact,
                     as_tuple=False,
@@ -6632,7 +6742,8 @@ class RLBridge:
                 0.0,
             )
         return (
-            torch.stack(losses).mean(),
+            torch.stack(losses).sum()
+            / max(1e-12, float(sum(frame_weights))),
             correct_weight,
             comparison_weight,
         )

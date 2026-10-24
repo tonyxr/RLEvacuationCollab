@@ -1726,6 +1726,16 @@ class Core:
                         "actor_replay_episodes": int(
                             self.nmccPiReplayMaxEpisodes
                         ),
+                        "actor_replay_iterations": int(
+                            self.nmccPiReplayMaxIterations
+                        ),
+                        "actor_replay_half_life_iterations": float(
+                            self.nmccPiReplayHalfLifeIterations
+                        ),
+                        "early_decisions": int(self.nmccPiEarlyDecisions),
+                        "early_decision_weight": float(
+                            self.nmccPiEarlyDecisionWeight
+                        ),
                         "actor_replay_evidence": "physical_branch_scores",
                         "historical_probability_targets": False,
                         "random_reference_rollouts_per_state": int(
