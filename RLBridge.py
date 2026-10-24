@@ -408,6 +408,9 @@ class RLBridge:
         nmcc_pi_replay_half_life_iterations: float = 0.0,
         nmcc_pi_early_decisions: int = 3,
         nmcc_pi_early_decision_weight: float = 1.0,
+        rl_early_search_decisions: int = 3,
+        rl_early_search_top_k: int = 5,
+        rl_early_search_futures: int = 4,
         nmcc_pi_replay_epochs: int = DEFAULT_NMCC_PI_REPLAY_EPOCHS,
         nmcc_pi_validation_fraction: float = DEFAULT_NMCC_PI_VALIDATION_FRACTION,
         exploration_rate_start: float = DEFAULT_EXPLORATION_RATE_START,
@@ -622,6 +625,15 @@ class RLBridge:
             "nmcc_pi_early_decision_weight",
             nmcc_pi_early_decision_weight,
         )
+        self.rl_early_search_decisions = int(rl_early_search_decisions)
+        if self.rl_early_search_decisions < 0:
+            raise ValueError("rl_early_search_decisions must be non-negative")
+        self.rl_early_search_top_k = self._positive_int(
+            "rl_early_search_top_k", rl_early_search_top_k
+        )
+        self.rl_early_search_futures = self._positive_int(
+            "rl_early_search_futures", rl_early_search_futures
+        )
         self.nmcc_pi_replay_epochs = self._positive_int(
             "nmcc_pi_replay_epochs", nmcc_pi_replay_epochs
         )
@@ -725,6 +737,7 @@ class RLBridge:
         if strategy not in {
             "rl",
             "rl_forecast_ablated",
+            "rl_early_search",
             "rl_precommit",
             "objective_greedy",
             "objective_greedy_legacy",
@@ -849,7 +862,12 @@ class RLBridge:
         self.actor_head_named_parameters: list[tuple[str, nn.Parameter]] = []
         self.critic_head_named_parameters: list[tuple[str, nn.Parameter]] = []
         self.random_reference_named_parameters: list[tuple[str, nn.Parameter]] = []
-        if self.deployment_strategy in {"rl", "rl_forecast_ablated", "rl_precommit"}:
+        if self.deployment_strategy in {
+            "rl",
+            "rl_forecast_ablated",
+            "rl_early_search",
+            "rl_precommit",
+        }:
             if tuple(VALUE_COMPONENT_NAMES) != tuple(REWARD_COMPONENT_NAMES):
                 raise RuntimeError("Actor-critic and reward component orders disagree")
             with torch.random.fork_rng(devices=[]):
@@ -968,7 +986,12 @@ class RLBridge:
         self.random_reference_replay: list[ReferenceValueEpisode] = []
         self.actor_replay: list[ActorReplayEpisode] = []
         self.rollout_pi_ungraded_decisions = 0
-        if self.deployment_strategy in {"rl", "rl_forecast_ablated", "rl_precommit"}:
+        if self.deployment_strategy in {
+            "rl",
+            "rl_forecast_ablated",
+            "rl_early_search",
+            "rl_precommit",
+        }:
             if os.path.exists(self.checkpoint_path):
                 self._load_checkpoint(require_training_state=self.train_mode)
             elif not self.train_mode:
@@ -1013,6 +1036,8 @@ class RLBridge:
         self.action_comparisons = 0
         self.behavior_entropies: list[float] = []
         self.deferred_decisions = 0
+        self.early_search_decisions = 0
+        self.early_search_changed = 0
         self.last_training_diagnostics: Dict[str, float] = {}
         self.initial_observation_digest: Optional[str] = None
         self.precommit_initial_observation_digest: Optional[str] = None
@@ -2825,11 +2850,99 @@ class RLBridge:
         )
         return decision
 
+    def _select_rl_with_early_search(
+        self,
+        observation: RegionalObservation,
+        recurrent_step: RecurrentPolicyStep,
+    ) -> PolicyDecision:
+        base = self._select_rl(
+            observation,
+            deterministic=True,
+            recurrent_step=recurrent_step,
+        )
+        if self.train_mode or int(self.decision_index) >= int(
+            self.rl_early_search_decisions
+        ):
+            return base
+        mask = np.asarray(observation.action_mask, dtype=bool)
+        feasible = np.flatnonzero(mask)
+        if feasible.size < 2:
+            return base
+        masked_logits, _, _ = self._behavior_policy(recurrent_step)
+        scores = masked_logits.detach().cpu().numpy().reshape(-1)
+        defer = int(getattr(observation, "defer_action_index", -1))
+        install = feasible[feasible != defer]
+        ranked = sorted(
+            install.tolist(),
+            key=lambda action: (-float(scores[action]), int(action)),
+        )
+        panel = ranked[: int(self.rl_early_search_top_k)]
+        if defer >= 0 and bool(mask[defer]):
+            panel.append(defer)
+        if len(panel) < 2:
+            return base
+        cells = [
+            -1
+            if action == defer
+            else int(observation.candidate_cell_indices[action])
+            for action in panel
+        ]
+        episode_seed = int(
+            getattr(self.core, "scenario_seed", self.policy_seed)
+        )
+        seeds = tuple(
+            NPI.tape_seed(
+                episode_seed ^ 0x45415253,
+                int(self.decision_index),
+                tape_index,
+            )
+            for tape_index in range(int(self.rl_early_search_futures))
+        )
+        frozen = RPI.FrozenResidualPolicy.capture(
+            self.policy,
+            self.edge_index,
+            initial_population=self.initial_population,
+            shelter_action_interval=self.shelter_action_interval,
+            previous_observation=observation,
+            recurrent_state=self.recurrent_state,
+        )
+        brancher = self._ensure_brancher()
+        snapshot = CB.capture(self.core, label="rl-early-search")
+        before = CB.live_state_digest(self.core)
+        matrix = brancher.rollout_policy_costs(
+            cells,
+            snapshot=snapshot,
+            future_seeds=seeds,
+            decision_index=int(self.decision_index),
+            remaining_deployments=int(self.remaining_deployments),
+            maximum_deployments=int(self.maximum_deployments),
+            frozen_policy=frozen,
+            mode="belief",
+        )
+        if CB.live_state_digest(self.core) != before:
+            raise RuntimeError("Early search mutated the live simulator")
+        mean_cost = np.mean(np.asarray(matrix, dtype=np.float64), axis=0)
+        best = int(panel[int(np.argmin(mean_cost))])
+        self.early_search_decisions += 1
+        self.early_search_changed += int(best != int(base.action_index))
+        return replace(
+            base,
+            action_index=best,
+            strategy="rl_early_search",
+        )
+
     def _select_action(
         self,
         observation: RegionalObservation,
         recurrent_step: Optional[RecurrentPolicyStep] = None,
     ) -> PolicyDecision:
+        if self.deployment_strategy == "rl_early_search":
+            if recurrent_step is None:
+                recurrent_step = self._advance_recurrent_observation(observation)
+            return self._select_rl_with_early_search(
+                observation,
+                recurrent_step,
+            )
         if self.deployment_strategy in {"rl", "rl_forecast_ablated", "rl_precommit"}:
             return self._select_rl(
                 observation,
@@ -3962,6 +4075,7 @@ class RLBridge:
         dynamic_strategy = self.deployment_strategy in {
             "rl",
             "rl_forecast_ablated",
+            "rl_early_search",
             "objective_greedy",
             "objective_greedy_legacy",
             "random",
@@ -4011,6 +4125,7 @@ class RLBridge:
         if decision_opportunity and self.deployment_strategy in {
             "rl",
             "rl_forecast_ablated",
+            "rl_early_search",
             "rl_precommit",
             "objective_greedy",
             "objective_greedy_legacy",
@@ -4034,7 +4149,10 @@ class RLBridge:
         if (
             decision_opportunity
             and self.deployment_strategy in {
-                "rl", "rl_forecast_ablated", "rl_precommit"
+                "rl",
+                "rl_forecast_ablated",
+                "rl_early_search",
+                "rl_precommit",
             }
         ):
             recurrent_step = self._advance_recurrent_observation(observation)
@@ -4706,6 +4824,8 @@ class RLBridge:
                 else 0.0
             ),
             "deferred_decisions": float(self.deferred_decisions),
+            "early_search_decisions": float(self.early_search_decisions),
+            "early_search_changed": float(self.early_search_changed),
             "optimizer_updated": 0.0,
             "actor_policy_entropy_before": 0.0,
             "actor_policy_entropy_after": 0.0,

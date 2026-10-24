@@ -78,6 +78,7 @@ POLICY_DYNAMICS_SOURCES = (
 DYNAMIC_STRATEGIES = (
     "rl",
     "rl_forecast_ablated",
+    "rl_early_search",
     "objective_greedy",
     "objective_greedy_legacy",
     "risk_reduction",
@@ -93,7 +94,12 @@ DYNAMIC_STRATEGIES = (
     "belief_rollout",
 )
 STATIC_STRATEGIES = ("static_greedy", "rl_precommit")
-LEARNED_STRATEGIES = ("rl", "rl_forecast_ablated", "rl_precommit")
+LEARNED_STRATEGIES = (
+    "rl",
+    "rl_forecast_ablated",
+    "rl_early_search",
+    "rl_precommit",
+)
 PRIMARY_BENCHMARK_STRATEGY = "objective_greedy"
 
 

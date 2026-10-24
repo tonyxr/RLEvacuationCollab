@@ -1405,7 +1405,7 @@ class Core:
             ],
             "checkpoint_path": (
                 self.rl.checkpoint_path
-                if strategy_key in {"rl", "rl_precommit"}
+                if strategy_key in {"rl", "rl_precommit", "rl_early_search"}
                 else None
             ),
             "learner_batch_episodes": int(self.rl.rollout_episodes),

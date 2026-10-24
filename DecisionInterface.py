@@ -294,6 +294,18 @@ BENCHMARK_POLICY_CONTRACTS = {
         "information": "current public regional state with predictive inputs ablated",
         "timing": "dynamic",
     },
+    "rl_early_search": {
+        "role": "deployable_hybrid",
+        "label": "early-search reinforcement-learning policy",
+        "information": (
+            "the complete public regional observation contract and belief-model "
+            "futures; no realized latent tape"
+        ),
+        "timing": (
+            "actor top-k plus defer rolled out under the actor at the first "
+            "rlEarlySearchDecisions epochs; plain actor afterwards"
+        ),
+    },
     "rl_precommit": {
         "role": "learned_timing_ablation",
         "label": "time-zero precommitted reinforcement-learning policy",

@@ -103,6 +103,9 @@ NMCC_PI_CORE_FIELDS = (
         float,
         1.0,
     ),
+    ("rlEarlySearchDecisions", "rl_early_search_decisions", int, 3),
+    ("rlEarlySearchTopK", "rl_early_search_top_k", int, 5),
+    ("rlEarlySearchFutures", "rl_early_search_futures", int, 4),
     (
         "nmccPiReplayEpochs",
         "nmcc_pi_replay_epochs",
