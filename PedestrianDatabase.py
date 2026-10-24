@@ -1291,6 +1291,9 @@ class PedDS:
                 else int(simulation_time)
             ),
         )
+        retired = int(
+            self.shelterDS.retireOverrunCandidates(self.cellTracker)
+        )
         released = 0
         reactivated = 0
         for shelter, released_population, _danger in transitions:
@@ -1343,6 +1346,7 @@ class PedDS:
             "closed_shelters": int(len(transitions)),
             "released_reservations": int(released),
             "reactivated_population": int(reactivated),
+            "retired_candidates": int(retired),
         }
     
     """Resolve pedestrian arrival at a network node or active shelter."""

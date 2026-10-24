@@ -928,6 +928,7 @@ class RLBridge:
         self.rollout_episode_count = 0
         self.random_reference_replay: list[ReferenceValueEpisode] = []
         self.actor_replay: list[ActorReplayEpisode] = []
+        self.rollout_pi_ungraded_decisions = 0
         if self.deployment_strategy in {"rl", "rl_forecast_ablated", "rl_precommit"}:
             if os.path.exists(self.checkpoint_path):
                 self._load_checkpoint(require_training_state=self.train_mode)
@@ -4995,7 +4996,7 @@ class RLBridge:
         decision: PolicyDecision,
         *,
         simulation_time: int,
-    ) -> dict:
+    ) -> Optional[dict]:
         """Grade a strong-plus-uniform panel to the horizon under the frozen actor.
 
         Early high-impact decisions are exhaustive. Later panels always keep
@@ -5010,9 +5011,7 @@ class RLBridge:
         mask = np.asarray(observation.action_mask, dtype=bool)
         feasible = np.flatnonzero(mask)
         if feasible.size < 2:
-            raise RuntimeError(
-                "Rollout policy improvement requires two feasible actions"
-            )
+            return None
         chosen_action = int(decision.action_index)
         if chosen_action not in set(feasible.tolist()):
             raise RuntimeError("Executed rollout action is infeasible")
@@ -5020,9 +5019,7 @@ class RLBridge:
         defer_action = int(getattr(observation, "defer_action_index", -1))
         install_actions = feasible[feasible != defer_action]
         if install_actions.size == 0:
-            raise RuntimeError(
-                "Rollout policy improvement has no feasible installation"
-            )
+            return None
         base_action = int(
             install_actions[
                 int(
@@ -5960,6 +5957,7 @@ class RLBridge:
         "rollout_pi_physical_branch_seconds",
         "rollout_pi_branch_workers",
         "rollout_pi_rollout_changed_base_best_fraction",
+        "rollout_pi_ungraded_decisions",
         "environment_dynamics_explained_variance",
         *tuple(
             f"environment_dynamics_explained_variance_{name}"
@@ -6027,6 +6025,8 @@ class RLBridge:
         """
         records = self.improvement_records
         self.improvement_records = []
+        ungraded_decisions = int(self.rollout_pi_ungraded_decisions)
+        self.rollout_pi_ungraded_decisions = 0
 
         def mean(key: str) -> float:
             values = [float(item[key]) for item in records]
@@ -6101,6 +6101,7 @@ class RLBridge:
             "rollout_pi_rollout_changed_base_best_fraction": mean(
                 "rollout_changed_base_best"
             ),
+            "rollout_pi_ungraded_decisions": float(ungraded_decisions),
         }
 
     def _policy_log_probabilities(
@@ -6182,15 +6183,20 @@ class RLBridge:
                 dim=-1,
             )
             available = improvement_available
-            if not bool(available.all()):
-                raise RuntimeError(
-                    "Rollout policy diagnostics require every transition target"
-                )
-            prior = improvement_prior
-            target = improvement_target
-            log_rows = log_new
-            feasible_rows = action_masks.to(torch.bool)
-            exact_rows = improvement_exact_mask.to(torch.bool)
+            if not bool(available.any()):
+                return {
+                    "kl": float("nan"),
+                    "target_fit_kl": float("nan"),
+                    "top1": float("nan"),
+                    "expected_advantage": float("nan"),
+                }
+            prior = improvement_prior[available]
+            target = improvement_target[available]
+            log_rows = log_new[available]
+            feasible_rows = action_masks[available].to(torch.bool)
+            exact_rows = improvement_exact_mask[available].to(torch.bool)
+            available_branch_best = branch_best[available]
+            available_advantage = improvement_advantage[available]
             new_rows = log_rows.exp()
             policy_kl = torch.where(
                 feasible_rows & (new_rows > 0.0),
@@ -6203,7 +6209,7 @@ class RLBridge:
             ).sum(dim=-1)
             top1 = (
                 self._safe_masked_logits(log_rows, exact_rows).argmax(dim=-1)
-                == branch_best
+                == available_branch_best
             ).to(torch.float32)
             exact_probability = torch.where(
                 exact_rows,
@@ -6214,7 +6220,7 @@ class RLBridge:
                 dim=-1, keepdim=True
             ).clamp_min(1e-30)
             expected_advantage = (
-                exact_probability * improvement_advantage
+                exact_probability * available_advantage
             ).sum(dim=-1)
             kl = policy_kl.mean()
             positive_target = target > 0.0
@@ -6359,16 +6365,17 @@ class RLBridge:
         """
         current_iteration: list[ActorReplayEpisode] = []
         for episode in episodes:
-            indices = [int(index) for index in episode]
-            if any(
-                transitions[index].improvement_advantage is None
-                or transitions[index].improvement_exact_mask is None
-                or transitions[index].improvement_eta_floor is None
-                for index in indices
-            ):
-                raise RuntimeError(
-                    "Policy improvement requires NMCC labels at every decision"
-                )
+            episode_indices = [int(index) for index in episode]
+            indices = [
+                index
+                for index in episode_indices
+                if transitions[index].improvement_advantage is not None
+                and transitions[index].improvement_exact_mask is not None
+                and transitions[index].improvement_eta_floor is not None
+            ]
+            self.rollout_pi_ungraded_decisions += len(episode_indices) - len(indices)
+            if not indices:
+                continue
             current_iteration.append(
                 ActorReplayEpisode(
                     frames=tuple(
@@ -6910,12 +6917,17 @@ class RLBridge:
             )
         actor_fit_episodes: list[ActorFitEpisode] = []
         if pi_mode and actor_enabled:
-            if not bool(improvement_available.all()):
-                raise RuntimeError(
-                    "Policy improvement requires NMCC contrasts for every decision"
+            self.rollout_pi_ungraded_decisions = 0
+            if bool(improvement_available.any()):
+                self._append_actor_replay(transitions, episodes)
+                actor_fit_episodes = self._actor_fit_episodes()
+            else:
+                self.rollout_pi_ungraded_decisions = int(total)
+                print(
+                    "[ROLLOUT PI WARNING] no installable actor decisions were "
+                    "available; skipping the actor fit for this batch.",
+                    flush=True,
                 )
-            self._append_actor_replay(transitions, episodes)
-            actor_fit_episodes = self._actor_fit_episodes()
         improvement_branch_best = self._branch_best_actions(
             improvement_advantage, improvement_exact_mask
         )
@@ -6979,14 +6991,13 @@ class RLBridge:
                 "counterfactual_remaining_risk_time_difference_mean": 0.0,
                 "counterfactual_casualties_avoided_mean": 0.0,
             }
-            if pi_mode and actor_enabled:
-                if not bool(improvement_available.all()):
-                    raise RuntimeError(
-                        "NMCC policy improvement requires a branch contrast "
-                        "for every actor transition"
-                    )
+            if pi_mode and actor_enabled and bool(improvement_available.any()):
                 row = torch.arange(total, device=self.device)
-                if not bool(improvement_exact_mask[row, actions].all()):
+                if not bool(
+                    improvement_exact_mask[
+                        row[improvement_available], actions[improvement_available]
+                    ].all()
+                ):
                     raise RuntimeError(
                         "The executed action is absent from its simulator-graded support"
                     )
@@ -7289,11 +7300,6 @@ class RLBridge:
         # Simulator grading supplies matched costs for every screened shelter.
         # This update fits only the current iteration's constrained categorical
         # target: there is no PPO actor pass and no stale actor-target replay.
-        if pi_mode and actor_enabled and not bool(improvement_available.all()):
-            raise RuntimeError(
-                "Rollout policy iteration requires branch contrasts for "
-                "every decision"
-            )
         epoch_budget = self.actor_epochs
         improvement_policy_kl_before = float("nan")
         improvement_policy_kl_after = float("nan")
@@ -7330,7 +7336,7 @@ class RLBridge:
 
         # Statistics are descriptive only; they never accept, reject, clip or
         # roll back an actor update.
-        if pi_mode and actor_enabled:
+        if pi_mode and actor_enabled and actor_fit_episodes:
             before_statistics = policy_statistics()
             improvement_policy_kl_before = before_statistics["kl"]
             improvement_target_kl_before = before_statistics["target_fit_kl"]
@@ -7338,7 +7344,7 @@ class RLBridge:
                 "expected_advantage"
             ]
 
-        if actor_enabled and pi_mode:
+        if actor_enabled and pi_mode and actor_fit_episodes:
             actor_fit_metrics = self._fit_actor_iteration(actor_fit_episodes)
             actor_epochs_completed = int(actor_fit_metrics["updates"])
             actor_steps_accepted = actor_epochs_completed
@@ -7451,7 +7457,7 @@ class RLBridge:
                 actor_gradient_norms.extend(epoch_gradient_norms)
                 residual_rms_values.extend(epoch_residual_rms)
 
-        if pi_mode and actor_enabled:
+        if pi_mode and actor_enabled and actor_fit_episodes:
             final_statistics = policy_statistics()
             improvement_policy_kl_after = final_statistics["kl"]
             improvement_target_kl_after = final_statistics["target_fit_kl"]

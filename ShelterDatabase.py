@@ -42,6 +42,8 @@ class ShelterDS:
         self.hazardOverrunDangerLevel = 4
         self.currentSimulationTime = 0
         self.hazardOverrunCount = 0
+        self.retiredCandidates = []
+        self.retiredCandidateCount = 0
 
     def configuredShelterCapacity(self, node) -> int:
         token = self.deploymentCapacityToken
@@ -535,6 +537,36 @@ class ShelterDS:
                 (shelter, int(released_population), int(danger))
             )
         return tuple(transitions)
+
+    def retireOverrunCandidates(self, cellTracker):
+        """Remove candidate buildings from cells at or above the overrun level.
+
+        A burned building cannot be opened. Retiring it keeps the action table
+        honest: the cell becomes an infeasible placeholder slot instead of a
+        token-consuming dead install. Identity is kept for diagnostics.
+        """
+        if cellTracker is None or self.shelterCanByCell is None:
+            return 0
+        threshold = int(self.hazardOverrunDangerLevel)
+        retired = 0
+        for ci, row in enumerate(self.shelterCanByCell):
+            for cj, candidates in enumerate(row):
+                if not candidates:
+                    continue
+                if int(cellTracker.getCellState((ci, cj))) < threshold:
+                    continue
+                for node in candidates:
+                    self.retiredCandidates.append(
+                        (
+                            int(self.currentSimulationTime),
+                            (ci, cj),
+                            str(getattr(node, "OSMID", "")),
+                        )
+                    )
+                retired += len(candidates)
+                candidates.clear()
+        self.retiredCandidateCount += retired
+        return retired
 
     def _fail_new_shelter_if_overrun(self, shelter, cellTracker):
         """Apply the same physical rule to a site installed in active fire."""

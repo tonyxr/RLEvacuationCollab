@@ -1692,6 +1692,20 @@ class RegionalPolicy(Protocol):
         ...
 
 
+def _defer_if_nothing_installable(
+    observation: RegionalObservation,
+    strategy_name: str,
+):
+    defer = int(getattr(observation, "defer_action_index", -1))
+    if (
+        _feasible_install_actions(observation).size == 0
+        and defer >= 0
+        and bool(observation.action_mask[defer])
+    ):
+        return PolicyDecision(action_index=defer, strategy=strategy_name)
+    return None
+
+
 class ActivePopulationHeuristic:
     """Benchmark: choose a site in the region with most active evacuees."""
 
@@ -1699,6 +1713,9 @@ class ActivePopulationHeuristic:
 
     def select(self, observation: RegionalObservation, *, deterministic: bool = True) -> PolicyDecision:
         del deterministic
+        fallback = _defer_if_nothing_installable(observation, self.name)
+        if fallback is not None:
+            return fallback
         feasible = _feasible_install_actions(observation)
         if feasible.size == 0:
             raise RuntimeError("The heuristic received an observation with no feasible action")
@@ -1727,6 +1744,9 @@ class RiskTimeReductionHeuristic:
         deterministic: bool = True,
     ) -> PolicyDecision:
         del deterministic
+        fallback = _defer_if_nothing_installable(observation, self.name)
+        if fallback is not None:
+            return fallback
         feasible = _feasible_install_actions(observation)
         if feasible.size == 0:
             raise RuntimeError(
@@ -1766,6 +1786,9 @@ class ObjectiveMatchedGreedyHeuristic:
         deterministic: bool = True,
     ) -> PolicyDecision:
         del deterministic
+        fallback = _defer_if_nothing_installable(observation, self.name)
+        if fallback is not None:
+            return fallback
         feasible = _feasible_install_actions(observation)
         if feasible.size == 0:
             raise RuntimeError(
@@ -1812,6 +1835,9 @@ class ForecastGreedyHeuristic:
         deterministic=True,
     ):
         del deterministic
+        fallback = _defer_if_nothing_installable(observation, self.name)
+        if fallback is not None:
+            return fallback
         scores = (
             self.scores(observation)
             if candidate_values is None
@@ -1912,6 +1938,9 @@ class HazardWeightedDemandHeuristic:
         deterministic: bool = True,
     ) -> PolicyDecision:
         del deterministic
+        fallback = _defer_if_nothing_installable(observation, self.name)
+        if fallback is not None:
+            return fallback
         feasible = _feasible_install_actions(observation)
         if feasible.size == 0:
             raise RuntimeError(
@@ -1960,6 +1989,9 @@ class AccessibilityDeficitHeuristic:
         deterministic: bool = True,
     ) -> PolicyDecision:
         del deterministic
+        fallback = _defer_if_nothing_installable(observation, self.name)
+        if fallback is not None:
+            return fallback
         if observation.number_of_cells != int(self.cell_centers.shape[0]):
             raise ValueError(
                 "cell_centers and RegionalObservation must contain the same number of cells"
@@ -3644,7 +3676,10 @@ class RegionalObservationBuilder:
             action_mask = action_mask.copy()
             action_mask[0] = bool(
                 remaining_deployments > 0
-                and remaining_deployments < remaining_epochs
+                and (
+                    remaining_deployments < remaining_epochs
+                    or not bool(np.any(action_mask[1:]))
+                )
             )
         forecast_direction = float(public.get("wind_forecast_direction", 0.0))
         forecast_speed_raw = max(0.0, float(public.get("wind_forecast_speed", 0.0)))

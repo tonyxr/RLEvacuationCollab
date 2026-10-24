@@ -2568,6 +2568,9 @@ class Core:
                 "reactivated_this_step": int(
                     closure["reactivated_population"]
                 ),
+                "retired_candidates_this_step": int(
+                    closure.get("retired_candidates", 0)
+                ),
                 "added_shelters": rl_out.get("added_shelters", 0),
                 "reward_raw": float(rl_out.get("reward", 0.0)),
                 "reward_safe": rl_out.get("reward_safe", 0.0),
@@ -2900,6 +2903,10 @@ class Core:
                 )
             ),
             "remaining_candidates": int(self.shelterDS.remainingCandidateCount()),
+            "retired_candidates": int(self.shelterDS.retiredCandidateCount),
+            "tokens_forfeited": int(
+                max(0, self.rl.maximum_deployments - self.rl.deployments_made)
+            ),
             "initial_observation_digest": self.rl.initial_observation_digest,
             "precommit_initial_observation_digest": (
                 self.rl.precommit_initial_observation_digest

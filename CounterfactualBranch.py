@@ -644,10 +644,15 @@ def live_state_digest(core) -> str:
             "nextID",
             "currentSimulationTime",
             "hazardOverrunCount",
+            "retiredCandidateCount",
             "hazardOverrunDangerLevel",
             "deploymentCapacityToken",
         ):
             _update(f"shelter_store.{name}", getattr(shelter_store, name, None))
+        _update(
+            "shelter_store.retired_candidates",
+            tuple(getattr(shelter_store, "retiredCandidates", ())),
+        )
         _update(
             "shelter_store.implemented_by_time",
             tuple(
