@@ -393,6 +393,7 @@ class RLBridge:
         nmcc_pi_epsilon: float = DEFAULT_NMCC_PI_EPSILON,
         nmcc_pi_eta_min: float = DEFAULT_NMCC_PI_ETA_MIN,
         nmcc_pi_tapes: int = DEFAULT_NMCC_PI_TAPES,
+        nmcc_pi_late_tapes: int = 0,
         nmcc_pi_exhaustive_decisions: int = DEFAULT_NMCC_PI_EXHAUSTIVE_DECISIONS,
         nmcc_pi_max_branches: int = DEFAULT_NMCC_PI_MAX_BRANCHES,
         nmcc_pi_continuation_enabled: bool = DEFAULT_NMCC_PI_CONTINUATION_ENABLED,
@@ -546,6 +547,12 @@ class RLBridge:
             raise ValueError(
                 "Simulator-graded policy iteration requires at least two "
                 "shared futures to measure paired uncertainty"
+            )
+        self.nmcc_pi_late_tapes = int(nmcc_pi_late_tapes)
+        if self.nmcc_pi_late_tapes == 1 or self.nmcc_pi_late_tapes < 0:
+            raise ValueError(
+                "nmcc_pi_late_tapes must be zero (use nmcc_pi_tapes) "
+                "or at least two"
             )
         self.nmcc_pi_exhaustive_decisions = max(0, int(nmcc_pi_exhaustive_decisions))
         self.nmcc_pi_max_branches = int(nmcc_pi_max_branches)
@@ -1536,6 +1543,9 @@ class RLBridge:
                     "complete_simulation_to_episode_horizon"
                 ),
                 "independent_future_tapes": int(self.nmcc_pi_tapes),
+                "late_decision_future_tapes": int(
+                    self.nmcc_pi_late_tapes
+                ),
                 "parallel_physical_branch_workers": int(self.nmcc_pi_workers),
                 "random_reference_rollouts_per_state": int(
                     self.random_reference_rollouts
@@ -5135,13 +5145,19 @@ class RLBridge:
             ]
         )
         episode_seed = int(getattr(self.core, "scenario_seed", self.policy_seed))
+        early = int(self.decision_index) < int(self.nmcc_pi_early_decisions)
+        tape_count = (
+            int(self.nmcc_pi_tapes)
+            if early or int(self.nmcc_pi_late_tapes) <= 0
+            else int(self.nmcc_pi_late_tapes)
+        )
         future_seeds = tuple(
             NPI.tape_seed(
                 episode_seed ^ 0x524F4C4C,
                 int(self.decision_index),
                 tape_index,
             )
-            for tape_index in range(int(self.nmcc_pi_tapes))
+            for tape_index in range(tape_count)
         )
         frozen_policy = RPI.FrozenResidualPolicy.capture(
             self.policy,
@@ -5247,7 +5263,7 @@ class RLBridge:
             "paired_contrast_standard_error": float(
                 fitted.paired_contrast_standard_error
             ),
-            "tape_count": int(self.nmcc_pi_tapes),
+            "tape_count": tape_count,
             "future_samples_total": int(np.sum(futures_spent)),
             "future_samples_min": int(np.min(futures_spent)),
             "future_samples_max": int(np.max(futures_spent)),

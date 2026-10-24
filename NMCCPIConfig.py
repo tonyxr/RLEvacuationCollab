@@ -62,6 +62,7 @@ NMCC_PI_CORE_FIELDS = (
     ("nmccPiEpsilon", "nmcc_pi_epsilon", float, DEFAULT_NMCC_PI_EPSILON),
     ("nmccPiEtaMin", "nmcc_pi_eta_min", float, DEFAULT_NMCC_PI_ETA_MIN),
     ("nmccPiTapes", "nmcc_pi_tapes", int, DEFAULT_NMCC_PI_TAPES),
+    ("nmccPiLateTapes", "nmcc_pi_late_tapes", int, 0),
     (
         "nmccPiExhaustiveDecisions",
         "nmcc_pi_exhaustive_decisions",

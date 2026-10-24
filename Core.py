@@ -1736,6 +1736,9 @@ class Core:
                         "early_decision_weight": float(
                             self.nmccPiEarlyDecisionWeight
                         ),
+                        "late_decision_future_tapes": int(
+                            self.nmccPiLateTapes
+                        ),
                         "actor_replay_evidence": "physical_branch_scores",
                         "historical_probability_targets": False,
                         "random_reference_rollouts_per_state": int(
