@@ -2860,6 +2860,12 @@ class Core:
             "forced_reevacuated": int(
                 self.pedDS.cumulativeForcedReevacuated
             ),
+            "settled_stay_plain_person_minutes": float(
+                self.pedDS.cumulativeSettledPlainPersonMinutes
+            ),
+            "settled_stay_exposure_person_minutes": float(
+                self.pedDS.cumulativeSettledExposurePersonMinutes
+            ),
             "total_shelter_capacity": int(
                 sum(
                     int(getattr(shelter, "shelterCap", 0))

@@ -89,6 +89,12 @@ class PedDS:
         self.shelteredOccupants = defaultdict(dict)
         self.cumulativeShelterAdmissions = 0
         self.cumulativeForcedReevacuated = 0
+        # Shadow stay accrued by current residents; settled into the ledger only if
+        # the admission is later reversed by shelter failure (v64).
+        self.stepSettledPlainPersonMinutes = 0.0
+        self.stepSettledExposurePersonMinutes = 0.0
+        self.cumulativeSettledPlainPersonMinutes = 0.0
+        self.cumulativeSettledExposurePersonMinutes = 0.0
         self.shelter_damage_danger_threshold = 4
         
         self.shelter_osmid_map = None
@@ -910,6 +916,8 @@ class PedDS:
                 )
             }
             self.expectedCasualtyIntensityStep = 0.0
+            self.stepSettledPlainPersonMinutes = 0.0
+            self.stepSettledExposurePersonMinutes = 0.0
             self.docuStart = True
             
     """Update the interaction events happened in the current timestep to the overall status set"""
@@ -934,6 +942,39 @@ class PedDS:
             raise RuntimeError("Expected casualty intensity must be finite and non-negative")
         self.expectedCasualtyIntensityCumulative += intensity
         self.expectedCasualtyIntensityByTime[t] = intensity
+
+        # v64: residents accrue a shadow stay; it is charged only on reversal.
+        if self.shelteredOccupants and self.shelterDS is not None:
+            step_minutes = float(self.timeStepMinutes)
+            tracker = self.cellTracker
+            for shelter_id, residents in self.shelteredOccupants.items():
+                shelter = self.shelterDS.shelterList[int(shelter_id)]
+                danger = 0.0
+                if tracker is not None:
+                    cell = tuple(shelter.cellLocated)
+                    flatten = getattr(tracker, "flatten_cell", None)
+                    index = (
+                        int(flatten(cell))
+                        if callable(flatten)
+                        else int(cell[0])
+                        * int(getattr(tracker, "cellYNum", 1))
+                        + int(cell[1])
+                    )
+                    danger = float(
+                        np.clip(
+                            np.asarray(tracker.dangerLevelByCell).reshape(-1)[index],
+                            0.0,
+                            1.0,
+                        )
+                    )
+                for record in residents.values():
+                    population = float(int(record["population"]))
+                    record["shadow_plain_person_minutes"] = float(
+                        record.get("shadow_plain_person_minutes", 0.0)
+                    ) + population * step_minutes
+                    record["shadow_exposure_person_minutes"] = float(
+                        record.get("shadow_exposure_person_minutes", 0.0)
+                    ) + population * danger * step_minutes
         
         self.currTime += 1
         self.docuStart = False
@@ -1130,6 +1171,8 @@ class PedDS:
             "distance_at_admission": float(
                 getattr(occupant, "distance_travelled_m", 0.0)
             ),
+            "shadow_plain_person_minutes": 0.0,
+            "shadow_exposure_person_minutes": 0.0,
         }
         self.cumulativeShelterAdmissions += population
         self.bump("shelter_admissions", population)
@@ -1265,6 +1308,16 @@ class PedDS:
             for pedestrian_id in sorted(residents):
                 record = residents[pedestrian_id]
                 population = int(record["population"])
+                settled_plain = float(
+                    record.get("shadow_plain_person_minutes", 0.0)
+                )
+                settled_exposure = float(
+                    record.get("shadow_exposure_person_minutes", 0.0)
+                )
+                self.stepSettledPlainPersonMinutes += settled_plain
+                self.stepSettledExposurePersonMinutes += settled_exposure
+                self.cumulativeSettledPlainPersonMinutes += settled_plain
+                self.cumulativeSettledExposurePersonMinutes += settled_exposure
                 self._reverse_shelter_completion(record)
                 self._reactivate_shelter_occupant(shelter, record)
                 reactivated += population

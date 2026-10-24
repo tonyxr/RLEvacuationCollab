@@ -579,6 +579,10 @@ def live_state_digest(core) -> str:
             "cumulativeForcedReevacuated",
             "expectedCasualtyIntensityStep",
             "expectedCasualtyIntensityCumulative",
+            "stepSettledPlainPersonMinutes",
+            "stepSettledExposurePersonMinutes",
+            "cumulativeSettledPlainPersonMinutes",
+            "cumulativeSettledExposurePersonMinutes",
             "socialForcePersonSteps",
             "socialSelfForcePersonSteps",
             "socialImpactForcePersonSteps",
@@ -716,6 +720,8 @@ def live_state_digest(core) -> str:
                         int(record["population"]),
                         float(record["admission_time"]),
                         float(record["distance_at_admission"]),
+                        float(record.get("shadow_plain_person_minutes", 0.0)),
+                        float(record.get("shadow_exposure_person_minutes", 0.0)),
                         _pedestrian_signature(pedestrian),
                     ),
                 )
@@ -952,6 +958,17 @@ def controllable_time_mass(
             local_danger = 0.0
         exposure += population * local_danger
     casualty_cost = expected_casualty_step_cost(core)
+    # v64: a stay inside a shelter that failed this step is unsafe time. The
+    # settled quantities are already person-minutes; convert to per-step mass so
+    # every consumer's ``* time_step_minutes`` reproduces them exactly.
+    step_minutes = max(1e-9, float(getattr(core, "timeStepMinutes", 1.0)))
+    store = getattr(core, "pedDS", None)
+    plain += float(
+        getattr(store, "stepSettledPlainPersonMinutes", 0.0)
+    ) / step_minutes
+    exposure += float(
+        getattr(store, "stepSettledExposurePersonMinutes", 0.0)
+    ) / step_minutes
     return float(plain), float(exposure), float(casualty_cost)
 
 

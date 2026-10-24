@@ -1036,6 +1036,15 @@ class RLBridge:
         self.objective_expected_casualty_person_time += (
             expected_casualty_mass * elapsed_minutes
         )
+        store = getattr(self.core, "pedDS", None)
+        settled_plain = float(
+            getattr(store, "stepSettledPlainPersonMinutes", 0.0)
+        )
+        settled_exposure = float(
+            getattr(store, "stepSettledExposurePersonMinutes", 0.0)
+        )
+        self.objective_active_person_time += settled_plain
+        self.objective_hazard_exposure_person_time += settled_exposure
         if self.pending is not None:
             self.pending.active_person_time += plain_mass * elapsed_minutes
             self.pending.hazard_exposure_person_time += (
@@ -1062,6 +1071,10 @@ class RLBridge:
             self.pending.controllable_expected_casualty_person_time += (
                 expected_casualty_mass * elapsed_minutes
             )
+            self.pending.active_person_time += settled_plain
+            self.pending.hazard_exposure_person_time += settled_exposure
+            self.pending.controllable_active_person_time += settled_plain
+            self.pending.controllable_hazard_exposure_person_time += settled_exposure
         self.objective_last_time = simulation_time
         self.objective_latest_outcome = observation.outcome
 
