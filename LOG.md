@@ -63,6 +63,25 @@
   demonstrating that the pooled replay state preserves both cities rather
   than silently reusing the current one.
 
+### Adaptive-partition registry failure and repair
+
+- The second smoke attempt exposed a separate audit error on Spokane's next
+  episode. The frozen OpenStreetMap source graph had not changed; the
+  population-density-adaptive regional partition had changed legitimately
+  because its cell boundaries depend on the scenario's sampled population.
+- Checkpoints now freeze and verify each city's source query, source graph,
+  source node/edge counts, and grid shape while retaining every observed
+  regional adjacency in a digest-keyed per-city registry. Episode counts are
+  accumulated per adjacency, and the post-training multicity audit requires
+  those counts to match the training summary exactly for every city and
+  policy shard.
+- Verification passes all 447 repository tests. An initialization-only
+  real-map rehearsal also crossed the exact failed Spokane boundary using the
+  saved two-city checkpoint: it preserved source graph digest
+  `72f46cebb331f2d20669fb9ed087ec9a8d074d2c82e49554c81852bf243d8c29`
+  and registered the second adaptive regional topology without executing a
+  training episode.
+
 ## 2026-10-02 — Model v38 scalable sampled NMCC
 
 ### Diagnosis

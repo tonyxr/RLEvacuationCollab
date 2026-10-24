@@ -228,7 +228,7 @@ class V64ActorReplayTests(unittest.TestCase):
                 {"city_a", "city_b"},
             )
 
-    def test_checkpoint_registry_rejects_same_city_topology_drift(self):
+    def test_checkpoint_registry_records_same_city_adaptive_topologies(self):
         with tempfile.TemporaryDirectory() as directory:
             first_core = make_core()
             first_core.cityID = "city_a"
@@ -242,8 +242,48 @@ class V64ActorReplayTests(unittest.TestCase):
                 "DecisionInterface.RegionalObservationBuilder._regional_spatial_edges",
                 return_value=changed_edges,
             ):
-                with self.assertRaisesRegex(ValueError, "topology changed"):
-                    _bridge(directory, core=second_core)
+                second = _bridge(directory, core=second_core)
+                second._save_checkpoint()
+
+            payload = torch.load(
+                second.checkpoint_path,
+                map_location="cpu",
+                weights_only=False,
+            )
+            registry = payload["training_topology_registry"]["city_a"]
+            self.assertEqual(len(registry["spatial_topologies"]), 2)
+            self.assertEqual(
+                sum(
+                    item["episode_count"]
+                    for item in registry["spatial_topologies"].values()
+                ),
+                2,
+            )
+
+    def test_checkpoint_registry_rejects_same_city_source_network_drift(self):
+        def provenance(graph_digest):
+            return SimpleNamespace(
+                locationDrive=object(),
+                graph_provenance=lambda: {
+                    "query_sha256": "1" * 64,
+                    "consolidated_graph_cache_sha256": graph_digest,
+                    "graph_nodes": 100,
+                    "graph_edges": 200,
+                },
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            first_core = make_core()
+            first_core.cityID = "city_a"
+            first_core.OSMProcessor = provenance("2" * 64)
+            first = _bridge(directory, core=first_core)
+            first._save_checkpoint()
+
+            second_core = make_core()
+            second_core.cityID = "city_a"
+            second_core.OSMProcessor = provenance("3" * 64)
+            with self.assertRaisesRegex(ValueError, "source network changed"):
+                _bridge(directory, core=second_core)
 
     def test_packed_frames_keep_distinct_spatial_topologies(self):
         with tempfile.TemporaryDirectory() as directory:

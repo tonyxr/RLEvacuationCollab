@@ -40,8 +40,16 @@ class CityProfileTests(unittest.TestCase):
             registry[city.city_id] = {
                 "city_id": city.city_id,
                 "grid_shape": [8, 8],
-                "spatial_edge_count": 100 + index,
-                "spatial_edge_sha256": f"{index + 1:064x}",
+                "spatial_topologies": {
+                    f"{index + 1:064x}": {
+                        "spatial_edge_count": 100 + index,
+                        "episode_count": 2,
+                    },
+                    f"{index + 3:064x}": {
+                        "spatial_edge_count": 110 + index,
+                        "episode_count": 1,
+                    },
+                },
                 "source_query_sha256": f"{index + 11:064x}",
                 "source_graph_sha256": f"{index + 21:064x}",
                 "source_graph_nodes": 1000 + index,
@@ -55,6 +63,14 @@ class CityProfileTests(unittest.TestCase):
             )
             self.assertTrue(audit["passed"])
             self.assertEqual(audit["policies"][0]["source_network_count"], 2)
+            self.assertEqual(audit["policies"][0]["regional_topology_count"], 4)
+            self.assertEqual(
+                [
+                    record["registered_training_episodes"]
+                    for record in audit["policies"][0]["records"]
+                ],
+                [3, 3],
+            )
 
             registry[cities[1].city_id]["source_graph_sha256"] = registry[
                 cities[0].city_id
@@ -63,6 +79,45 @@ class CityProfileTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "distinct source networks"):
                 _audit_multicity_training_topologies(
                     {1: checkpoint}, (1,), cities
+                )
+
+    def test_checkpoint_audit_matches_registered_episodes_to_training_rows(self):
+        cities = tuple(load_city_suite().cities[:2])
+        registry = {
+            city.city_id: {
+                "city_id": city.city_id,
+                "grid_shape": [8, 8],
+                "spatial_topologies": {
+                    f"{index + 1:064x}": {
+                        "spatial_edge_count": 100 + index,
+                        "episode_count": 2,
+                    }
+                },
+                "source_query_sha256": f"{index + 11:064x}",
+                "source_graph_sha256": f"{index + 21:064x}",
+                "source_graph_nodes": 1000 + index,
+                "source_graph_edges": 2000 + index,
+            }
+            for index, city in enumerate(cities)
+        }
+        training_rows = [
+            {"city_id": city.city_id, "policy_replication": 1}
+            for city in cities
+            for _ in range(2)
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint = os.path.join(directory, "policy.pt")
+            torch.save({"training_topology_registry": registry}, checkpoint)
+            audit = _audit_multicity_training_topologies(
+                {1: checkpoint}, (1,), cities, training_rows=training_rows
+            )
+            self.assertTrue(audit["passed"])
+            with self.assertRaisesRegex(RuntimeError, "expected 1"):
+                _audit_multicity_training_topologies(
+                    {1: checkpoint},
+                    (1,),
+                    cities,
+                    training_rows=training_rows[:-1],
                 )
 
     def test_all_dynamic_benchmarks_are_registered(self):

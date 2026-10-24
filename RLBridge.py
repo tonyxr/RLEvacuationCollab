@@ -2096,25 +2096,75 @@ class RLBridge:
                 )
             ):
                 raise ValueError(f"invalid grid shape in training topology for {city_id}")
-            edge_count = record.get("spatial_edge_count")
-            digest = record.get("spatial_edge_sha256")
-            if (
-                not isinstance(edge_count, int)
-                or isinstance(edge_count, bool)
-                or edge_count < 0
-                or not isinstance(digest, str)
-                or len(digest) != 64
+
+            # Population-density-adaptive cell partitions intentionally vary
+            # with each scenario's sampled origins.  Consequently, one frozen
+            # city source graph can yield several valid regional adjacencies.
+            # Older v64 checkpoints stored only the latest adjacency; normalize
+            # that representation into the multi-topology registry.
+            spatial_topologies = record.get("spatial_topologies")
+            if spatial_topologies is None:
+                legacy_digest = record.get("spatial_edge_sha256")
+                legacy_edge_count = record.get("spatial_edge_count")
+                spatial_topologies = {
+                    legacy_digest: {
+                        "spatial_edge_count": legacy_edge_count,
+                        "episode_count": 1,
+                    }
+                }
+            if not isinstance(spatial_topologies, Mapping) or not spatial_topologies:
+                raise ValueError(f"missing spatial topology metadata for {city_id}")
+            validated_topologies: dict[str, dict] = {}
+            for raw_digest, raw_topology in spatial_topologies.items():
+                digest = str(raw_digest)
+                if not isinstance(raw_topology, Mapping) or len(digest) != 64:
+                    raise ValueError(f"invalid spatial topology metadata for {city_id}")
+                edge_count = raw_topology.get("spatial_edge_count")
+                episode_count = raw_topology.get("episode_count")
+                if (
+                    not isinstance(edge_count, int)
+                    or isinstance(edge_count, bool)
+                    or edge_count < 0
+                    or not isinstance(episode_count, int)
+                    or isinstance(episode_count, bool)
+                    or episode_count <= 0
+                ):
+                    raise ValueError(f"invalid spatial topology metadata for {city_id}")
+                validated_topologies[digest] = {
+                    "spatial_edge_count": int(edge_count),
+                    "episode_count": int(episode_count),
+                }
+
+            source_query_sha256 = record.get("source_query_sha256")
+            source_graph_sha256 = record.get("source_graph_sha256")
+            for label, digest in (
+                ("source query", source_query_sha256),
+                ("source graph", source_graph_sha256),
             ):
-                raise ValueError(f"invalid spatial topology metadata for {city_id}")
+                if digest is not None and (
+                    not isinstance(digest, str) or len(digest) != 64
+                ):
+                    raise ValueError(f"invalid {label} digest for {city_id}")
+            source_graph_nodes = record.get("source_graph_nodes")
+            source_graph_edges = record.get("source_graph_edges")
+            for label, count in (
+                ("source graph node", source_graph_nodes),
+                ("source graph edge", source_graph_edges),
+            ):
+                if count is not None and (
+                    not isinstance(count, int)
+                    or isinstance(count, bool)
+                    or count <= 0
+                ):
+                    raise ValueError(f"invalid {label} count for {city_id}")
             validated[city_id] = {
                 "city_id": city_id,
                 "grid_shape": [int(item) for item in grid_shape],
-                "spatial_edge_count": int(edge_count),
-                "spatial_edge_sha256": digest,
-                "source_query_sha256": record.get("source_query_sha256"),
-                "source_graph_sha256": record.get("source_graph_sha256"),
-                "source_graph_nodes": record.get("source_graph_nodes"),
-                "source_graph_edges": record.get("source_graph_edges"),
+                "spatial_topologies": validated_topologies,
+                "source_query_sha256": source_query_sha256,
+                "source_graph_sha256": source_graph_sha256,
+                "source_graph_nodes": source_graph_nodes,
+                "source_graph_edges": source_graph_edges,
             }
         return validated
 
@@ -2139,8 +2189,12 @@ class RLBridge:
         return {
             "city_id": city_id,
             "grid_shape": [int(self.nx), int(self.ny)],
-            "spatial_edge_count": int(edge_index.shape[1]),
-            "spatial_edge_sha256": digest.hexdigest(),
+            "spatial_topologies": {
+                digest.hexdigest(): {
+                    "spatial_edge_count": int(edge_index.shape[1]),
+                    "episode_count": 1,
+                }
+            },
             "source_query_sha256": provenance.get("query_sha256"),
             "source_graph_sha256": source_graph_sha256,
             "source_graph_nodes": provenance.get("graph_nodes"),
@@ -2148,14 +2202,44 @@ class RLBridge:
         }
 
     def _register_runtime_training_topology(self) -> None:
-        record = self._runtime_training_topology_record()
-        city_id = record["city_id"]
+        raw_record = self._runtime_training_topology_record()
+        city_id = raw_record["city_id"]
+        record = self._validated_training_topology_registry(
+            {city_id: raw_record}
+        )[city_id]
         previous = self.training_topology_registry.get(city_id)
-        if previous is not None and previous != record:
+        if previous is None:
+            self.training_topology_registry[city_id] = record
+            return
+
+        frozen_fields = (
+            "grid_shape",
+            "source_query_sha256",
+            "source_graph_sha256",
+            "source_graph_nodes",
+            "source_graph_edges",
+        )
+        changed = [
+            name for name in frozen_fields if previous.get(name) != record.get(name)
+        ]
+        if changed:
             raise ValueError(
-                f"Frozen network topology changed within training for city {city_id}"
+                "Frozen source network changed within training for city "
+                f"{city_id}: {', '.join(changed)}"
             )
-        self.training_topology_registry[city_id] = record
+
+        merged = copy.deepcopy(previous)
+        for digest, topology in record["spatial_topologies"].items():
+            observed = merged["spatial_topologies"].get(digest)
+            if observed is None:
+                merged["spatial_topologies"][digest] = dict(topology)
+                continue
+            if observed["spatial_edge_count"] != topology["spatial_edge_count"]:
+                raise ValueError(
+                    f"Spatial topology digest collision for city {city_id}"
+                )
+            observed["episode_count"] += int(topology["episode_count"])
+        self.training_topology_registry[city_id] = merged
 
     def _save_checkpoint(self) -> None:
         if (

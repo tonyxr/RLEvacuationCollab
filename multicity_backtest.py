@@ -17,6 +17,7 @@ import math
 import os
 import sys
 import itertools
+from typing import Mapping, Optional, Sequence
 
 import numpy as np
 
@@ -226,6 +227,7 @@ def _audit_multicity_training_topologies(
     checkpoint_paths: dict[int, str],
     policy_indices: tuple[int, ...],
     cities: tuple[CityProfile, ...],
+    training_rows: Optional[Sequence[Mapping]] = None,
 ) -> dict:
     """Prove that each shared checkpoint trained on every requested city map."""
     import torch
@@ -266,30 +268,56 @@ def _audit_multicity_training_topologies(
                 raise RuntimeError(
                     f"Policy {policy_index} has invalid topology metadata for {city_id}"
                 )
-            edge_digest = record.get("spatial_edge_sha256")
             query_digest = record.get("source_query_sha256")
             graph_digest = record.get("source_graph_sha256")
-            edge_count = record.get("spatial_edge_count")
             graph_nodes = record.get("source_graph_nodes")
             graph_edges = record.get("source_graph_edges")
+            spatial_topologies = record.get("spatial_topologies")
             if (
-                not isinstance(edge_digest, str)
-                or len(edge_digest) != 64
-                or not isinstance(query_digest, str)
+                not isinstance(query_digest, str)
                 or len(query_digest) != 64
                 or not isinstance(graph_digest, str)
                 or len(graph_digest) != 64
-                or not isinstance(edge_count, int)
-                or edge_count <= 0
                 or not isinstance(graph_nodes, int)
                 or graph_nodes <= 1
                 or not isinstance(graph_edges, int)
                 or graph_edges <= 0
+                or not isinstance(spatial_topologies, dict)
+                or not spatial_topologies
             ):
                 raise RuntimeError(
                     f"Policy {policy_index} has incomplete network provenance for {city_id}"
                 )
-            records.append(dict(record))
+            registered_episodes = 0
+            for edge_digest, topology in spatial_topologies.items():
+                if (
+                    not isinstance(edge_digest, str)
+                    or len(edge_digest) != 64
+                    or not isinstance(topology, dict)
+                    or not isinstance(topology.get("spatial_edge_count"), int)
+                    or topology["spatial_edge_count"] <= 0
+                    or not isinstance(topology.get("episode_count"), int)
+                    or topology["episode_count"] <= 0
+                ):
+                    raise RuntimeError(
+                        f"Policy {policy_index} has invalid regional topology metadata "
+                        f"for {city_id}"
+                    )
+                registered_episodes += int(topology["episode_count"])
+            if training_rows is not None:
+                expected_episodes = sum(
+                    str(row.get("city_id", "")) == city_id
+                    and int(row.get("policy_replication", -1)) == int(policy_index)
+                    for row in training_rows
+                )
+                if registered_episodes != expected_episodes:
+                    raise RuntimeError(
+                        f"Policy {policy_index} registered {registered_episodes} "
+                        f"training episodes for {city_id}, expected {expected_episodes}"
+                    )
+            audited_record = dict(record)
+            audited_record["registered_training_episodes"] = registered_episodes
+            records.append(audited_record)
 
         query_digests = {record["source_query_sha256"] for record in records}
         graph_digests = {record["source_graph_sha256"] for record in records}
@@ -303,8 +331,8 @@ def _audit_multicity_training_topologies(
                 "checkpoint_path": os.path.abspath(checkpoint_path),
                 "observed_city_ids": list(expected),
                 "source_network_count": len(graph_digests),
-                "regional_topology_count": len(
-                    {record["spatial_edge_sha256"] for record in records}
+                "regional_topology_count": sum(
+                    len(record["spatial_topologies"]) for record in records
                 ),
                 "records": records,
             }
@@ -2007,6 +2035,7 @@ def main(argv=None) -> int:
             checkpoint_paths,
             tuple(args.training_policy_indices),
             tuple(cities),
+            training_rows=training_rows,
         )
         _json_dump(topology_audit_path, topology_audit)
         manifest["training_network_topology_audit"] = topology_audit
