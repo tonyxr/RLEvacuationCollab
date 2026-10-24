@@ -1298,11 +1298,12 @@ def _plot_outputs(
                 np.asarray(
                     [
                         float(
-                            row[
+                            row.get(
                                 "rollout_pi_actor_kl"
-                                if rollout_pi_training
-                                else "approximate_kl"
-                            ]
+                                if float(row.get("rollout_pi_actor_enabled", 0.0)) > 0.5
+                                else "approximate_kl",
+                                float("nan"),
+                            )
                         )
                         if float(row.get("optimizer_updated", 1.0)) > 0.5
                         else np.nan

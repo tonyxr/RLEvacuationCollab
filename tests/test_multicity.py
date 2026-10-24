@@ -1,8 +1,10 @@
+import os
 import tempfile
 import unittest
 from unittest import mock
 
 import networkx as nx
+import torch
 
 from CityProfiles import load_city_suite
 from Core import Core
@@ -13,6 +15,7 @@ from multicity_backtest import (
     DYNAMIC_STRATEGIES,
     POLICY_DYNAMICS_SOURCES,
     _city_overrides,
+    _audit_multicity_training_topologies,
     _curriculum_is_monotone_extension,
     _equal_city_training_blocks,
     _learning_assessment,
@@ -30,6 +33,38 @@ from multicity_backtest import (
 
 
 class CityProfileTests(unittest.TestCase):
+    def test_checkpoint_audit_requires_every_distinct_city_network(self):
+        cities = tuple(load_city_suite().cities[:2])
+        registry = {}
+        for index, city in enumerate(cities):
+            registry[city.city_id] = {
+                "city_id": city.city_id,
+                "grid_shape": [8, 8],
+                "spatial_edge_count": 100 + index,
+                "spatial_edge_sha256": f"{index + 1:064x}",
+                "source_query_sha256": f"{index + 11:064x}",
+                "source_graph_sha256": f"{index + 21:064x}",
+                "source_graph_nodes": 1000 + index,
+                "source_graph_edges": 2000 + index,
+            }
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint = os.path.join(directory, "policy.pt")
+            torch.save({"training_topology_registry": registry}, checkpoint)
+            audit = _audit_multicity_training_topologies(
+                {1: checkpoint}, (1,), cities
+            )
+            self.assertTrue(audit["passed"])
+            self.assertEqual(audit["policies"][0]["source_network_count"], 2)
+
+            registry[cities[1].city_id]["source_graph_sha256"] = registry[
+                cities[0].city_id
+            ]["source_graph_sha256"]
+            torch.save({"training_topology_registry": registry}, checkpoint)
+            with self.assertRaisesRegex(RuntimeError, "distinct source networks"):
+                _audit_multicity_training_topologies(
+                    {1: checkpoint}, (1,), cities
+                )
+
     def test_all_dynamic_benchmarks_are_registered(self):
         self.assertTrue(
             {
@@ -173,6 +208,28 @@ class CityProfileTests(unittest.TestCase):
             for output in outputs:
                 with open(output, "rb") as handle:
                     self.assertEqual(handle.read(8), b"\x89PNG\r\n\x1a\n")
+
+    def test_stage_e_training_plot_allows_missing_actor_kl(self):
+        from backtest import _plot_outputs
+
+        rows = [
+            {
+                "replication": episode,
+                "policy_replication": 1,
+                "episode_return": 0.0,
+                "casualty": 0,
+                "safe_completed": 10,
+                "unfinished": 10,
+                "behavior_policy_entropy": 1.0,
+                "optimizer_updated": 1.0 if episode == 2 else 0.0,
+                "rollout_pi_actor_enabled": 0.0,
+                "heuristic_agreement_rate": 0.0,
+            }
+            for episode in range(1, 3)
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            outputs = _plot_outputs(directory, rows, [])
+            self.assertEqual(len(outputs), 2)
 
     def test_training_policy_shards_preserve_declared_replication_indices(self):
         default = _parse_args(["--train-only", "--policy-replicates", "4"])

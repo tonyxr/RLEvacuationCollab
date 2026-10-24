@@ -222,6 +222,105 @@ def _json_dump(path: str, payload: dict) -> None:
     os.replace(temporary, path)
 
 
+def _audit_multicity_training_topologies(
+    checkpoint_paths: dict[int, str],
+    policy_indices: tuple[int, ...],
+    cities: tuple[CityProfile, ...],
+) -> dict:
+    """Prove that each shared checkpoint trained on every requested city map."""
+    import torch
+
+    expected = tuple(city.city_id for city in cities)
+    expected_set = set(expected)
+    policies = []
+    for policy_index in policy_indices:
+        checkpoint_path = checkpoint_paths[int(policy_index)]
+        if not os.path.exists(checkpoint_path):
+            raise FileNotFoundError(
+                f"Missing policy checkpoint for topology audit: {checkpoint_path}"
+            )
+        try:
+            payload = torch.load(
+                checkpoint_path,
+                map_location="cpu",
+                weights_only=False,
+            )
+        except TypeError:
+            payload = torch.load(checkpoint_path, map_location="cpu")
+        registry = payload.get("training_topology_registry")
+        if not isinstance(registry, dict):
+            raise RuntimeError(
+                f"Policy {policy_index} checkpoint has no training topology registry"
+            )
+        observed_set = set(registry)
+        if observed_set != expected_set:
+            raise RuntimeError(
+                f"Policy {policy_index} trained on city networks {sorted(observed_set)}, "
+                f"expected {sorted(expected_set)}"
+            )
+
+        records = []
+        for city_id in expected:
+            record = registry[city_id]
+            if not isinstance(record, dict) or record.get("city_id") != city_id:
+                raise RuntimeError(
+                    f"Policy {policy_index} has invalid topology metadata for {city_id}"
+                )
+            edge_digest = record.get("spatial_edge_sha256")
+            query_digest = record.get("source_query_sha256")
+            graph_digest = record.get("source_graph_sha256")
+            edge_count = record.get("spatial_edge_count")
+            graph_nodes = record.get("source_graph_nodes")
+            graph_edges = record.get("source_graph_edges")
+            if (
+                not isinstance(edge_digest, str)
+                or len(edge_digest) != 64
+                or not isinstance(query_digest, str)
+                or len(query_digest) != 64
+                or not isinstance(graph_digest, str)
+                or len(graph_digest) != 64
+                or not isinstance(edge_count, int)
+                or edge_count <= 0
+                or not isinstance(graph_nodes, int)
+                or graph_nodes <= 1
+                or not isinstance(graph_edges, int)
+                or graph_edges <= 0
+            ):
+                raise RuntimeError(
+                    f"Policy {policy_index} has incomplete network provenance for {city_id}"
+                )
+            records.append(dict(record))
+
+        query_digests = {record["source_query_sha256"] for record in records}
+        graph_digests = {record["source_graph_sha256"] for record in records}
+        if len(query_digests) != len(expected) or len(graph_digests) != len(expected):
+            raise RuntimeError(
+                f"Policy {policy_index} did not use distinct source networks for every city"
+            )
+        policies.append(
+            {
+                "policy_replication": int(policy_index),
+                "checkpoint_path": os.path.abspath(checkpoint_path),
+                "observed_city_ids": list(expected),
+                "source_network_count": len(graph_digests),
+                "regional_topology_count": len(
+                    {record["spatial_edge_sha256"] for record in records}
+                ),
+                "records": records,
+            }
+        )
+    return {
+        "schema_version": 1,
+        "passed": True,
+        "contract": (
+            "one shared resumable checkpoint per policy must register every "
+            "requested city and a distinct frozen source-network digest"
+        ),
+        "expected_city_ids": list(expected),
+        "policies": policies,
+    }
+
+
 def _parse_overrides(items) -> dict:
     overrides = {}
     for item in items:
@@ -1655,6 +1754,11 @@ def main(argv=None) -> int:
         "policy_design": {
             "pooled_across_cities": bool(len(cities) > 1),
             "city_identifier_observed_by_policy": False,
+            "training_network_topology_contract": (
+                "one shared checkpoint registers every requested city's frozen "
+                "source-network digest; every replay frame carries its own "
+                "regional spatial edge index"
+            ),
             "actor": (
                 "shared neural candidate scorer with relational graph context "
                 "and an episode-level LSTM"
@@ -1894,6 +1998,20 @@ def main(argv=None) -> int:
                 training_rows.append(row)
                 _write_csv(training_summary_path, training_rows)
 
+    topology_audit = None
+    topology_audit_path = os.path.join(
+        launch_dir, "training_network_topology_audit.json"
+    )
+    if not args.eval_only:
+        topology_audit = _audit_multicity_training_topologies(
+            checkpoint_paths,
+            tuple(args.training_policy_indices),
+            tuple(cities),
+        )
+        _json_dump(topology_audit_path, topology_audit)
+        manifest["training_network_topology_audit"] = topology_audit
+        _json_dump(manifest_path, manifest)
+
     convergence = _multicity_training_convergence(
         training_rows,
         cities,
@@ -2120,6 +2238,9 @@ def main(argv=None) -> int:
             "artifacts": {
                 "city_profile_snapshot": profile_snapshot_path,
                 "training_summary": training_summary_path,
+                "training_network_topology_audit": (
+                    topology_audit_path if topology_audit is not None else None
+                ),
                 "learner_diagnostics": diagnostics_paths,
                 "training_convergence": convergence_path,
                 "learning_assessment": learning_assessment_path,

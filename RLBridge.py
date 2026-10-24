@@ -819,6 +819,12 @@ class RLBridge:
             dtype=torch.long,
             device=self.device,
         )
+        # Training checkpoints deliberately do not bind inference to one city's
+        # graph. They do, however, carry an auditable registry proving which
+        # source networks and regional topologies contributed experience to the
+        # shared replay buffer. A repeated city must resolve to the identical
+        # frozen network; a new city may contribute a different topology.
+        self.training_topology_registry: dict[str, dict] = {}
         self.num_candidate_actions = self.observation_builder.number_of_actions
         self.executor = RegionalShelterExecutor(core)
         self.reward_model = RewardProcessor()
@@ -1004,6 +1010,7 @@ class RLBridge:
                     f"RL evaluation requires a trained checkpoint: {self.checkpoint_path}"
                 )
             if self.train_mode:
+                self._register_runtime_training_topology()
                 # Loading an optimizer also restores its last learning rate.
                 # A curriculum stage owns an independent schedule, so reset
                 # the loaded parameter groups immediately rather than waiting
@@ -1983,6 +1990,7 @@ class RLBridge:
                     "critic_optimizer_updates",
                     "actor_rollout_updates",
                     "rollout_updates_completed",
+                    "training_topology_registry",
                 }
                 missing = sorted(required.difference(payload))
                 if missing:
@@ -2036,6 +2044,11 @@ class RLBridge:
                 self.actor_replay_scenario_seeds = [
                     int(seed) for seed in replay_seeds
                 ]
+                self.training_topology_registry = (
+                    self._validated_training_topology_registry(
+                        payload["training_topology_registry"]
+                    )
+                )
             self.episodes_completed = int(payload.get("episodes_completed", 0))
             self.optimizer_updates = int(payload.get("optimizer_updates", 0))
             self.actor_optimizer_updates = int(
@@ -2058,6 +2071,91 @@ class RLBridge:
             raise RuntimeError(
                 f"Refusing to evaluate incompatible checkpoint {self.checkpoint_path}: {exc}"
             ) from exc
+
+    @staticmethod
+    def _validated_training_topology_registry(value: object) -> dict[str, dict]:
+        if not isinstance(value, Mapping) or not value:
+            raise ValueError("training topology registry must be a non-empty mapping")
+        validated: dict[str, dict] = {}
+        for raw_city_id, raw_record in value.items():
+            city_id = str(raw_city_id).strip()
+            if not city_id or not isinstance(raw_record, Mapping):
+                raise ValueError("training topology registry contains an invalid city record")
+            record = dict(raw_record)
+            if str(record.get("city_id", "")).strip() != city_id:
+                raise ValueError("training topology registry city key does not match its record")
+            grid_shape = record.get("grid_shape")
+            if (
+                not isinstance(grid_shape, (list, tuple))
+                or len(grid_shape) != 2
+                or any(
+                    not isinstance(item, int)
+                    or isinstance(item, bool)
+                    or item <= 0
+                    for item in grid_shape
+                )
+            ):
+                raise ValueError(f"invalid grid shape in training topology for {city_id}")
+            edge_count = record.get("spatial_edge_count")
+            digest = record.get("spatial_edge_sha256")
+            if (
+                not isinstance(edge_count, int)
+                or isinstance(edge_count, bool)
+                or edge_count < 0
+                or not isinstance(digest, str)
+                or len(digest) != 64
+            ):
+                raise ValueError(f"invalid spatial topology metadata for {city_id}")
+            validated[city_id] = {
+                "city_id": city_id,
+                "grid_shape": [int(item) for item in grid_shape],
+                "spatial_edge_count": int(edge_count),
+                "spatial_edge_sha256": digest,
+                "source_query_sha256": record.get("source_query_sha256"),
+                "source_graph_sha256": record.get("source_graph_sha256"),
+                "source_graph_nodes": record.get("source_graph_nodes"),
+                "source_graph_edges": record.get("source_graph_edges"),
+            }
+        return validated
+
+    def _runtime_training_topology_record(self) -> dict:
+        city_id = str(getattr(self.core, "cityID", "single_city")).strip()
+        if not city_id:
+            raise ValueError("Training city identifier must not be empty")
+        edge_index = (
+            self.edge_index.detach().cpu().to(dtype=torch.int64).contiguous().numpy()
+        )
+        digest = hashlib.sha256()
+        digest.update(np.asarray(edge_index.shape, dtype="<i8").tobytes())
+        digest.update(edge_index.astype("<i8", copy=False).tobytes())
+
+        provenance = {}
+        processor = getattr(self.core, "OSMProcessor", None)
+        if processor is not None and getattr(processor, "locationDrive", None) is not None:
+            provenance = processor.graph_provenance()
+        source_graph_sha256 = provenance.get("consolidated_graph_cache_sha256")
+        if source_graph_sha256 is None:
+            source_graph_sha256 = provenance.get("graph_cache_sha256")
+        return {
+            "city_id": city_id,
+            "grid_shape": [int(self.nx), int(self.ny)],
+            "spatial_edge_count": int(edge_index.shape[1]),
+            "spatial_edge_sha256": digest.hexdigest(),
+            "source_query_sha256": provenance.get("query_sha256"),
+            "source_graph_sha256": source_graph_sha256,
+            "source_graph_nodes": provenance.get("graph_nodes"),
+            "source_graph_edges": provenance.get("graph_edges"),
+        }
+
+    def _register_runtime_training_topology(self) -> None:
+        record = self._runtime_training_topology_record()
+        city_id = record["city_id"]
+        previous = self.training_topology_registry.get(city_id)
+        if previous is not None and previous != record:
+            raise ValueError(
+                f"Frozen network topology changed within training for city {city_id}"
+            )
+        self.training_topology_registry[city_id] = record
 
     def _save_checkpoint(self) -> None:
         if (
@@ -2112,6 +2210,9 @@ class RLBridge:
             "actor_replay_scenario_seeds": list(
                 self.actor_replay_scenario_seeds
             ),
+            "training_topology_registry": copy.deepcopy(
+                self.training_topology_registry
+            ),
         }
         self._atomic_save_checkpoint_payload(self.checkpoint_path, payload)
         if self.save_iteration_checkpoints:
@@ -2136,6 +2237,9 @@ class RLBridge:
                 "episodes_completed": self.episodes_completed,
                 "actor_rollout_updates": self.actor_rollout_updates,
                 "policy_seed": self.policy_seed,
+                "training_topology_registry": copy.deepcopy(
+                    self.training_topology_registry
+                ),
             }
             self._atomic_save_checkpoint_payload(
                 iteration_path, iteration_payload
@@ -5076,6 +5180,12 @@ class RLBridge:
                 np.max(latency["end_to_end_ms"])
                 if latency["end_to_end_ms"].size
                 else 0.0
+            ),
+            "training_topology_city_count": float(
+                len(self.training_topology_registry)
+            ),
+            "training_topology_spatial_edge_count": float(
+                self.edge_index.size(1)
             ),
         }
         if self.train_mode:

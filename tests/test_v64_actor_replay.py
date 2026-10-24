@@ -3,7 +3,9 @@ import tempfile
 import unittest
 from dataclasses import replace
 from types import SimpleNamespace
+from unittest import mock
 
+import numpy as np
 import torch
 
 from RLBridge import ActorFitEpisode, ActorReplayEpisode, RLBridge
@@ -203,6 +205,45 @@ class V64ActorReplayTests(unittest.TestCase):
                 weights_only=False,
             )
             self.assertNotIn("spatial_edge_index", payload)
+
+    def test_checkpoint_registry_accumulates_multiple_city_networks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            first_core = make_core()
+            first_core.cityID = "city_a"
+            first = _bridge(directory, core=first_core)
+            first._save_checkpoint()
+
+            second_core = make_core()
+            second_core.cityID = "city_b"
+            second = _bridge(directory, core=second_core)
+            second._save_checkpoint()
+
+            payload = torch.load(
+                second.checkpoint_path,
+                map_location="cpu",
+                weights_only=False,
+            )
+            self.assertEqual(
+                set(payload["training_topology_registry"]),
+                {"city_a", "city_b"},
+            )
+
+    def test_checkpoint_registry_rejects_same_city_topology_drift(self):
+        with tempfile.TemporaryDirectory() as directory:
+            first_core = make_core()
+            first_core.cityID = "city_a"
+            first = _bridge(directory, core=first_core)
+            first._save_checkpoint()
+
+            changed_edges = np.asarray(((0, 1), (1, 0)), dtype=np.int64)
+            second_core = make_core()
+            second_core.cityID = "city_a"
+            with mock.patch(
+                "DecisionInterface.RegionalObservationBuilder._regional_spatial_edges",
+                return_value=changed_edges,
+            ):
+                with self.assertRaisesRegex(ValueError, "topology changed"):
+                    _bridge(directory, core=second_core)
 
     def test_packed_frames_keep_distinct_spatial_topologies(self):
         with tempfile.TemporaryDirectory() as directory:
