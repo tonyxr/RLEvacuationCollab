@@ -72,7 +72,7 @@ from RewardProcessor import (
 )
 
 
-MODEL_VERSION = 63
+MODEL_VERSION = 64
 EXOGENOUS_CRITIC_FEATURE_NAMES = (
     "next_wind_cos",
     "next_wind_sin",
@@ -186,6 +186,7 @@ class Transition:
     random_reference_mc_target: Optional[torch.Tensor]
     done: torch.Tensor
     elapsed_timesteps: torch.Tensor
+    scenario_seed: torch.Tensor
     # NMCC counterfactual advantage for this decision, when an exact paired
     # policy-candidate branch was collected. ``None`` is invalid when exact
     # counterfactual credit is enabled.
@@ -985,6 +986,7 @@ class RLBridge:
         self.rollout_episode_count = 0
         self.random_reference_replay: list[ReferenceValueEpisode] = []
         self.actor_replay: list[ActorReplayEpisode] = []
+        self.actor_replay_scenario_seeds: list[int] = []
         self.rollout_pi_ungraded_decisions = 0
         if self.deployment_strategy in {
             "rl",
@@ -1973,6 +1975,8 @@ class RLBridge:
                     "rollout_episode_count",
                     "random_reference_replay",
                     "actor_replay",
+                    "actor_replay_scenario_seeds",
+                    "spatial_edge_index",
                     "actor_optimizer_updates",
                     "critic_optimizer_updates",
                     "actor_rollout_updates",
@@ -2015,6 +2019,34 @@ class RLBridge:
                     self._deserialize_actor_replay_episode(item)
                     for item in payload["actor_replay"]
                 ]
+                replay_seeds = payload["actor_replay_scenario_seeds"]
+                if (
+                    not isinstance(replay_seeds, (list, tuple))
+                    or len(replay_seeds) != len(self.actor_replay)
+                    or any(
+                        not isinstance(seed, int) or isinstance(seed, bool)
+                        for seed in replay_seeds
+                    )
+                ):
+                    raise ValueError(
+                        "checkpoint actor-replay scenario seeds are invalid"
+                    )
+                self.actor_replay_scenario_seeds = [
+                    int(seed) for seed in replay_seeds
+                ]
+                saved_edge_index = payload["spatial_edge_index"]
+                if (
+                    not torch.is_tensor(saved_edge_index)
+                    or saved_edge_index.ndim != 2
+                    or saved_edge_index.shape[0] != 2
+                    or not torch.equal(
+                        saved_edge_index.detach().cpu(),
+                        self.edge_index.detach().cpu(),
+                    )
+                ):
+                    raise ValueError(
+                        "checkpoint spatial edge index does not match"
+                    )
             self.episodes_completed = int(payload.get("episodes_completed", 0))
             self.optimizer_updates = int(payload.get("optimizer_updates", 0))
             self.actor_optimizer_updates = int(
@@ -2046,6 +2078,16 @@ class RLBridge:
             or self.critic_optimizer is None
         ):
             return
+        if (
+            len(self.actor_replay_scenario_seeds) != len(self.actor_replay)
+            or any(
+                not isinstance(seed, int) or isinstance(seed, bool)
+                for seed in self.actor_replay_scenario_seeds
+            )
+        ):
+            raise RuntimeError(
+                "Actor replay and scenario-seed metadata must remain aligned"
+            )
         directory = os.path.dirname(os.path.abspath(self.checkpoint_path))
         os.makedirs(directory, exist_ok=True)
         temporary_path = f"{self.checkpoint_path}.tmp"
@@ -2078,6 +2120,10 @@ class RLBridge:
                 self._serialize_actor_replay_episode(episode)
                 for episode in self.actor_replay
             ],
+            "actor_replay_scenario_seeds": list(
+                self.actor_replay_scenario_seeds
+            ),
+            "spatial_edge_index": self.edge_index.detach().cpu(),
         }
         try:
             torch.save(payload, temporary_path)
@@ -2385,6 +2431,8 @@ class RLBridge:
                 previous_time = None
             if transition.elapsed_timesteps.numel() != 1 or int(transition.elapsed_timesteps.item()) <= 0:
                 raise ValueError("checkpoint rollout duration is invalid")
+            if transition.scenario_seed.numel() != 1:
+                raise ValueError("checkpoint rollout scenario seed is invalid")
         if terminal_count != self.rollout_episode_count:
             raise ValueError("checkpoint rollout does not contain one terminal per episode")
         if self.rollout_traj and float(self.rollout_traj[-1].done.item()) != 1.0:
@@ -3975,6 +4023,19 @@ class RLBridge:
                     ),
                     elapsed_timesteps=torch.as_tensor(
                         [max(1, pending.elapsed_timesteps)],
+                        dtype=torch.long,
+                        device=self.device,
+                    ),
+                    scenario_seed=torch.as_tensor(
+                        [
+                            int(
+                                getattr(
+                                    self.core,
+                                    "scenario_seed",
+                                    self.policy_seed,
+                                )
+                            )
+                        ],
                         dtype=torch.long,
                         device=self.device,
                     ),
@@ -6610,8 +6671,17 @@ class RLBridge:
         current actor rather than replaying stale probabilities.
         """
         current_iteration: list[ActorReplayEpisode] = []
+        current_scenario_seeds: list[int] = []
         for episode in episodes:
             episode_indices = [int(index) for index in episode]
+            scenario_seeds = {
+                int(transitions[index].scenario_seed.reshape(-1)[0].item())
+                for index in episode_indices
+            }
+            if len(scenario_seeds) != 1:
+                raise RuntimeError(
+                    "Actor-replay episode spans multiple scenario seeds"
+                )
             indices = [
                 index
                 for index in episode_indices
@@ -6658,16 +6728,25 @@ class RLBridge:
                     iteration=int(self.actor_rollout_updates),
                 )
             )
+            current_scenario_seeds.append(next(iter(scenario_seeds)))
         keep_iterations = int(self.nmcc_pi_replay_max_iterations)
-        self.actor_replay = [
-            episode
-            for episode in self.actor_replay
+        retained = [
+            (episode, scenario_seed)
+            for episode, scenario_seed in zip(
+                self.actor_replay,
+                self.actor_replay_scenario_seeds,
+            )
             if keep_iterations > 0
             and episode.iteration
             >= int(self.actor_rollout_updates) - keep_iterations
-        ] + current_iteration
+        ]
+        retained.extend(zip(current_iteration, current_scenario_seeds))
         maximum = int(self.nmcc_pi_replay_max_episodes)
-        self.actor_replay = self.actor_replay[-maximum:]
+        retained = retained[-maximum:]
+        self.actor_replay = [episode for episode, _ in retained]
+        self.actor_replay_scenario_seeds = [
+            scenario_seed for _, scenario_seed in retained
+        ]
 
     def _actor_fit_episodes(self) -> list[ActorFitEpisode]:
         """Rebuild targets under the current actor with recency/stage weights."""

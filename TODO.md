@@ -1358,22 +1358,17 @@ provenance and must be revalidated against the current MDP before reuse.
 - [ ] Evaluate v61 on matched seeds and report both final safe completions and
   forced re-evacuation/overrun outcomes for RL and every benchmark.
 
-## Current priority — v63 shelter-overrun anticipation (2026-10-18)
+## Current priority — v64 front-aware resilient policy (2026-10-24)
 
-- [x] Forecast the first danger-threshold crossing from public hazard state and
-  identify the next threatened operational shelter cell without reading the
-  realized regime tape.
-- [x] Expose current residents, en-route reservations, crossing probability,
-  lead time, expected re-evacuation/rerouting burden and surviving capacity to
-  the actor at cell, global and candidate resolution.
-- [x] Split reservation outcomes by grouped-cohort ETA against the full
-  first-passage CDF so arrivals before failure are counted as future
-  re-evacuation rather than only rerouting.
-- [x] Preserve one complete cost ledger and grade actor actions with paired
-  full-horizon belief rollouts; do not add a second shelter-failure penalty.
-- [x] Remove hidden-future, live-map mutation, routing snapshot, congestion
-  snapshot and incomplete future-allocation defects; pass all 396 tests.
-- [ ] Train a fresh v63 policy from scratch, then evaluate on matched seeds
-  with shelter-overrun count, forced re-evacuation, rerouted reservations,
-  surviving capacity, complete objective cost and forecast ablation. The run
-  remains intentionally stopped pending an explicit restart request.
+- [x] Implement change sets A–H and preserve the named v63 legacy comparators.
+- [x] Register the full and smoke curricula, bump the checkpoint contract to
+  model version 64, and add the scenario-disjoint offline actor-fit audit.
+- [x] Pass the 439-test repository suite and the 42-test snapshot/replay/CRN
+  regression gate; validate the exact two-city smoke launch contract.
+- [ ] Complete the fresh E4/P16, eval-4, two-city v64 integration smoke and
+  verify every T3 accounting, retirement, tape-budget, branch-budget, replay,
+  and early-search invariant from its generated artifacts.
+- [ ] Run the State College E8/P40 offline-feature pilot and require the
+  prespecified full-vs-no-front gate before committing three production seeds.
+- [ ] Run three fresh v64 paper seeds and apply the prespecified T5 paired
+  policy, overrun, behavior, and deployment-time acceptance checks.

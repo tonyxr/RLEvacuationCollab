@@ -42,6 +42,7 @@ def _transition(frame, offset=0.0):
         improvement_advantage=scores,
         improvement_exact_mask=frame.action_mask.detach().cpu().to(torch.float32),
         improvement_eta_floor=torch.as_tensor(0.01, dtype=torch.float32),
+        scenario_seed=torch.as_tensor((20261024,), dtype=torch.long),
     )
 
 
@@ -173,6 +174,9 @@ class V64ActorReplayTests(unittest.TestCase):
             restored = _bridge(directory)
             self.assertEqual(len(restored.actor_replay), 1)
             self.assertEqual(restored.actor_replay[0].iteration, 7)
+            self.assertEqual(
+                restored.actor_replay_scenario_seeds, [20261024]
+            )
             self.assertEqual(
                 len(restored.actor_replay[0].frames),
                 len(bridge.actor_replay[0].frames),

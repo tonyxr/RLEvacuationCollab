@@ -16,6 +16,63 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class TrainingCurriculumTests(unittest.TestCase):
+    def test_v64_paper_curriculum_declares_front_aware_contract(self):
+        expected = {
+            "casualtyPriceRule": "harm_monotone",
+            "publicObjectiveVariant": "front_aware",
+            "clearanceTailExtraWeight": 0.0,
+            "nmccFrontForecastIntervals": 4,
+            "nmccPiExhaustiveDecisions": 3,
+            "nmccPiMaxBranches": 10,
+            "nmccPiTapes": 4,
+            "nmccPiLateTapes": 2,
+            "nmccPiReplayMaxIterations": 40,
+            "nmccPiReplayMaxEpisodes": 200,
+            "nmccPiReplayHalfLifeIterations": 5.0,
+            "nmccPiEarlyDecisions": 3,
+            "nmccPiEarlyDecisionWeight": 2.0,
+            "rlEarlySearchDecisions": 3,
+            "rlEarlySearchTopK": 5,
+            "rlEarlySearchFutures": 4,
+        }
+        for filename, population, surplus, stage_sizes in (
+            (
+                "state_college_spokane_regime_v64_2500_paper.json",
+                2500,
+                500,
+                [20, 80],
+            ),
+            (
+                "state_college_spokane_regime_v64_250_smoke.json",
+                250,
+                50,
+                [4, 16],
+            ),
+        ):
+            curriculum = load_training_curriculum(ROOT / "config" / filename)
+            self.assertEqual(
+                [stage.stage_id for stage in curriculum.stages], ["E", "P"]
+            )
+            self.assertEqual(
+                [stage.episodes_per_city for stage in curriculum.stages],
+                stage_sizes,
+            )
+            overrides = curriculum.learner_overrides
+            for name, value in expected.items():
+                self.assertEqual(overrides[name], value)
+            self.assertEqual(overrides["casualtyPriorityKappa"], 2.0)
+            self.assertEqual(overrides["shelterFailureReserveCount"], 1)
+            for stage in curriculum.stages:
+                variant = stage.variants[0].overrides
+                self.assertEqual(variant["pedVol"], population)
+                planned = (
+                    variant["initShelterVol"]
+                    + variant["maxAdditionalShelters"]
+                )
+                token = variant["shelterCapacityToken"]
+                self.assertEqual(planned * token, population + surplus)
+                self.assertGreaterEqual((planned - 1) * token, population)
+
     def test_v62_overrun_resilient_capacity_survives_one_site_loss(self):
         curriculum = load_training_curriculum(
             ROOT

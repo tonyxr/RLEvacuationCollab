@@ -1,5 +1,47 @@
 # Engineering Review Log
 
+## 2026-10-24 — Model v64 front-aware resilient policy
+
+### Implementation
+
+- A: added the opt-in `harm_monotone` casualty price while preserving the
+  bitwise v63 `legacy` default.
+- B: added reversal-consistent settled shelter-stay ledgers to factual and
+  counterfactual reward accounting, snapshot restore, and live-state digests.
+- C: permanently retires candidates in overrun cells, preserves the defer
+  action when every installation is infeasible, and prevents dead installs.
+- D: added public, front-aware threatened-population, capture, arrival,
+  lead-time, and momentum features with public-state seeding, routing-aware
+  distances, exact forecast ablation, and digest coverage.
+- E: added the `front_aware` public objective, while retaining the legacy
+  comparator as `objective_greedy_legacy`.
+- F: actor fitting now aggregates a bounded replay window with recency and
+  early-decision weights and recomputes targets under the current actor.
+- G: simulator grading now uses four shared futures for early decisions and
+  two thereafter, with the configured exhaustive and branch-panel budgets.
+- H: added the deployable `rl_early_search` policy, which searches the
+  actor's top-five early actions over four public-information futures for the
+  first three decisions without mutating the live episode.
+- I: registered model version 64, the full E20/P80 curriculum
+  `config/state_college_spokane_regime_v64_2500_paper.json`, the E4/P16
+  curriculum `config/state_college_spokane_regime_v64_250_smoke.json`, and
+  `scripts/offline_actor_fit_audit.py` for the prespecified scenario-disjoint
+  three-seed full-vs-no-front representability gate.
+
+### Verification
+
+- The complete repository suite passes 439 tests. The dedicated snapshot,
+  replay, and CRN regression gate passes all 42 tests unchanged.
+- The exact two-city E4/P16/eval-4 command contract, including
+  `hazardWindSpeedMPerMinute=16.67` and all eight required strategies, passed
+  configuration and interface validation under launch id
+  `state_college_spokane_250_regime_v64_front_aware_smoke_E4_P16_eval4_seed6418_20261024_preflight`.
+  This entry records a preflight only; it does not claim that the historically
+  long-running training/evaluation smoke completed.
+- Apple `/usr/bin/python3` cannot run the optional bare-Python gate on this
+  machine because NumPy and NetworkX are not installed there. The repository
+  venv test suite is green.
+
 ## 2026-10-02 — Model v38 scalable sampled NMCC
 
 ### Diagnosis
