@@ -127,6 +127,10 @@ def momentum_array(
                 current.forecast_safe_capacity_coverage_fraction
                 - previous.forecast_safe_capacity_coverage_fraction
             ),
+            (
+                previous.threatened_population_fraction
+                - current.threatened_population_fraction
+            ),
         ),
         dtype=np.float32,
     )

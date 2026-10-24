@@ -279,6 +279,7 @@ class Core:
         self.hazardSecondaryIgnitionRatePerMinute = 0.0
         self.hazardSecondaryIgnitionWindow = [10, 90]
         self.forecastEnsembleSize = 8
+        self.nmccFrontForecastIntervals = 4
         self.actionSpace = "cell"
         self.nmccPiAllocation = "uniform"
         # Information set of the futures that grade the actor's rollout
@@ -2061,6 +2062,9 @@ class Core:
             int(value) for value in self.hazardSecondaryIgnitionWindow
         ]
         self.forecastEnsembleSize = int(self.forecastEnsembleSize)
+        self.nmccFrontForecastIntervals = int(
+            self.nmccFrontForecastIntervals
+        )
         self.actionSpace = str(self.actionSpace).strip().lower()
         self.nmccPiAllocation = str(self.nmccPiAllocation).strip().lower()
         self.nmccPiTargetFutureMode = (
@@ -2175,6 +2179,8 @@ class Core:
         )
         if self.forecastEnsembleSize <= 0:
             raise ValueError("forecastEnsembleSize must be positive")
+        if self.nmccFrontForecastIntervals < 1:
+            raise ValueError("nmccFrontForecastIntervals must be at least 1")
         if self.actionSpace not in {"cell", "region_defer"}:
             raise ValueError("actionSpace must be cell or region_defer")
         if self.nmccPiAllocation not in {"uniform", "ocba"}:

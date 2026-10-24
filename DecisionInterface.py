@@ -36,6 +36,8 @@ PED_FEATURE_NAMES = (
     "exposed_population_fraction",
     "panicked_population_fraction",
     "remaining_evacuation_debt_fraction",
+    "susceptible_population_fraction",
+    "threatened_population_fraction",
 )
 
 HAZARD_FEATURE_NAMES = (
@@ -49,6 +51,8 @@ HAZARD_FEATURE_NAMES = (
     "forecast_overrun_lead_time_fraction",
     "hazard_source_proximity",
     "closure_warning_incidence_fraction",
+    "front_arrival_probability",
+    "front_lead_time_fraction",
 )
 
 INFRA_FEATURE_NAMES = (
@@ -96,6 +100,7 @@ GLOBAL_FEATURE_NAMES = (
     "next_shelter_overrun_lead_time_fraction",
     "slow_tail_population_fraction",
     "slow_tail_time_fraction",
+    "threatened_population_fraction",
 )
 
 REGIME_GLOBAL_FEATURE_NAMES = (
@@ -126,6 +131,7 @@ MOMENTUM_FEATURE_NAMES = (
     "forecast_exposure_reduction_velocity",
     "forecast_reevacuation_reduction_velocity",
     "forecast_safe_capacity_growth_velocity",
+    "threatened_population_reduction_velocity",
 )
 
 CANDIDATE_FEATURE_NAMES = (
@@ -146,6 +152,10 @@ CANDIDATE_FEATURE_NAMES = (
     "closure_warning_incidence_fraction",
     "closed_road_incidence_fraction",
     "public_regional_objective_score",
+    "threat_capture_fraction",
+    "front_approach_fraction",
+    "front_arrival_probability",
+    "front_lead_time_fraction",
 )
 
 
@@ -859,6 +869,14 @@ class RegionalObservation:
     candidate_risk_time_reduction: Optional[np.ndarray] = None
     remaining_evacuation_debt_by_cell: Optional[np.ndarray] = None
     candidate_public_objective_score: Optional[np.ndarray] = None
+    susceptible_population_by_cell: Optional[np.ndarray] = None
+    threatened_population_by_cell: Optional[np.ndarray] = None
+    front_arrival_probability_by_cell: Optional[np.ndarray] = None
+    front_lead_time_fraction_by_cell: Optional[np.ndarray] = None
+    candidate_threat_capture_fraction: Optional[np.ndarray] = None
+    candidate_front_approach_fraction: Optional[np.ndarray] = None
+    candidate_front_arrival_probability: Optional[np.ndarray] = None
+    candidate_front_lead_time_fraction: Optional[np.ndarray] = None
     network_load_share: float = 0.0
     time_step_minutes: float = 1.0
     wind_speed_fraction: float = 0.0
@@ -874,6 +892,7 @@ class RegionalObservation:
     forecast_safe_capacity_coverage_fraction: float = 0.0
     next_shelter_overrun_probability: float = 0.0
     next_shelter_overrun_lead_time_fraction: float = 1.0
+    threatened_population_fraction: float = 0.0
     forecast_ensemble_mean: Optional[np.ndarray] = None
     forecast_ensemble_dispersion: Optional[np.ndarray] = None
     forecast_escalation: Optional[np.ndarray] = None
@@ -974,6 +993,8 @@ class RegionalObservation:
             "enroute_reserved_population_by_cell",
             "forecast_reevacuation_population_by_cell",
             "forecast_enroute_reroute_population_by_cell",
+            "susceptible_population_by_cell",
+            "threatened_population_by_cell",
         ):
             value = getattr(self, name)
             object.__setattr__(
@@ -1008,6 +1029,18 @@ class RegionalObservation:
             self,
             "forecast_escalation",
             bounded_cell_vector("forecast_escalation"),
+        )
+        object.__setattr__(
+            self,
+            "front_arrival_probability_by_cell",
+            bounded_cell_vector("front_arrival_probability_by_cell"),
+        )
+        object.__setattr__(
+            self,
+            "front_lead_time_fraction_by_cell",
+            bounded_cell_vector(
+                "front_lead_time_fraction_by_cell", default=1.0
+            ),
         )
 
         mean_route_time = (
@@ -1178,6 +1211,7 @@ class RegionalObservation:
             "forecast_safe_capacity_coverage_fraction",
             "next_shelter_overrun_probability",
             "next_shelter_overrun_lead_time_fraction",
+            "threatened_population_fraction",
         ):
             value = float(getattr(self, name))
             if not np.isfinite(value) or not 0.0 <= value <= 1.0:
@@ -1354,6 +1388,18 @@ class RegionalObservation:
         candidate_public_score = np.clip(candidate_public_score, 0.0, 1.0).astype(
             np.float32, copy=False
         )
+        candidate_threat_capture = bounded_candidate_vector(
+            "candidate_threat_capture_fraction"
+        )
+        candidate_front_approach = bounded_candidate_vector(
+            "candidate_front_approach_fraction", default=0.5
+        )
+        candidate_front_arrival = bounded_candidate_vector(
+            "candidate_front_arrival_probability"
+        )
+        candidate_front_lead = bounded_candidate_vector(
+            "candidate_front_lead_time_fraction", default=1.0
+        )
         if self.remaining_deployments <= 0 and mask.any():
             raise ValueError("action_mask cannot allow deployment after the budget is exhausted")
         install_feasible = mask.copy()
@@ -1412,6 +1458,26 @@ class RegionalObservation:
             self,
             "candidate_public_objective_score",
             candidate_public_score,
+        )
+        object.__setattr__(
+            self,
+            "candidate_threat_capture_fraction",
+            candidate_threat_capture,
+        )
+        object.__setattr__(
+            self,
+            "candidate_front_approach_fraction",
+            candidate_front_approach,
+        )
+        object.__setattr__(
+            self,
+            "candidate_front_arrival_probability",
+            candidate_front_arrival,
+        )
+        object.__setattr__(
+            self,
+            "candidate_front_lead_time_fraction",
+            candidate_front_lead,
         )
         object.__setattr__(self, "action_mask", mask)
 
@@ -1480,6 +1546,16 @@ class RegionalObservation:
                     0.0,
                     1.0,
                 ),
+                np.clip(
+                    self.susceptible_population_by_cell / population_scale,
+                    0.0,
+                    1.0,
+                ),
+                np.clip(
+                    self.threatened_population_by_cell / population_scale,
+                    0.0,
+                    1.0,
+                ),
             ),
             axis=-1,
         )
@@ -1495,6 +1571,8 @@ class RegionalObservation:
                 self.forecast_overrun_lead_time_fraction_by_cell,
                 self.hazard_source_proximity_by_cell,
                 self.closure_warning_by_cell,
+                self.front_arrival_probability_by_cell,
+                self.front_lead_time_fraction_by_cell,
             ),
             axis=-1,
         )
@@ -1600,6 +1678,7 @@ class RegionalObservation:
                     0.0,
                     1.0,
                 ),
+                self.threatened_population_fraction,
             ),
             dtype=np.float32,
         )
@@ -1652,6 +1731,10 @@ class RegionalObservation:
                 self.candidate_closure_warning,
                 self.candidate_closed_road,
                 self.candidate_public_objective_score,
+                self.candidate_threat_capture_fraction,
+                self.candidate_front_approach_fraction,
+                self.candidate_front_arrival_probability,
+                self.candidate_front_lead_time_fraction,
             ),
             axis=-1,
         ).astype(np.float32)
@@ -2102,6 +2185,10 @@ class RegionalObservationBuilder:
         self._candidate_records = ()
         self._raw_candidate_total = 0
         self._position_bounds = self._initial_position_bounds()
+        self._site_region_distance_cache: dict[
+            tuple[str, int], np.ndarray
+        ] = {}
+        self._region_road_nodes = self._road_nodes_by_region()
         if self._raw_candidate_total == 0 and self.maximum_deployments > 0:
             raise ValueError("A positive deployment budget requires at least one shelter candidate")
 
@@ -2395,6 +2482,55 @@ class RegionalObservationBuilder:
         if not (0 <= i < self.nx and 0 <= j < self.ny):
             return None
         return i * self.ny + j
+
+    def _road_nodes_by_region(self) -> tuple[tuple[object, ...], ...]:
+        nodes_by_region: list[list[object]] = [
+            [] for _ in range(self.number_of_cells)
+        ]
+        map_database = getattr(self.core, "mapDS", None)
+        for node in getattr(map_database, "nodeListByLocalID", {}).values():
+            cell_index = self._node_cell_index(node)
+            if cell_index is not None:
+                nodes_by_region[cell_index].append(node)
+        return tuple(tuple(nodes) for nodes in nodes_by_region)
+
+    def _site_region_distances_m(self, site_node) -> np.ndarray:
+        """Road distance from each region to one candidate site (metres)."""
+        map_database = getattr(self.core, "mapDS", None)
+        key = (
+            str(getattr(site_node, "OSMID", "")),
+            int(getattr(map_database, "routing_version", 0)),
+        )
+        cached = self._site_region_distance_cache.get(key)
+        if cached is not None:
+            return cached
+        result = np.full(self.number_of_cells, np.inf, dtype=np.float64)
+        tree = getattr(map_database, "_routing_tree", None)
+        if callable(tree) and site_node is not None:
+            try:
+                distances, _ = tree(int(site_node.OSMID))
+            except Exception:
+                distances = {}
+            for index, nodes in enumerate(self._region_road_nodes):
+                result[index] = min(
+                    (
+                        float(distances.get(int(node.OSMID), np.inf))
+                        for node in nodes
+                    ),
+                    default=np.inf,
+                )
+        centers = self._region_centers_m()
+        euclidean = np.hypot(
+            centers[:, 0] - float(getattr(site_node, "nodeX", 0.0)),
+            centers[:, 1] - float(getattr(site_node, "nodeY", 0.0)),
+        )
+        result = np.where(np.isfinite(result), result, euclidean)
+        if len(self._site_region_distance_cache) >= 64:
+            self._site_region_distance_cache.pop(
+                next(iter(self._site_region_distance_cache))
+            )
+        self._site_region_distance_cache[key] = result
+        return result
 
     def _pedestrian_layer(
         self,
@@ -2841,6 +2977,298 @@ class RegionalObservationBuilder:
                 arrival_steps = int(self.horizon) + 1
             records[i * self.ny + j].append((arrival_steps, population))
         return tuple(tuple(cell_records) for cell_records in records)
+
+    def _susceptible_arrivals_by_cell(
+        self,
+        window_steps: int,
+    ) -> tuple[tuple[tuple[int, int], ...], ...]:
+        """Return steps-to-safety records for cohorts without a panic trial."""
+        window = max(1, int(window_steps))
+        records: list[list[tuple[int, int]]] = [
+            [] for _ in range(self.number_of_cells)
+        ]
+        reservation_for = getattr(self.core.shelterDS, "reservationFor", None)
+        time_step = max(
+            1e-9, float(getattr(self.core, "timeStepMinutes", 1.0))
+        )
+        speed_floor = max(1e-6, 0.1 * float(self.core.maxSpeed))
+        for pedestrian in self.core.pedDS.pedAgentList.values():
+            if (
+                bool(getattr(pedestrian, "terminated", False))
+                or bool(getattr(pedestrian, "panicked", False))
+                or bool(getattr(pedestrian, "affected", False))
+            ):
+                continue
+            cell = getattr(pedestrian, "currCell", None)
+            if cell is None:
+                continue
+            i, j = int(cell[0]), int(cell[1])
+            if not (0 <= i < self.nx and 0 <= j < self.ny):
+                continue
+            group_size = max(1, int(getattr(pedestrian, "group_size", 1)))
+            route = getattr(pedestrian, "routeFollowing", None)
+            route_distance = self._remaining_route_distance(pedestrian)
+            assigned_shelter, reserved_population = (
+                reservation_for(pedestrian)
+                if callable(reservation_for)
+                else (None, 0)
+            )
+            route_target = getattr(route, "endNode", None) if route is not None else None
+            shelter_target = getattr(assigned_shelter, "nodeMapped", None)
+            has_valid_assignment = bool(
+                route is not None
+                and assigned_shelter is not None
+                and int(reserved_population) >= group_size
+                and int(getattr(assigned_shelter, "status", 0)) == 0
+                and route_target is not None
+                and shelter_target is not None
+                and getattr(route_target, "OSMID", None)
+                == getattr(shelter_target, "OSMID", None)
+                and np.isfinite(route_distance)
+            )
+            if has_valid_assignment:
+                speed = max(
+                    speed_floor,
+                    float(getattr(pedestrian, "currSpeed", 0.0)),
+                )
+                tau = int(np.ceil((route_distance / speed) / time_step))
+            else:
+                tau = window
+            records[i * self.ny + j].append(
+                (min(max(0, int(tau)), window), group_size)
+            )
+        return tuple(tuple(cell_records) for cell_records in records)
+
+    def _front_layer(
+        self,
+        danger: np.ndarray,
+        simulation_time: int,
+        susceptible_arrivals: tuple[tuple[tuple[int, int], ...], ...],
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]:
+        """Panic-level first passage and its threatened population."""
+        interval = max(1, int(getattr(self.core, "shelterActionInterval", 1)))
+        remaining = max(1, int(self.horizon) - int(simulation_time))
+        window = min(
+            remaining,
+            max(1, int(getattr(self.core, "nmccFrontForecastIntervals", 4)))
+            * interval,
+        )
+        level = float(
+            getattr(
+                self.core,
+                "panicDangerThreshold",
+                getattr(self.core.pedDS, "panic_danger_threshold", 3),
+            )
+        )
+        hazard_store = getattr(self.core, "hazardDS", None)
+        first_passage = getattr(
+            hazard_store, "belief_overrun_first_passage_by_cell", None
+        )
+        if callable(first_passage):
+            seed = self._belief_forecast_seed(danger, simulation_time)
+            distribution = first_passage(
+                window,
+                level,
+                ensemble_size=int(getattr(self.core, "forecastEnsembleSize", 8)),
+                rng=np.random.default_rng(np.random.SeedSequence([seed, 64])),
+                next_event_mask=None,
+            )
+            front_cdf = distribution.get("crossing_cdf_by_step")
+            if front_cdf is None:
+                probability = np.asarray(
+                    distribution["crossing_probability"], dtype=np.float64
+                ).reshape(self.number_of_cells)
+                crossing_steps = np.asarray(
+                    distribution["conditional_expected_first_crossing_steps"],
+                    dtype=np.float64,
+                ).reshape(self.number_of_cells)
+                front_cdf = np.zeros(
+                    (window + 1, self.number_of_cells), dtype=np.float64
+                )
+                for cell_index, cell_probability in enumerate(probability):
+                    step = min(
+                        window,
+                        max(0, int(np.ceil(crossing_steps[cell_index]))),
+                    )
+                    front_cdf[step:, cell_index] = cell_probability
+            front_cdf = np.asarray(front_cdf, dtype=np.float64).reshape(
+                window + 1, self.number_of_cells
+            )
+            lead_steps = np.asarray(
+                distribution["conditional_expected_first_crossing_steps"],
+                dtype=np.float64,
+            ).reshape(self.number_of_cells)
+        else:
+            threshold = float(np.clip(level / 5.0, 0.0, 1.0))
+            forecast_method = getattr(hazard_store, "forecast_danger_by_cell", None)
+            forecast = (
+                np.asarray(forecast_method(window), dtype=np.float64).reshape(
+                    self.number_of_cells
+                )
+                if callable(forecast_method)
+                else np.asarray(danger, dtype=np.float64)
+            )
+            current_crossing = np.asarray(danger, dtype=np.float64) >= threshold - 1e-12
+            eventual_crossing = forecast >= threshold - 1e-12
+            front_cdf = np.zeros(
+                (window + 1, self.number_of_cells), dtype=np.float64
+            )
+            front_cdf[0] = current_crossing.astype(np.float64)
+            if window > 0:
+                front_cdf[1:] = eventual_crossing.astype(np.float64)
+            lead_steps = np.where(
+                current_crossing,
+                0.0,
+                np.where(eventual_crossing, 1.0, float(window + 1)),
+            )
+        front_cdf = np.clip(
+            np.nan_to_num(front_cdf, nan=0.0, posinf=1.0, neginf=0.0),
+            0.0,
+            1.0,
+        )
+        front_cdf = np.maximum.accumulate(front_cdf, axis=0)
+        arrival = front_cdf[-1]
+        lead = np.clip(
+            np.nan_to_num(
+                lead_steps / float(window + 1),
+                nan=1.0,
+                posinf=1.0,
+                neginf=0.0,
+            ),
+            0.0,
+            1.0,
+        )
+        susceptible = np.zeros(self.number_of_cells, dtype=np.float64)
+        threatened = np.zeros(self.number_of_cells, dtype=np.float64)
+        for cell_index, cohorts in enumerate(susceptible_arrivals):
+            for tau, population in cohorts:
+                susceptible[cell_index] += int(population)
+                threatened[cell_index] += int(population) * float(
+                    front_cdf[min(max(0, int(tau)), window), cell_index]
+                )
+        return (
+            front_cdf.astype(np.float32),
+            arrival.astype(np.float32),
+            lead.astype(np.float32),
+            susceptible.astype(np.float32),
+            threatened.astype(np.float32),
+            window,
+        )
+
+    def _candidate_front_features(
+        self,
+        records: Sequence[tuple[str, int, float, float, float]],
+        nodes: Sequence[object],
+        front_cdf: np.ndarray,
+        susceptible_arrivals: tuple[tuple[tuple[int, int], ...], ...],
+        lead: np.ndarray,
+        window: int,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Return action-level rescue gain and fire-front geometry."""
+        action_count = len(records)
+        capture = np.zeros(action_count, dtype=np.float32)
+        approach = np.full(action_count, 0.5, dtype=np.float32)
+        arrival = np.zeros(action_count, dtype=np.float32)
+        candidate_lead = np.ones(action_count, dtype=np.float32)
+        population_scale = float(max(1, self.initial_population))
+        time_step = max(
+            1e-9, float(getattr(self.core, "timeStepMinutes", 1.0))
+        )
+        travel_denominator = max(1e-9, float(self.core.maxSpeed) * time_step)
+        centers = self._region_centers_m()
+        hazard_store = getattr(self.core, "hazardDS", None)
+        source_points = []
+        for hazard in getattr(hazard_store, "hazardList", {}).values():
+            if not bool(getattr(hazard, "active", True)):
+                continue
+            source = getattr(hazard, "sourceNode", None)
+            if source is not None:
+                source_points.append(
+                    np.asarray(
+                        (
+                            float(getattr(source, "nodeX", 0.0)),
+                            float(getattr(source, "nodeY", 0.0)),
+                        ),
+                        dtype=np.float64,
+                    )
+                )
+        cdf = np.asarray(front_cdf, dtype=np.float64)
+        lead_values = np.asarray(lead, dtype=np.float64)
+        for action, (record, node) in enumerate(zip(records, nodes)):
+            candidate_id, host_cell, capacity, _x_pos, _y_pos = record
+            if candidate_id == "__defer__" or node is None:
+                continue
+            host_cell = int(host_cell)
+            arrival[action] = float(cdf[-1, host_cell])
+            candidate_lead[action] = float(lead_values[host_cell])
+            distances = self._site_region_distances_m(node)
+            travel_steps = np.minimum(
+                int(window),
+                np.maximum(
+                    0,
+                    np.ceil(distances / travel_denominator).astype(np.int64),
+                ),
+            )
+            site_point = np.asarray(
+                (
+                    float(getattr(node, "nodeX", 0.0)),
+                    float(getattr(node, "nodeY", 0.0)),
+                ),
+                dtype=np.float64,
+            )
+            gain_total = 0.0
+            approach_total = 0.0
+            for cell_index, cohorts in enumerate(susceptible_arrivals):
+                if not cohorts:
+                    continue
+                site_vector = site_point - centers[cell_index]
+                directional_factor = 0.5
+                if source_points:
+                    source = min(
+                        source_points,
+                        key=lambda point: float(
+                            np.sum((point - centers[cell_index]) ** 2)
+                        ),
+                    )
+                    source_vector = source - centers[cell_index]
+                    norm = float(
+                        np.linalg.norm(site_vector)
+                        * np.linalg.norm(source_vector)
+                    )
+                    if norm > 1e-12:
+                        cosine = float(
+                            np.clip(
+                                np.dot(site_vector, source_vector) / norm,
+                                -1.0,
+                                1.0,
+                            )
+                        )
+                        directional_factor = 0.5 * (1.0 + cosine)
+                site_steps = int(travel_steps[cell_index])
+                for tau, represented_population in cohorts:
+                    tau = min(max(0, int(tau)), int(window))
+                    if not (tau == int(window) or site_steps < tau):
+                        continue
+                    gain = int(represented_population) * max(
+                        0.0,
+                        float(cdf[tau, cell_index])
+                        - float(cdf[min(site_steps, int(window)), cell_index]),
+                    )
+                    gain_total += gain
+                    approach_total += gain * directional_factor
+            capture[action] = float(
+                np.clip(
+                    min(max(0.0, float(capacity)), gain_total)
+                    / population_scale,
+                    0.0,
+                    1.0,
+                )
+            )
+            if gain_total > 0.0:
+                approach[action] = float(
+                    np.clip(approach_total / gain_total, 0.0, 1.0)
+                )
+        return capture, approach, arrival, candidate_lead
 
     def _forecast_shelter_transition_burdens(
         self,
@@ -3523,6 +3951,29 @@ class RegionalObservationBuilder:
             simulation_time,
             operational_shelter_capacity > 0.0,
         )
+        front_interval = max(
+            1, int(getattr(self.core, "shelterActionInterval", 1))
+        )
+        front_window = min(
+            max(1, int(self.horizon) - int(simulation_time)),
+            max(1, int(getattr(self.core, "nmccFrontForecastIntervals", 4)))
+            * front_interval,
+        )
+        susceptible_arrivals = self._susceptible_arrivals_by_cell(
+            front_window
+        )
+        (
+            front_crossing_cdf_by_step,
+            front_arrival_probability,
+            front_lead_time_fraction,
+            susceptible_population,
+            threatened_population,
+            front_window,
+        ) = self._front_layer(
+            danger,
+            simulation_time,
+            susceptible_arrivals,
+        )
         regime = getattr(self.core, "hazard_regime", None)
         public = getattr(regime, "public", {}) if regime is not None else {}
         closure_warning_by_cell, closed_road_by_cell = (
@@ -3636,6 +4087,19 @@ class RegionalObservationBuilder:
             closed_road_by_cell,
             self._candidate_records,
             self._candidate_nodes,
+        )
+        (
+            candidate_threat_capture_fraction,
+            candidate_front_approach_fraction,
+            candidate_front_arrival_probability,
+            candidate_front_lead_time_fraction,
+        ) = self._candidate_front_features(
+            self._candidate_records,
+            self._candidate_nodes,
+            front_crossing_cdf_by_step,
+            susceptible_arrivals,
+            front_lead_time_fraction,
+            front_window,
         )
 
         results = getattr(self.core.pedDS, "result", {})
@@ -3802,6 +4266,22 @@ class RegionalObservationBuilder:
             candidate_hazard_safety_margin=candidate_hazard_safety,
             candidate_closure_warning=candidate_closure_warning,
             candidate_closed_road=candidate_closed_road,
+            susceptible_population_by_cell=susceptible_population,
+            threatened_population_by_cell=threatened_population,
+            front_arrival_probability_by_cell=front_arrival_probability,
+            front_lead_time_fraction_by_cell=front_lead_time_fraction,
+            candidate_threat_capture_fraction=(
+                candidate_threat_capture_fraction
+            ),
+            candidate_front_approach_fraction=(
+                candidate_front_approach_fraction
+            ),
+            candidate_front_arrival_probability=(
+                candidate_front_arrival_probability
+            ),
+            candidate_front_lead_time_fraction=(
+                candidate_front_lead_time_fraction
+            ),
             network_load_share=self.network_load_share,
             time_step_minutes=float(getattr(self.core, "timeStepMinutes", 1.0)),
             wind_speed_fraction=wind_speed_fraction,
@@ -3830,6 +4310,14 @@ class RegionalObservationBuilder:
             ),
             next_shelter_overrun_lead_time_fraction=(
                 next_shelter_overrun_lead_time
+            ),
+            threatened_population_fraction=float(
+                np.clip(
+                    threatened_population.sum()
+                    / float(max(1, self.initial_population)),
+                    0.0,
+                    1.0,
+                )
             ),
             forecast_ensemble_mean=forecast_danger,
             forecast_ensemble_dispersion=forecast_uncertainty,

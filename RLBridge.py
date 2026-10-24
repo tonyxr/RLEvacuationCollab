@@ -3063,6 +3063,13 @@ class RLBridge:
             forecast_enroute_reroute_population_by_cell=np.zeros(
                 cells, dtype=np.float32
             ),
+            threatened_population_by_cell=np.zeros(cells, dtype=np.float32),
+            front_arrival_probability_by_cell=np.zeros(
+                cells, dtype=np.float32
+            ),
+            front_lead_time_fraction_by_cell=np.ones(
+                cells, dtype=np.float32
+            ),
             hazard_source_proximity_by_cell=np.zeros(cells, dtype=np.float32),
             closure_warning_by_cell=np.zeros(cells, dtype=np.float32),
             forecast_ensemble_mean=np.zeros(cells, dtype=np.float32),
@@ -3083,6 +3090,18 @@ class RLBridge:
             candidate_forecast_reevacuation_response=np.zeros(
                 actions, dtype=np.float32
             ),
+            candidate_threat_capture_fraction=np.zeros(
+                actions, dtype=np.float32
+            ),
+            candidate_front_approach_fraction=np.full(
+                actions, 0.5, dtype=np.float32
+            ),
+            candidate_front_arrival_probability=np.zeros(
+                actions, dtype=np.float32
+            ),
+            candidate_front_lead_time_fraction=np.ones(
+                actions, dtype=np.float32
+            ),
             candidate_closure_warning=np.zeros(actions, dtype=np.float32),
             wind_forecast_cos=0.0,
             wind_forecast_sin=0.0,
@@ -3094,6 +3113,7 @@ class RLBridge:
             forecast_safe_capacity_coverage_fraction=current_operational_capacity,
             next_shelter_overrun_probability=0.0,
             next_shelter_overrun_lead_time_fraction=1.0,
+            threatened_population_fraction=0.0,
         )
         # ``candidate_public_objective_score`` is the actor's residual base
         # logit.  It is derived from forecast danger and forecast re-evacuation
@@ -3124,6 +3144,10 @@ class RLBridge:
             observation.shelter_utilization_by_cell,
             observation.sheltered_population_by_cell,
             observation.enroute_reserved_population_by_cell,
+            observation.susceptible_population_by_cell,
+            observation.threatened_population_by_cell,
+            observation.front_arrival_probability_by_cell,
+            observation.front_lead_time_fraction_by_cell,
             observation.forecast_overrun_probability_by_cell,
             observation.forecast_next_shelter_overrun_probability_by_cell,
             observation.forecast_overrun_lead_time_fraction_by_cell,
@@ -3176,6 +3200,10 @@ class RLBridge:
             observation.candidate_risk_time_reduction,
             observation.remaining_evacuation_debt_by_cell,
             observation.candidate_public_objective_score,
+            observation.candidate_threat_capture_fraction,
+            observation.candidate_front_approach_fraction,
+            observation.candidate_front_arrival_probability,
+            observation.candidate_front_lead_time_fraction,
             observation.action_mask.astype(np.uint8),
         ):
             digest.update(np.ascontiguousarray(array).tobytes())
@@ -3207,6 +3235,7 @@ class RLBridge:
                     observation.forecast_safe_capacity_coverage_fraction,
                     observation.next_shelter_overrun_probability,
                     observation.next_shelter_overrun_lead_time_fraction,
+                    observation.threatened_population_fraction,
                 ],
                 dtype=np.float64,
             ).tobytes()

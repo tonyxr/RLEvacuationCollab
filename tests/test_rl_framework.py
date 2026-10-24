@@ -1846,20 +1846,23 @@ class BridgeTests(unittest.TestCase):
             previous,
             forecast_reevacuation_population_fraction=0.30,
             forecast_safe_capacity_coverage_fraction=0.65,
+            threatened_population_fraction=0.25,
         )
         current = replace(
             current,
             forecast_reevacuation_population_fraction=0.10,
             forecast_safe_capacity_coverage_fraction=0.80,
+            threatened_population_fraction=0.10,
         )
         values = bridge._momentum_array(previous, current)
-        self.assertEqual(values.shape, (6,))
+        self.assertEqual(values.shape, (7,))
         self.assertGreater(values[0], 0.0)
         self.assertGreater(values[1], 0.0)
         self.assertGreater(values[2], 0.0)
         self.assertLess(values[3], 0.0)
         self.assertGreater(values[4], 0.0)
         self.assertGreater(values[5], 0.0)
+        self.assertGreater(values[6], 0.0)
 
     def test_nmcc_backward_targets_span_all_eight_installations(self):
         bridge = RLBridge(

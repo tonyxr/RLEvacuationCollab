@@ -1864,6 +1864,7 @@ _PORTABLE_CORE_ATTRIBUTES = (
     "hazardSevereRadiusM",
     "actionSpace",
     "forecastEnsembleSize",
+    "nmccFrontForecastIntervals",
     "random_stream_seeds",
 )
 
@@ -1896,6 +1897,7 @@ _PORTABLE_REQUIRED_SIMULATION_ATTRIBUTES = (
     "hazardSevereRadiusM",
     "actionSpace",
     "forecastEnsembleSize",
+    "nmccFrontForecastIntervals",
     "random_stream_seeds",
 )
 

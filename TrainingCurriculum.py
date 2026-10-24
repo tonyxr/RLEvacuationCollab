@@ -85,6 +85,7 @@ LEARNER_STAGE_OVERRIDES = frozenset(
         "hazardSecondaryIgnitionRatePerMinute",
         "hazardSecondaryIgnitionWindow",
         "forecastEnsembleSize",
+        "nmccFrontForecastIntervals",
         "actionSpace",
         "nmccPiAllocation",
         "nmccPiTargetFutureMode",

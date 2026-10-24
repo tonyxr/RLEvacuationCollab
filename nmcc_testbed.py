@@ -172,6 +172,7 @@ class TestbedCore:
         self.hazardSevereRadiusM = 100.0
         self.actionSpace = "cell"
         self.forecastEnsembleSize = 8
+        self.nmccFrontForecastIntervals = 4
 
         seeds = {
             "hazard_evolution": int(
