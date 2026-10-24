@@ -868,7 +868,14 @@ def outcome_snapshot(core) -> OutcomeSnapshot:
 
 
 def casualty_loss_weight(core, simulation_time: Optional[int] = None) -> float:
-    """Person-minute price of one expected casualty at this timestep."""
+    """Person-minute price of one expected casualty at this timestep.
+
+    ``legacy``: kappa * 2 * (H - t), the v45-v63 rule.
+    ``harm_monotone``: kappa * (w_a + w_h) * (2H - t), the largest cost a
+    living person can still accrue (remaining time at maximum danger plus the
+    full-horizon terminal residual charged to an unresolved person), so no
+    policy can lower cost by letting someone die.
+    """
     horizon = max(1, int(getattr(getattr(core, "rl", None), "horizon", 0) or getattr(core, "stopTime", 1) - 1))
     time_index = int(
         getattr(getattr(core, "pedDS", None), "currTime", 0)
@@ -879,7 +886,14 @@ def casualty_loss_weight(core, simulation_time: Optional[int] = None) -> float:
     kappa = float(getattr(core, "casualtyPriorityKappa", 2.0))
     if not math.isfinite(kappa) or kappa < 1.0:
         raise ValueError("casualtyPriorityKappa must be finite and at least 1")
-    return float(kappa * 2.0 * remaining)
+    rule = str(getattr(core, "casualtyPriceRule", "legacy")).strip().lower()
+    if rule == "legacy":
+        return float(kappa * 2.0 * remaining)
+    if rule == "harm_monotone":
+        w_a = float(getattr(core, "activePersonTimeWeight", 1.0))
+        w_h = float(getattr(core, "hazardExposureTimeWeight", 1.0))
+        return float(kappa * (w_a + w_h) * (horizon + remaining))
+    raise ValueError("casualtyPriceRule must be legacy or harm_monotone")
 
 
 def expected_casualty_step_cost(
@@ -1816,6 +1830,7 @@ _PORTABLE_CORE_ATTRIBUTES = (
     "clearanceTailFraction",
     "clearanceTailExtraWeight",
     "casualtyPriorityKappa",
+    "casualtyPriceRule",
     "shelterOverrunDangerLevel",
     "requirePopulationMatchedShelterCapacity",
     "shelterCapacitySurplus",
@@ -1847,6 +1862,7 @@ _PORTABLE_REQUIRED_SIMULATION_ATTRIBUTES = (
     "clearanceTailFraction",
     "clearanceTailExtraWeight",
     "casualtyPriorityKappa",
+    "casualtyPriceRule",
     "shelterOverrunDangerLevel",
     "requirePopulationMatchedShelterCapacity",
     "shelterCapacitySurplus",

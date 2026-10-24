@@ -158,6 +158,7 @@ class TestbedCore:
         self.clearanceTailFraction = 0.10
         self.clearanceTailExtraWeight = 0.0
         self.casualtyPriorityKappa = 2.0
+        self.casualtyPriceRule = "legacy"
         self.shelterOverrunDangerLevel = 4
         self.requirePopulationMatchedShelterCapacity = False
         self.shelterCapacitySurplus = 0

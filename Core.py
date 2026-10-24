@@ -230,6 +230,7 @@ class Core:
         # maximum remaining living burden; sensitivity runs vary this declared
         # value rather than hiding it in reward weights.
         self.casualtyPriorityKappa = 2.0
+        self.casualtyPriceRule = "legacy"
         # Explicit objective weights.  Defaults preserve historical runs;
         # experiment curricula may change them, but the same values are used
         # by the live reward, branch grading, heuristics and evaluation.
@@ -1582,6 +1583,7 @@ class Core:
             "expected_casualty_priority_kappa": float(
                 self.casualtyPriorityKappa
             ),
+            "casualty_price_rule": str(self.casualtyPriceRule),
             "active_person_time_weight": float(self.activePersonTimeWeight),
             "hazard_exposure_time_weight": float(
                 self.hazardExposureTimeWeight
@@ -1850,6 +1852,7 @@ class Core:
         self.panicHerdProbability = float(self.panicHerdProbability)
         self.panicDangerThreshold = int(self.panicDangerThreshold)
         self.casualtyPriorityKappa = float(self.casualtyPriorityKappa)
+        self.casualtyPriceRule = str(self.casualtyPriceRule).strip().lower()
         self.activePersonTimeWeight = float(self.activePersonTimeWeight)
         self.hazardExposureTimeWeight = float(self.hazardExposureTimeWeight)
         self.clearanceTailFraction = float(self.clearanceTailFraction)
@@ -1873,6 +1876,8 @@ class Core:
             or self.casualtyPriorityKappa < 1.0
         ):
             raise ValueError("casualtyPriorityKappa must be finite and at least 1")
+        if self.casualtyPriceRule not in {"legacy", "harm_monotone"}:
+            raise ValueError("casualtyPriceRule must be legacy or harm_monotone")
         if (
             not math.isfinite(self.activePersonTimeWeight)
             or self.activePersonTimeWeight < 0.0
