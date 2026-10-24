@@ -107,6 +107,12 @@ NMCC_PI_CORE_FIELDS = (
     ("rlEarlySearchTopK", "rl_early_search_top_k", int, 5),
     ("rlEarlySearchFutures", "rl_early_search_futures", int, 4),
     (
+        "saveIterationCheckpoints",
+        "save_iteration_checkpoints",
+        bool,
+        False,
+    ),
+    (
         "nmccPiReplayEpochs",
         "nmcc_pi_replay_epochs",
         int,

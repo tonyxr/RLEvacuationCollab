@@ -412,6 +412,7 @@ class RLBridge:
         rl_early_search_decisions: int = 3,
         rl_early_search_top_k: int = 5,
         rl_early_search_futures: int = 4,
+        save_iteration_checkpoints: bool = False,
         nmcc_pi_replay_epochs: int = DEFAULT_NMCC_PI_REPLAY_EPOCHS,
         nmcc_pi_validation_fraction: float = DEFAULT_NMCC_PI_VALIDATION_FRACTION,
         exploration_rate_start: float = DEFAULT_EXPLORATION_RATE_START,
@@ -635,6 +636,7 @@ class RLBridge:
         self.rl_early_search_futures = self._positive_int(
             "rl_early_search_futures", rl_early_search_futures
         )
+        self.save_iteration_checkpoints = bool(save_iteration_checkpoints)
         self.nmcc_pi_replay_epochs = self._positive_int(
             "nmcc_pi_replay_epochs", nmcc_pi_replay_epochs
         )
@@ -2090,11 +2092,11 @@ class RLBridge:
             )
         directory = os.path.dirname(os.path.abspath(self.checkpoint_path))
         os.makedirs(directory, exist_ok=True)
-        temporary_path = f"{self.checkpoint_path}.tmp"
+        model_signature = self._model_signature()
         payload = {
             "training_resume_allowed": True,
-            "model_signature": self._model_signature(),
-            "inference_signature": self._inference_signature(self._model_signature()),
+            "model_signature": model_signature,
+            "inference_signature": self._inference_signature(model_signature),
             "policy_state_dict": self.policy.state_dict(),
             "actor_optimizer_state_dict": self.actor_optimizer.state_dict(),
             "critic_optimizer_state_dict": self.critic_optimizer.state_dict(),
@@ -2125,9 +2127,42 @@ class RLBridge:
             ),
             "spatial_edge_index": self.edge_index.detach().cpu(),
         }
+        self._atomic_save_checkpoint_payload(self.checkpoint_path, payload)
+        if self.save_iteration_checkpoints:
+            iteration_directory = os.path.join(
+                directory, "iteration_checkpoints"
+            )
+            iteration_path = os.path.join(
+                iteration_directory,
+                (
+                    "regional_policy_iteration_"
+                    f"{int(self.actor_rollout_updates):03d}.pt"
+                ),
+            )
+            iteration_payload = {
+                "training_resume_allowed": False,
+                "checkpoint_purpose": "fixed_panel_evaluation",
+                "model_signature": model_signature,
+                "inference_signature": self._inference_signature(
+                    model_signature
+                ),
+                "policy_state_dict": self.policy.state_dict(),
+                "episodes_completed": self.episodes_completed,
+                "actor_rollout_updates": self.actor_rollout_updates,
+                "policy_seed": self.policy_seed,
+            }
+            self._atomic_save_checkpoint_payload(
+                iteration_path, iteration_payload
+            )
+
+    @staticmethod
+    def _atomic_save_checkpoint_payload(path: str, payload: dict) -> None:
+        directory = os.path.dirname(os.path.abspath(path))
+        os.makedirs(directory, exist_ok=True)
+        temporary_path = f"{path}.tmp"
         try:
             torch.save(payload, temporary_path)
-            os.replace(temporary_path, self.checkpoint_path)
+            os.replace(temporary_path, path)
         finally:
             if os.path.exists(temporary_path):
                 os.remove(temporary_path)

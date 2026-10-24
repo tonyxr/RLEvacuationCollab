@@ -34,6 +34,7 @@ class TrainingCurriculumTests(unittest.TestCase):
             "rlEarlySearchDecisions": 3,
             "rlEarlySearchTopK": 5,
             "rlEarlySearchFutures": 4,
+            "saveIterationCheckpoints": True,
         }
         for filename, population, surplus, stage_sizes in (
             (

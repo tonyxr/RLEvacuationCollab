@@ -182,6 +182,57 @@ class V64ActorReplayTests(unittest.TestCase):
                 len(bridge.actor_replay[0].frames),
             )
 
+    def test_iteration_checkpoint_is_evaluation_only_and_versioned(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = _bridge(
+                directory,
+                save_iteration_checkpoints=True,
+            )
+            bridge.episodes_completed = 12
+            bridge.actor_rollout_updates = 7
+            bridge._save_checkpoint()
+
+            iteration_path = os.path.join(
+                directory,
+                "iteration_checkpoints",
+                "regional_policy_iteration_007.pt",
+            )
+            self.assertTrue(os.path.exists(iteration_path))
+            payload = torch.load(
+                iteration_path,
+                map_location="cpu",
+                weights_only=False,
+            )
+            self.assertFalse(payload["training_resume_allowed"])
+            self.assertEqual(
+                payload["checkpoint_purpose"],
+                "fixed_panel_evaluation",
+            )
+            self.assertEqual(payload["episodes_completed"], 12)
+            self.assertEqual(payload["actor_rollout_updates"], 7)
+            self.assertIn("model_signature", payload)
+            self.assertIn("inference_signature", payload)
+            self.assertEqual(
+                set(payload["policy_state_dict"]),
+                set(bridge.policy.state_dict()),
+            )
+
+            evaluated = _bridge(
+                os.path.join(directory, "evaluation"),
+                train_mode=False,
+                checkpoint_path=iteration_path,
+            )
+            for name, tensor in bridge.policy.state_dict().items():
+                torch.testing.assert_close(
+                    evaluated.policy.state_dict()[name], tensor
+                )
+
+            resume_path = bridge.checkpoint_path
+            bridge.checkpoint_path = iteration_path
+            with self.assertRaisesRegex(RuntimeError, "evaluation-only"):
+                bridge._load_checkpoint(require_training_state=True)
+            bridge.checkpoint_path = resume_path
+
 
 if __name__ == "__main__":
     unittest.main()
