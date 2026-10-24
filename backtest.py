@@ -45,6 +45,7 @@ DYNAMIC_STRATEGIES = (
     "rl",
     "rl_forecast_ablated",
     "objective_greedy",
+    "objective_greedy_legacy",
     "risk_reduction",
     "route_saving",
     "heuristic",

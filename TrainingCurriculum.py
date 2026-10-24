@@ -55,6 +55,7 @@ LEARNER_STAGE_OVERRIDES = frozenset(
         "shelterFailureReserveCount",
         "casualtyPriorityKappa",
         "casualtyPriceRule",
+        "publicObjectiveVariant",
         "activePersonTimeWeight",
         "hazardExposureTimeWeight",
         "clearanceTailFraction",

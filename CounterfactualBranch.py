@@ -98,6 +98,7 @@ from DecisionInterface import (
     estimate_clearance_tail,
     estimate_remaining_time_to_safety,
     public_regional_objective_values,
+    public_objective_kwargs,
     uniform_feasible_action,
 )
 from RolloutPolicyIteration import FrozenResidualPolicy
@@ -1853,6 +1854,7 @@ _PORTABLE_CORE_ATTRIBUTES = (
     "clearanceTailExtraWeight",
     "casualtyPriorityKappa",
     "casualtyPriceRule",
+    "publicObjectiveVariant",
     "shelterOverrunDangerLevel",
     "requirePopulationMatchedShelterCapacity",
     "shelterCapacitySurplus",
@@ -1886,6 +1888,7 @@ _PORTABLE_REQUIRED_SIMULATION_ATTRIBUTES = (
     "clearanceTailExtraWeight",
     "casualtyPriorityKappa",
     "casualtyPriceRule",
+    "publicObjectiveVariant",
     "shelterOverrunDangerLevel",
     "requirePopulationMatchedShelterCapacity",
     "shelterCapacitySurplus",
@@ -2729,8 +2732,7 @@ class CounterfactualBrancher:
         )
         public_scores = public_regional_objective_values(
             enriched,
-            clearance_tail_weight=float(getattr(self.core, "clearanceTailExtraWeight", 0.0)),
-            casualty_priority_kappa=float(getattr(self.core, "casualtyPriorityKappa", 2.0)),
+            **public_objective_kwargs(self.core),
         )
         finite_scores = np.where(np.isfinite(public_scores), public_scores, 0.0)
         return replace(

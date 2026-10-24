@@ -53,6 +53,7 @@ from DecisionInterface import (
     estimate_clearance_tail,
     estimate_remaining_time_to_safety,
     public_regional_objective_values,
+    public_objective_kwargs,
 )
 from GNN import (
     ACTOR_PRIORS,
@@ -689,6 +690,7 @@ class RLBridge:
             "rl_forecast_ablated",
             "rl_precommit",
             "objective_greedy",
+            "objective_greedy_legacy",
             "random",
             "heuristic",
             "risk_reduction",
@@ -2766,6 +2768,17 @@ class RLBridge:
                 ),
                 deterministic=True,
             )
+        elif self.deployment_strategy == "objective_greedy_legacy":
+            objective_kwargs = public_objective_kwargs(self.core)
+            objective_kwargs["variant"] = "legacy"
+            decision = self.objective_greedy_policy.select(
+                observation,
+                candidate_values=public_regional_objective_values(
+                    observation,
+                    **objective_kwargs,
+                ),
+                deterministic=True,
+            )
         elif self.deployment_strategy == "forecast_greedy":
             decision = self.forecast_greedy_policy.select(
                 observation, deterministic=True
@@ -2861,12 +2874,7 @@ class RLBridge:
         """Return the actor/comparator shared public-regional base score."""
         return public_regional_objective_values(
             observation,
-            clearance_tail_weight=float(
-                getattr(self.core, "clearanceTailExtraWeight", 0.0)
-            ),
-            casualty_priority_kappa=float(
-                getattr(self.core, "casualtyPriorityKappa", 2.0)
-            ),
+            **public_objective_kwargs(self.core),
         )
 
     def _objective_greedy_values(
@@ -3027,8 +3035,7 @@ class RLBridge:
     def _without_forecast_information(
         observation: RegionalObservation,
         *,
-        clearance_tail_weight: float = 0.0,
-        casualty_priority_kappa: float = 2.0,
+        objective_kwargs: Optional[dict] = None,
     ) -> RegionalObservation:
         """Remove every predictive input, including the derived actor prior."""
         cells = observation.number_of_cells
@@ -3119,10 +3126,13 @@ class RLBridge:
         # logit.  It is derived from forecast danger and forecast re-evacuation
         # access, so retaining the pre-ablation value would leak the very
         # information this comparator is meant to remove.
+        if objective_kwargs is None:
+            objective_kwargs = dict(
+                clearance_tail_weight=0.0,
+                casualty_priority_kappa=2.0,
+            )
         ablated_scores = public_regional_objective_values(
-            ablated,
-            clearance_tail_weight=float(clearance_tail_weight),
-            casualty_priority_kappa=float(casualty_priority_kappa),
+            ablated, **objective_kwargs
         )
         return replace(
             ablated,
@@ -3877,6 +3887,7 @@ class RLBridge:
             "rl",
             "rl_forecast_ablated",
             "objective_greedy",
+            "objective_greedy_legacy",
             "random",
             "heuristic",
             "risk_reduction",
@@ -3926,6 +3937,7 @@ class RLBridge:
             "rl_forecast_ablated",
             "rl_precommit",
             "objective_greedy",
+            "objective_greedy_legacy",
             "deadline_greedy",
             "initial_only",
         }:
@@ -3936,12 +3948,7 @@ class RLBridge:
         ):
             observation = self._without_forecast_information(
                 observation,
-                clearance_tail_weight=float(
-                    getattr(self.core, "clearanceTailExtraWeight", 0.0)
-                ),
-                casualty_priority_kappa=float(
-                    getattr(self.core, "casualtyPriorityKappa", 2.0)
-                ),
+                objective_kwargs=public_objective_kwargs(self.core),
             )
         # The policy acts only at decision epochs, so its recurrent state also
         # advances only at decision epochs.  A physical NMCC branch ending at

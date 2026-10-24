@@ -164,6 +164,10 @@ def public_regional_objective_values(
     *,
     clearance_tail_weight: float,
     casualty_priority_kappa: float,
+    active_person_time_weight: float = 1.0,
+    hazard_exposure_time_weight: float = 1.0,
+    panic_danger_level: float = 3.0,
+    variant: str = "legacy",
 ) -> np.ndarray:
     """Score candidates from only the public regional observation.
 
@@ -174,6 +178,11 @@ def public_regional_objective_values(
     scale.  No pedestrian record, route, reservation, simulator branch, or
     latent regime value is read here.
     """
+    objective_variant = str(variant).strip().lower()
+    if objective_variant not in {"legacy", "front_aware"}:
+        raise ValueError(
+            "Public objective variant must be legacy or front_aware"
+        )
     values = np.full(observation.number_of_actions, -np.inf, dtype=np.float64)
     feasible = _feasible_install_actions(observation)
     if feasible.size == 0:
@@ -214,28 +223,113 @@ def public_regional_objective_values(
         observation.candidate_forecast_reevacuation_response[feasible],
         dtype=np.float64,
     )
-    scores = coverage * (debt + tail + expected_harm) + displaced_access
+    if objective_variant == "legacy":
+        scores = coverage * (debt + tail + expected_harm) + displaced_access
+    else:
+        survival = 1.0 - np.asarray(
+            observation.candidate_forecast_overrun_probability[feasible],
+            dtype=np.float64,
+        )
+        effective_capacity = capacities * survival
+        coverage = np.minimum(active, effective_capacity) / np.maximum(
+            active, 1.0
+        )
+        capture = np.asarray(
+            observation.candidate_threat_capture_fraction[feasible],
+            dtype=np.float64,
+        )
+        d_panic = float(np.clip(panic_danger_level / 5.0, 0.0, 1.0))
+        horizon = float(observation.horizon)
+        simulation_time = float(observation.simulation_time)
+        rescue_value = (
+            float(observation.configured_panic_fraction)
+            * (
+                float(active_person_time_weight)
+                + float(hazard_exposure_time_weight) * d_panic
+            )
+            * (2.0 * horizon - simulation_time)
+            / max(1.0, horizon)
+        )
+        scores = (
+            survival * coverage * (debt + tail)
+            + rescue_value * capture
+            + displaced_access
+        )
     if not np.isfinite(scores).all() or np.any(scores < 0.0):
         raise FloatingPointError("Public regional objective scores must be finite and non-negative")
     scale = max(float(np.max(scores)), 1e-12)
     values[feasible] = scores / scale
     return values
 
+
+def public_objective_kwargs(core) -> dict:
+    """Return the shared public-objective configuration for every caller."""
+    return dict(
+        clearance_tail_weight=float(
+            getattr(core, "clearanceTailExtraWeight", 0.0)
+        ),
+        casualty_priority_kappa=float(
+            getattr(core, "casualtyPriorityKappa", 2.0)
+        ),
+        active_person_time_weight=float(
+            getattr(core, "activePersonTimeWeight", 1.0)
+        ),
+        hazard_exposure_time_weight=float(
+            getattr(core, "hazardExposureTimeWeight", 1.0)
+        ),
+        panic_danger_level=float(getattr(core, "panicDangerThreshold", 3)),
+        variant=str(getattr(core, "publicObjectiveVariant", "legacy")),
+    )
+
 BENCHMARK_POLICY_CONTRACTS = {
+    "rl": {
+        "role": "learned_primary_policy",
+        "label": "front-aware residual reinforcement-learning policy",
+        "information": "the complete public regional observation contract",
+        "timing": "dynamic",
+    },
+    "rl_forecast_ablated": {
+        "role": "learned_forecast_ablation",
+        "label": "forecast-ablated residual reinforcement-learning policy",
+        "information": "current public regional state with predictive inputs ablated",
+        "timing": "dynamic",
+    },
+    "rl_precommit": {
+        "role": "learned_timing_ablation",
+        "label": "time-zero precommitted reinforcement-learning policy",
+        "information": "the initial public regional observation only",
+        "timing": "static_precommit",
+    },
     "objective_greedy": {
         "role": "primary_myopic_comparator",
         "label": "public-regional objective-matched myopic policy",
+        "score": (
+            "survival-weighted coverage of actor-visible regional remaining "
+            "debt and clearance-tail burden, plus rescue-valued threat "
+            "capture and displaced-demand access"
+        ),
+        "information": (
+            "the same public configured-n-by-n regional population, debt, tail, "
+            "panic-front forecast, region-to-site road distances, and "
+            "candidate-capacity summaries exposed to the actor; "
+            "no per-person routes, candidate rerouting branch, recurrent "
+            "history, or continuation value"
+        ),
+        "actor_relation": "identical base score; RL adds only its learned residual",
+        "timing": "dynamic",
+    },
+    "objective_greedy_legacy": {
+        "role": "overrun_blind_ablation",
+        "label": "legacy public-regional objective-matched myopic policy",
         "score": (
             "capacity-covered share of actor-visible regional remaining debt, "
             "clearance-tail burden, and current/forecast danger burden"
         ),
         "information": (
-            "the same public configured-n-by-n regional population, debt, tail, danger, "
-            "forecast and candidate-capacity summaries exposed to the actor; "
-            "no per-person routes, candidate rerouting branch, recurrent "
-            "history, or continuation value"
+            "public regional population, debt, tail, danger, forecast and "
+            "candidate-capacity summaries; no site-survival or front-race term"
         ),
-        "actor_relation": "identical base score; RL adds only its learned residual",
+        "actor_relation": "v63 actor base-score ablation",
         "timing": "dynamic",
     },
     "forecast_greedy": {
