@@ -161,6 +161,7 @@ STAGED_TRAINING_CONTRACTS = {
 class ObservationFrame:
     cell_features: torch.Tensor
     global_features: torch.Tensor
+    spatial_edge_index: torch.Tensor
     route_edge_index: torch.Tensor
     route_edge_weight: torch.Tensor
     candidate_cell_index: torch.Tensor
@@ -1978,7 +1979,6 @@ class RLBridge:
                     "random_reference_replay",
                     "actor_replay",
                     "actor_replay_scenario_seeds",
-                    "spatial_edge_index",
                     "actor_optimizer_updates",
                     "critic_optimizer_updates",
                     "actor_rollout_updates",
@@ -2036,19 +2036,6 @@ class RLBridge:
                 self.actor_replay_scenario_seeds = [
                     int(seed) for seed in replay_seeds
                 ]
-                saved_edge_index = payload["spatial_edge_index"]
-                if (
-                    not torch.is_tensor(saved_edge_index)
-                    or saved_edge_index.ndim != 2
-                    or saved_edge_index.shape[0] != 2
-                    or not torch.equal(
-                        saved_edge_index.detach().cpu(),
-                        self.edge_index.detach().cpu(),
-                    )
-                ):
-                    raise ValueError(
-                        "checkpoint spatial edge index does not match"
-                    )
             self.episodes_completed = int(payload.get("episodes_completed", 0))
             self.optimizer_updates = int(payload.get("optimizer_updates", 0))
             self.actor_optimizer_updates = int(
@@ -2125,7 +2112,6 @@ class RLBridge:
             "actor_replay_scenario_seeds": list(
                 self.actor_replay_scenario_seeds
             ),
-            "spatial_edge_index": self.edge_index.detach().cpu(),
         }
         self._atomic_save_checkpoint_payload(self.checkpoint_path, payload)
         if self.save_iteration_checkpoints:
@@ -2276,6 +2262,8 @@ class RLBridge:
         frames = tuple(
             self._deserialize_frame(item) for item in payload["frames"]
         )
+        for frame in frames:
+            self._validate_frame(frame)
         targets = payload["targets"]
         if (
             not frames
@@ -2306,6 +2294,8 @@ class RLBridge:
             self._deserialize_frame(item, target_device=torch.device("cpu"))
             for item in payload["frames"]
         )
+        for frame in frames:
+            self._validate_frame(frame)
         scores = payload["target_scores"]
         masks = payload["exact_masks"]
         floors = payload["eta_floors"]
@@ -2342,6 +2332,16 @@ class RLBridge:
             raise ValueError("checkpoint observation global features have an incompatible shape")
         if frame.momentum_features.shape != (self.d_momentum,):
             raise ValueError("checkpoint momentum features have an incompatible shape")
+        if (
+            frame.spatial_edge_index.ndim != 2
+            or frame.spatial_edge_index.shape[0] != 2
+        ):
+            raise ValueError("checkpoint spatial edges have an incompatible shape")
+        if frame.spatial_edge_index.numel() and (
+            int(frame.spatial_edge_index.min().item()) < 0
+            or int(frame.spatial_edge_index.max().item()) >= self.num_cells
+        ):
+            raise ValueError("checkpoint spatial edge references an invalid region")
         if frame.route_edge_index.ndim != 2 or frame.route_edge_index.shape[0] != 2:
             raise ValueError("checkpoint route edges have an incompatible shape")
         if frame.route_edge_weight.shape != (frame.route_edge_index.shape[1],):
@@ -2535,6 +2535,7 @@ class RLBridge:
         torch.Tensor,
         torch.Tensor,
         torch.Tensor,
+        torch.Tensor,
     ]:
         cell_features_np, global_features_np = observation.policy_features()
         candidate_features_np = observation.candidate_features()
@@ -2546,6 +2547,11 @@ class RLBridge:
         global_features = torch.as_tensor(
             global_features_np,
             dtype=torch.float32,
+            device=self.device,
+        )
+        spatial_edge_index = torch.as_tensor(
+            observation.spatial_edge_index,
+            dtype=torch.long,
             device=self.device,
         )
         route_edge_index = torch.as_tensor(
@@ -2576,6 +2582,7 @@ class RLBridge:
         return (
             cell_features,
             global_features,
+            spatial_edge_index,
             route_edge_index,
             route_edge_weight,
             candidate_cell_index,
@@ -2630,6 +2637,7 @@ class RLBridge:
         return self._graph(
             frame.cell_features.to(self.device),
             frame.global_features.to(self.device),
+            edge_index=frame.spatial_edge_index.to(self.device),
             route_edge_index=frame.route_edge_index.to(self.device),
             route_edge_weight=frame.route_edge_weight.to(self.device),
             candidate_cell_index=frame.candidate_cell_index.to(self.device),
@@ -2738,6 +2746,7 @@ class RLBridge:
         (
             cell_features,
             global_features,
+            spatial_edge_index,
             route_edge_index,
             route_edge_weight,
             candidate_cell_index,
@@ -2748,6 +2757,7 @@ class RLBridge:
         frame = ObservationFrame(
             cell_features=cell_features.detach(),
             global_features=global_features.detach(),
+            spatial_edge_index=spatial_edge_index.detach(),
             route_edge_index=route_edge_index.detach(),
             route_edge_weight=route_edge_weight.detach(),
             candidate_cell_index=candidate_cell_index.detach(),
@@ -5618,6 +5628,7 @@ class RLBridge:
         (
             cell_features,
             global_features,
+            spatial_edge_index,
             route_edge_index,
             route_edge_weight,
             candidate_cell_index,
@@ -5628,6 +5639,7 @@ class RLBridge:
         frame = ObservationFrame(
             cell_features=cell_features.detach(),
             global_features=global_features.detach(),
+            spatial_edge_index=spatial_edge_index.detach(),
             route_edge_index=route_edge_index.detach(),
             route_edge_weight=route_edge_weight.detach(),
             candidate_cell_index=candidate_cell_index.detach(),
@@ -5682,6 +5694,7 @@ class RLBridge:
         (
             cell_features,
             global_features,
+            spatial_edge_index,
             route_edge_index,
             route_edge_weight,
             candidate_cell_index,
@@ -5695,6 +5708,7 @@ class RLBridge:
         return ObservationFrame(
             cell_features=cell_features.detach(),
             global_features=global_features.detach(),
+            spatial_edge_index=spatial_edge_index.detach(),
             route_edge_index=route_edge_index.detach(),
             route_edge_weight=route_edge_weight.detach(),
             candidate_cell_index=candidate_cell_index.detach(),
@@ -5726,8 +5740,12 @@ class RLBridge:
         )
         route_indices = []
         route_weights = []
+        spatial_indices = []
         offset = 0
         for frame, count in zip(frames, counts):
+            spatial_indices.append(
+                frame.spatial_edge_index.to(self.device) + offset
+            )
             route_indices.append(frame.route_edge_index.to(self.device) + offset)
             route_weights.append(frame.route_edge_weight.to(self.device))
             offset += count
@@ -5738,7 +5756,7 @@ class RLBridge:
                 dim=0,
             ),
             batch=batch,
-            edge_index=self.edge_index,
+            edge_index=torch.cat(spatial_indices, dim=1),
             route_edge_index=torch.cat(route_indices, dim=1),
             route_edge_weight=torch.cat(route_weights, dim=0),
             candidate_cell_index=torch.stack(

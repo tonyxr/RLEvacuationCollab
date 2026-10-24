@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from dataclasses import replace
 from types import SimpleNamespace
 
 import torch
@@ -166,7 +167,13 @@ class V64ActorReplayTests(unittest.TestCase):
     def test_checkpoint_round_trip_preserves_replay_iteration(self):
         with tempfile.TemporaryDirectory() as directory:
             bridge = _bridge(directory)
-            frame = _frame(bridge)
+            source_edges = torch.as_tensor(
+                ((0, 1), (1, 0)), dtype=torch.long
+            )
+            frame = replace(
+                _frame(bridge),
+                spatial_edge_index=source_edges,
+            )
             transition = _transition(frame)
             bridge.actor_rollout_updates = 7
             bridge._append_actor_replay((transition,), ((0,),))
@@ -181,6 +188,43 @@ class V64ActorReplayTests(unittest.TestCase):
                 len(restored.actor_replay[0].frames),
                 len(bridge.actor_replay[0].frames),
             )
+            restored_frame = restored.actor_replay[0].frames[0]
+            torch.testing.assert_close(
+                restored_frame.spatial_edge_index,
+                source_edges,
+            )
+            torch.testing.assert_close(
+                restored._graph_from_frame(restored_frame).edge_index,
+                source_edges,
+            )
+            payload = torch.load(
+                bridge.checkpoint_path,
+                map_location="cpu",
+                weights_only=False,
+            )
+            self.assertNotIn("spatial_edge_index", payload)
+
+    def test_packed_frames_keep_distinct_spatial_topologies(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = _bridge(directory)
+            frame = _frame(bridge)
+            first_edges = torch.as_tensor(
+                ((0, 1), (1, 0)), dtype=torch.long
+            )
+            second_edges = torch.as_tensor(
+                ((0, 3), (3, 0)), dtype=torch.long
+            )
+            packed = bridge._packed_graph_from_frames(
+                (
+                    replace(frame, spatial_edge_index=first_edges),
+                    replace(frame, spatial_edge_index=second_edges),
+                )
+            )
+            expected = torch.cat(
+                (first_edges, second_edges + frame.cell_features.size(0)),
+                dim=1,
+            )
+            torch.testing.assert_close(packed.edge_index, expected)
 
     def test_iteration_checkpoint_is_evaluation_only_and_versioned(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from argparse import Namespace
+from dataclasses import replace
 import os
 import tempfile
 import unittest
@@ -90,9 +91,22 @@ class V64OfflineActorAuditTests(unittest.TestCase):
             frame = bridge._advance_recurrent_observation(make_observation()).frame
             actions = int(frame.action_mask.numel())
             exact = frame.action_mask.reshape(1, -1).to(torch.float32)
+            topology_a = torch.as_tensor(
+                ((0, 1), (1, 0)), dtype=torch.long
+            )
+            topology_b = torch.as_tensor(
+                ((0, 3), (3, 0)), dtype=torch.long
+            )
             bridge.actor_replay = [
                 ActorReplayEpisode(
-                    frames=(frame,),
+                    frames=(
+                        replace(
+                            frame,
+                            spatial_edge_index=(
+                                topology_a if index % 2 == 0 else topology_b
+                            ),
+                        ),
+                    ),
                     target_scores=(
                         torch.arange(actions, dtype=torch.float32).reshape(1, -1)
                         + index
@@ -106,6 +120,12 @@ class V64OfflineActorAuditTests(unittest.TestCase):
             bridge.actor_replay_scenario_seeds = [11, 12, 13, 14, 15]
             bridge.actor_rollout_updates = 4
             bridge._save_checkpoint()
+            payload = torch.load(
+                checkpoint,
+                map_location="cpu",
+                weights_only=False,
+            )
+            self.assertNotIn("spatial_edge_index", payload)
             report = run_audit(
                 Namespace(
                     checkpoint=checkpoint,

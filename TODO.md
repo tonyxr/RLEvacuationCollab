@@ -1363,8 +1363,11 @@ provenance and must be revalidated against the current MDP before reuse.
 - [x] Implement change sets A–H and preserve the named v63 legacy comparators.
 - [x] Register the full and smoke curricula, bump the checkpoint contract to
   model version 64, and add the scenario-disjoint offline actor-fit audit.
-- [x] Pass the 439-test repository suite and the 42-test snapshot/replay/CRN
-  regression gate; validate the exact two-city smoke launch contract.
+- [x] Pass the 441-test repository suite and the 43-test v64 regression gate;
+  validate the exact two-city smoke launch contract.
+- [x] Repair pooled-city checkpoint/replay topology so every observation frame
+  carries its source city's spatial edges; verify the real Spokane-to-State
+  College checkpoint handoff with two distinct topologies.
 - [ ] Complete the fresh E4/P16, eval-4, two-city v64 integration smoke and
   verify every T3 accounting, retirement, tape-budget, branch-budget, replay,
   and early-search invariant from its generated artifacts.

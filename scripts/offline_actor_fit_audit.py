@@ -74,7 +74,6 @@ def _load_checkpoint(path: Path) -> dict:
         raise RuntimeError("audit code and checkpoint model versions disagree")
     replay = payload.get("actor_replay")
     seeds = payload.get("actor_replay_scenario_seeds")
-    edge_index = payload.get("spatial_edge_index")
     if not isinstance(replay, list) or not replay:
         raise ValueError("checkpoint contains no actor replay")
     if (
@@ -83,12 +82,6 @@ def _load_checkpoint(path: Path) -> dict:
         or any(not isinstance(seed, int) or isinstance(seed, bool) for seed in seeds)
     ):
         raise ValueError("checkpoint actor-replay scenario seeds are invalid")
-    if (
-        not torch.is_tensor(edge_index)
-        or edge_index.ndim != 2
-        or edge_index.shape[0] != 2
-    ):
-        raise ValueError("checkpoint spatial edge index is invalid")
     return payload
 
 
@@ -102,7 +95,19 @@ def _deserialize_frame(payload: dict) -> ObservationFrame:
         if not torch.is_tensor(value):
             raise ValueError(f"observation field {name!r} is not a tensor")
         tensors[name] = value.detach().cpu().clone()
-    return ObservationFrame(**tensors)
+    frame = ObservationFrame(**tensors)
+    if (
+        frame.spatial_edge_index.ndim != 2
+        or frame.spatial_edge_index.shape[0] != 2
+    ):
+        raise ValueError("observation spatial edges have an incompatible shape")
+    if frame.spatial_edge_index.numel() and (
+        int(frame.spatial_edge_index.min().item()) < 0
+        or int(frame.spatial_edge_index.max().item())
+        >= int(frame.cell_features.shape[0])
+    ):
+        raise ValueError("observation spatial edge references an invalid region")
+    return frame
 
 
 def _deserialize_replay(payload: dict) -> ActorReplayEpisode:
@@ -188,7 +193,6 @@ def _ablate_front(episode: ActorReplayEpisode) -> ActorReplayEpisode:
 
 def _fresh_bridge(
     signature: dict,
-    edge_index: torch.Tensor,
     example: ActorReplayEpisode,
     *,
     fit_seed: int,
@@ -202,7 +206,9 @@ def _fresh_bridge(
     torch.manual_seed(int(fit_seed))
     bridge = object.__new__(RLBridge)
     bridge.device = torch.device("cpu")
-    bridge.edge_index = edge_index.detach().cpu().to(torch.long)
+    bridge.edge_index = (
+        example.frames[0].spatial_edge_index.detach().cpu().to(torch.long)
+    )
     actor_prior = signature.get("actor_prior", {})
     prior_kind = str(actor_prior.get("kind", "none"))
     prior_scale = float(actor_prior.get("scale", 0.0))
@@ -375,7 +381,6 @@ def _evaluate(
 def run_audit(args: argparse.Namespace) -> dict:
     payload = _load_checkpoint(Path(args.checkpoint))
     signature = payload["model_signature"]
-    edge_index = payload["spatial_edge_index"]
     source = [_deserialize_replay(item) for item in payload["actor_replay"]]
     scenario_seeds = [int(seed) for seed in payload["actor_replay_scenario_seeds"]]
     training_indices, held_out_indices = _scenario_split(
@@ -395,7 +400,6 @@ def run_audit(args: argparse.Namespace) -> dict:
             held_out = [episodes[index] for index in held_out_indices]
             bridge = _fresh_bridge(
                 signature,
-                edge_index,
                 training[0],
                 fit_seed=int(fit_seed),
                 learning_rate=float(args.learning_rate),

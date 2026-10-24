@@ -30,8 +30,9 @@
 
 ### Verification
 
-- The complete repository suite passes 439 tests. The dedicated snapshot,
-  replay, and CRN regression gate passes all 42 tests unchanged.
+- The complete repository suite passes 441 tests. The dedicated v64 gate
+  passes all 43 tests, including mixed-topology checkpoint, packed-graph, and
+  offline-audit regressions.
 - The exact two-city E4/P16/eval-4 command contract, including
   `hazardWindSpeedMPerMinute=16.67` and all eight required strategies, passed
   configuration and interface validation under launch id
@@ -41,6 +42,26 @@
 - Apple `/usr/bin/python3` cannot run the optional bare-Python gate on this
   machine because NumPy and NetworkX are not installed there. The repository
   venv test suite is green.
+
+### Two-city checkpoint failure and repair
+
+- The first E4/P16 smoke attempt stopped when the second city tried to load
+  the first city's checkpoint. A single top-level `spatial_edge_index` had
+  incorrectly been treated as global training state even though each city's
+  road-crossing topology is different. More importantly, replay frames did
+  not retain their source topology and would therefore have been replayed
+  against whichever city happened to be active.
+- Spatial topology is now frame-local, serialized with every rollout,
+  random-reference, and actor-replay observation, validated on load, and
+  packed with per-graph offsets for batched branch evaluation. The obsolete
+  global checkpoint topology was removed. Pre-repair training checkpoints
+  fail closed because their frame schema is incomplete; frozen evaluation
+  checkpoints remain runtime-topology based.
+- A real-map two-city integration probe crossed the exact Spokane-to-State
+  College checkpoint boundary and completed both training episodes. Its
+  checkpoint contains two distinct frame topologies (1,880 and 1,904 edges),
+  demonstrating that the pooled replay state preserves both cities rather
+  than silently reusing the current one.
 
 ## 2026-10-02 — Model v38 scalable sampled NMCC
 
