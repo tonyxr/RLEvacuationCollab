@@ -49,6 +49,34 @@ def _greedy_install(observation):
     return int(feasible[int(np.argmax(scores))])
 
 
+def _assert_nested_equal(testcase, left, right, path="result"):
+    """Compare deterministic payloads exactly, treating paired NaNs as equal.
+
+    ``objective_episode_score`` is intentionally unavailable before terminal
+    finalization and is represented by a fresh NaN on each bridge call.  Raw
+    container equality therefore reports identical payloads as different even
+    though every finite value and both NaN locations match.
+    """
+    if isinstance(left, dict) and isinstance(right, dict):
+        testcase.assertEqual(left.keys(), right.keys(), msg=f"keys differ at {path}")
+        for key in left:
+            _assert_nested_equal(testcase, left[key], right[key], f"{path}.{key}")
+        return
+    if isinstance(left, (list, tuple)) and isinstance(right, (list, tuple)):
+        testcase.assertEqual(len(left), len(right), msg=f"length differs at {path}")
+        for index, (left_item, right_item) in enumerate(zip(left, right)):
+            _assert_nested_equal(
+                testcase, left_item, right_item, f"{path}[{index}]"
+            )
+        return
+    if isinstance(left, (float, np.floating)) and isinstance(
+        right, (float, np.floating)
+    ):
+        if np.isnan(left) and np.isnan(right):
+            return
+    testcase.assertEqual(left, right, msg=f"values differ at {path}")
+
+
 class V65LedgerSnapshotTests(unittest.TestCase):
     def test_ledger_fields_equal_full_build_every_minute(self):
         core = regime_testbed(seed=6511)
@@ -212,8 +240,10 @@ class V65LedgerSnapshotTests(unittest.TestCase):
                 self.assertEqual(every["digests"], gated["digests"])
                 self.assertEqual(every["objective"], gated["objective"])
                 self.assertEqual(every["deployment_times"], gated["deployment_times"])
-                self.assertEqual(
-                    [row[0] for row in every["rows"]], [row[0] for row in gated["rows"]]
+                _assert_nested_equal(
+                    self,
+                    [row[0] for row in every["rows"]],
+                    [row[0] for row in gated["rows"]],
                 )
                 for every_row, gated_row in zip(every["rows"], gated["rows"]):
                     if gated_row[1]:
