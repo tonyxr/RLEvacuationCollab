@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "panel_id": "zero_shot_malibu",
+  "description": "Optional: Malibu zero-shot. The 35 km network (640 MB graph) may exceed laptop memory; run alone with 1-2 workers.",
+  "campaign_dir": "runs/paper_v65",
+  "training": {
+    "sources": [
+      "runs/paper_v65_seed1",
+      "runs/paper_v65_seed2",
+      "runs/paper_v65_seed3"
+    ]
+  },
+  "cities": [
+    "malibu_ca"
+  ],
+  "replications": [
+    1,
+    5
+  ],
+  "arms": [
+    {
+      "arm": "rl",
+      "policies": [
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "arm": "objective_greedy"
+    },
+    {
+      "arm": "heuristic"
+    },
+    {
+      "arm": "random"
+    },
+    {
+      "arm": "initial_only"
+    }
+  ],
+  "labels": {
+    "block": "zero_shot"
+  }
+}

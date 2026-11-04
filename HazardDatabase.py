@@ -7,8 +7,10 @@
 9/9: implemented the spreadUpdate function
 """
 
+import contextlib
 import copy
 from dataclasses import asdict, dataclass
+import hashlib
 import math
 from typing import Mapping, Optional, Sequence
 
@@ -765,6 +767,445 @@ class HazardRegimeProcess:
             particles.append(particle)
         return particles
 
+# ---------------------------------------------------------------------------
+# v65 forecast engine: vectorized mean-field kernel (S1) and the belief
+# trajectory memo shared by candidates of one common-random-number future (S3).
+# ---------------------------------------------------------------------------
+
+FORECAST_KERNELS = ("vectorized", "reference")
+DEFAULT_FORECAST_KERNEL = "vectorized"
+
+# Geometry, edge probabilities and severity caps depend only on the CA grid,
+# the wind state and the hazard source.  They are cached at module level so
+# that the caches survive ``CounterfactualBranch.restore`` deep copies.
+_FORECAST_GEOMETRY_CACHE: dict = {}
+_FORECAST_EDGE_PROBABILITY_CACHE: dict = {}
+_FORECAST_SEVERITY_CAP_CACHE: dict = {}
+_FORECAST_EDGE_PROBABILITY_CACHE_LIMIT = 512
+_FORECAST_SEVERITY_CAP_CACHE_LIMIT = 4096
+_FORECAST_GEOMETRY_CACHE_LIMIT = 16
+
+
+class _ForecastGeometry:
+    """Moore-neighbour incidence of one CA grid in decision flattening order.
+
+    ``source_pad[t, c]`` is the c-th source cell whose Moore neighbourhood
+    contains target ``t``, in ascending source index -- exactly the order in
+    which the reference double loop multiplies ``1 - p_s q_e`` into the
+    target.  ``edge_pad[t, c]`` is that edge's index into ``edge_source`` /
+    ``edge_target``; ``-1`` marks padding.
+    """
+
+    __slots__ = (
+        "key",
+        "cell_count",
+        "cells",
+        "source_pad",
+        "edge_pad",
+        "edge_source",
+        "edge_target",
+        "max_in_degree",
+    )
+
+
+def _forecast_geometry(hazard_store) -> _ForecastGeometry:
+    tracker = hazard_store.cellTracker
+    cell_count = int(tracker.number_of_cells)
+    cells = tuple(tracker.unflatten_cell(index) for index in range(cell_count))
+    centers = np.asarray(
+        [tracker.getCellCenter(cell) for cell in cells], dtype=np.float64
+    ).reshape(cell_count, 2)
+    key = (
+        int(tracker.cellXNum),
+        int(tracker.cellYNum),
+        hashlib.sha256(np.ascontiguousarray(centers).tobytes()).hexdigest(),
+    )
+    geometry = _FORECAST_GEOMETRY_CACHE.get(key)
+    if geometry is not None:
+        return geometry
+    incoming = [[] for _ in range(cell_count)]
+    edge_source = []
+    edge_target = []
+    for source in range(cell_count):
+        for target_cell in tracker.getNeighborCells(cells[source]):
+            target = int(tracker.flatten_cell(target_cell))
+            incoming[target].append(len(edge_source))
+            edge_source.append(source)
+            edge_target.append(target)
+    max_in_degree = max((len(edges) for edges in incoming), default=0)
+    source_pad = np.zeros((cell_count, max_in_degree), dtype=np.int64)
+    edge_pad = np.full((cell_count, max_in_degree), -1, dtype=np.int64)
+    for target, edges in enumerate(incoming):
+        # Edges were appended while sources ascended, so this list is already
+        # in the reference multiplication order.
+        for column, edge in enumerate(edges):
+            source_pad[target, column] = edge_source[edge]
+            edge_pad[target, column] = edge
+    geometry = _ForecastGeometry()
+    geometry.key = key
+    geometry.cell_count = cell_count
+    geometry.cells = cells
+    geometry.source_pad = source_pad
+    geometry.edge_pad = edge_pad
+    geometry.edge_source = np.asarray(edge_source, dtype=np.int64)
+    geometry.edge_target = np.asarray(edge_target, dtype=np.int64)
+    geometry.max_in_degree = int(max_in_degree)
+    if len(_FORECAST_GEOMETRY_CACHE) >= _FORECAST_GEOMETRY_CACHE_LIMIT:
+        _FORECAST_GEOMETRY_CACHE.clear()
+    _FORECAST_GEOMETRY_CACHE[key] = geometry
+    return geometry
+
+
+def _forecast_edge_probabilities(
+    hazard_store, geometry: _ForecastGeometry, base: float
+) -> np.ndarray:
+    """Padded ``(cells, max_in_degree)`` spread probabilities ``q_e``.
+
+    On a cache miss every edge is evaluated by the authoritative scalar
+    method :meth:`HazardDS.directional_spread_probability`, so the vector
+    kernel cannot drift from the simulator's wind/distance rule.  Padding
+    entries are exactly zero, giving a factor ``1 - p * 0 = 1.0``.
+    """
+    key = (
+        geometry.key,
+        float(base),
+        float(hazard_store.wind_speed_m_per_minute),
+        float(hazard_store.wind_direction_degrees),
+        float(hazard_store.wind_influence),
+        float(hazard_store.spread_speed_m_per_minute),
+        float(hazard_store.time_step_minutes),
+    )
+    cached = _FORECAST_EDGE_PROBABILITY_CACHE.get(key)
+    if cached is not None:
+        return cached
+    cells = geometry.cells
+    edge_probability = np.empty(geometry.edge_source.size, dtype=np.float64)
+    for edge in range(geometry.edge_source.size):
+        edge_probability[edge] = hazard_store.directional_spread_probability(
+            base,
+            cells[int(geometry.edge_source[edge])],
+            cells[int(geometry.edge_target[edge])],
+        )
+    padded = np.zeros(geometry.edge_pad.shape, dtype=np.float64)
+    valid = geometry.edge_pad >= 0
+    padded[valid] = edge_probability[geometry.edge_pad[valid]]
+    padded.setflags(write=False)
+    if len(_FORECAST_EDGE_PROBABILITY_CACHE) >= _FORECAST_EDGE_PROBABILITY_CACHE_LIMIT:
+        _FORECAST_EDGE_PROBABILITY_CACHE.clear()
+    _FORECAST_EDGE_PROBABILITY_CACHE[key] = padded
+    return padded
+
+
+def _forecast_severity_caps(
+    hazard_store, geometry: _ForecastGeometry, source_cell, source_point
+) -> np.ndarray:
+    key = (
+        geometry.key,
+        source_cell,
+        None if source_point is None else tuple(float(v) for v in source_point),
+        float(hazard_store.severe_radius_m),
+    )
+    cached = _FORECAST_SEVERITY_CAP_CACHE.get(key)
+    if cached is not None:
+        return cached
+    caps = np.asarray(
+        [
+            hazard_store._severity_cap(source_cell, source_point, cell)
+            for cell in geometry.cells
+        ],
+        dtype=np.int64,
+    )
+    caps.setflags(write=False)
+    if len(_FORECAST_SEVERITY_CAP_CACHE) >= _FORECAST_SEVERITY_CAP_CACHE_LIMIT:
+        _FORECAST_SEVERITY_CAP_CACHE.clear()
+    _FORECAST_SEVERITY_CAP_CACHE[key] = caps
+    return caps
+
+
+def _forecast_severity_levels(hazard_store, elapsed_minutes) -> np.ndarray:
+    """Vector form of the threshold count inside ``HazardDS._severity_level``."""
+    elapsed = np.maximum(0.0, np.asarray(elapsed_minutes, dtype=np.float64))
+    level = np.ones(elapsed.shape, dtype=np.int64)
+    for threshold in hazard_store.severity_transition_minutes:
+        level += (elapsed + 1e-12 >= threshold).astype(np.int64)
+    return level
+
+
+class _MeanFieldRecord:
+    """Array form of one mean-field hazard record.
+
+    ``arrival_mass[k]`` holds the masses that arrived at step
+    ``arrival_step[k]``; masses at or below ``1e-15`` are stored as exact
+    zeros, matching the reference kernel which never records them.
+    """
+
+    __slots__ = (
+        "active",
+        "step",
+        "age",
+        "lifespan",
+        "spread_rate",
+        "legacy_front",
+        "caps",
+        "probability",
+        "initial_mask",
+        "initial_first_step",
+        "arrival_mass",
+        "arrival_step",
+        "arrival_count",
+        "touched",
+        "frozen_value",
+    )
+
+
+def _mean_field_record(
+    hazard_store, geometry: _ForecastGeometry, raw: Mapping, capacity: int
+) -> _MeanFieldRecord:
+    record = _MeanFieldRecord()
+    record.active = bool(raw["active"])
+    record.step = int(raw["step"])
+    record.age = int(raw["age"])
+    record.lifespan = int(raw["lifespan"])
+    record.spread_rate = float(raw["spread_rate"])
+    record.legacy_front = bool(raw.get("legacy_front", False))
+    record.caps = _forecast_severity_caps(
+        hazard_store, geometry, raw.get("source_cell"), raw.get("source_point")
+    )
+    cell_count = geometry.cell_count
+    record.probability = np.zeros(cell_count, dtype=np.float64)
+    record.initial_mask = np.zeros(cell_count, dtype=np.bool_)
+    record.initial_first_step = np.zeros(cell_count, dtype=np.int64)
+    for cell in raw["impacted"]:
+        index = int(hazard_store.cellTracker.flatten_cell(cell))
+        record.probability[index] = 1.0
+        record.initial_mask[index] = True
+        record.initial_first_step[index] = int(raw["first_impacted"][cell])
+    rows = max(1, int(capacity))
+    record.arrival_mass = np.zeros((rows, cell_count), dtype=np.float64)
+    record.arrival_step = np.zeros(rows, dtype=np.int64)
+    record.arrival_count = 0
+    record.touched = record.initial_mask.copy()
+    record.frozen_value = None
+    return record
+
+
+def _mean_field_record_value(hazard_store, record: _MeanFieldRecord) -> np.ndarray:
+    """``sum_k mass_k * level_k`` per cell, as a left fold in arrival order.
+
+    Row 0 is the initial footprint (mass 1.0); rows 1..K are step arrivals.
+    ``np.cumsum`` along axis 0 is a sequential running sum, which reproduces
+    the reference ``value += mass * level`` loop bit for bit (adding an exact
+    0.0 for cells without an arrival in a row leaves the sum unchanged).
+    """
+    time_step = hazard_store.time_step_minutes
+    caps = record.caps
+    count = record.arrival_count
+    rows = np.empty((count + 1, caps.size), dtype=np.float64)
+    elapsed = np.maximum(0, record.step - record.initial_first_step) * time_step
+    level = np.minimum(caps, _forecast_severity_levels(hazard_store, elapsed))
+    if not record.active:
+        level = np.minimum(2, level)
+    rows[0] = np.where(record.initial_mask, 1.0, 0.0) * level.astype(np.float64)
+    if count:
+        elapsed = np.maximum(0, record.step - record.arrival_step[:count]) * time_step
+        levels = np.minimum(
+            caps[None, :],
+            _forecast_severity_levels(hazard_store, elapsed)[:, None],
+        )
+        if not record.active:
+            levels = np.minimum(2, levels)
+        np.multiply(
+            record.arrival_mass[:count], levels.astype(np.float64), out=rows[1:]
+        )
+    return np.cumsum(rows, axis=0)[-1]
+
+
+def _aggregate_mean_field_records(
+    hazard_store, baseline: np.ndarray, records
+) -> np.ndarray:
+    """Vector twin of ``HazardDS._aggregate_stochastic_forecast_records``."""
+    expected = np.asarray(baseline, dtype=np.float64).copy()
+    if records:
+        touched = np.zeros(expected.shape, dtype=np.bool_)
+        legacy = np.zeros(expected.shape, dtype=np.bool_)
+        values = []
+        for record in records:
+            if record.active:
+                values.append(_mean_field_record_value(hazard_store, record))
+            else:
+                # An inactive record neither spreads nor ages, so its value is
+                # constant for the rest of the forecast.
+                if record.frozen_value is None:
+                    record.frozen_value = _mean_field_record_value(
+                        hazard_store, record
+                    )
+                values.append(record.frozen_value)
+            touched |= record.touched
+            if record.legacy_front:
+                legacy |= record.touched
+        if touched.any():
+            combined = np.maximum.reduce(values)
+            expected[touched] = combined[touched]
+            if legacy.any():
+                expected[legacy] = np.maximum(expected[legacy], baseline[legacy])
+    return np.clip(expected / 5.0, 0.0, 1.0).astype(np.float32)
+
+
+def _stochastic_forecast_danger_vectorized(
+    hazard_store,
+    horizon_steps: int,
+    future_ignitions=(),
+    *,
+    configuration_by_step: Optional[Mapping[int, tuple]] = None,
+    return_trajectory: bool = False,
+) -> np.ndarray:
+    """Bit-identical vector implementation of the mean-field forecast.
+
+    Same inputs, outputs and side effects (``configure_wind`` /
+    ``set_intensity`` at the same offsets) as
+    :meth:`HazardDS._stochastic_forecast_danger_reference`.
+    """
+    geometry = _forecast_geometry(hazard_store)
+    horizon = max(0, int(horizon_steps))
+    baseline = hazard_store._current_danger().astype(np.float64) * 5.0
+    records = [
+        _mean_field_record(
+            hazard_store,
+            geometry,
+            hazard_store._forecast_hazard_record(hazard),
+            horizon,
+        )
+        for hazard in hazard_store.hazardList.values()
+    ]
+    ignitions = {}
+    for offset, cell in future_ignitions:
+        offset = int(offset)
+        if 1 <= offset <= horizon:
+            ignitions.setdefault(offset, []).append(hazard_store._cell_tuple(cell))
+    trajectory = []
+    source_pad = geometry.source_pad
+    for offset in range(1, horizon + 1):
+        if configuration_by_step is not None:
+            configuration = configuration_by_step.get(offset)
+            if configuration is not None:
+                speed, direction, intensity = configuration
+                hazard_store.configure_wind(
+                    speed_m_per_minute=float(speed),
+                    direction_degrees=float(direction),
+                    influence=hazard_store.wind_influence,
+                    time_step_minutes=hazard_store.time_step_minutes,
+                )
+                hazard_store.set_intensity(float(intensity))
+        for cell in ignitions.get(offset, ()):
+            records.append(
+                _mean_field_record(
+                    hazard_store,
+                    geometry,
+                    hazard_store._latent_ignition_record(cell, horizon - offset + 1),
+                    horizon,
+                )
+            )
+        for record in records:
+            if not record.active:
+                continue
+            record.step += 1
+            base = hazard_store.oneClip(
+                float(record.spread_rate)
+                * float(hazard_store.intensity_multiplier)
+            )
+            edge_probability = _forecast_edge_probabilities(
+                hazard_store, geometry, base
+            )
+            current = record.probability
+            probability_not_arriving = np.ones_like(current)
+            for column in range(geometry.max_in_degree):
+                probability_not_arriving *= (
+                    1.0 - current[source_pad[:, column]] * edge_probability[:, column]
+                )
+            new_mass = (1.0 - current) * (1.0 - probability_not_arriving)
+            record.probability = np.clip(current + new_mass, 0.0, 1.0)
+            arrived = new_mass > 1e-15
+            if arrived.any():
+                row = record.arrival_count
+                record.arrival_mass[row] = np.where(arrived, new_mass, 0.0)
+                record.arrival_step[row] = record.step
+                record.arrival_count = row + 1
+                record.touched |= arrived
+        for record in records:
+            if not record.active:
+                continue
+            record.age += 1
+            if record.lifespan > 0 and record.age >= record.lifespan:
+                # The reference kernel also stores a ``residual_levels`` map
+                # here; the stochastic aggregator never reads it.
+                record.active = False
+        if return_trajectory:
+            trajectory.append(
+                _aggregate_mean_field_records(hazard_store, baseline, records)
+            )
+    if return_trajectory:
+        if trajectory:
+            return np.stack(trajectory, axis=0)
+        return np.empty((0, geometry.cell_count), dtype=np.float32)
+    return _aggregate_mean_field_records(hazard_store, baseline, records)
+
+
+# -- S3: belief-trajectory memo ----------------------------------------------
+#
+# Within one graded decision every candidate on rollout tape ``k`` shares the
+# same belief particle and hazard random stream, and shelter placement cannot
+# alter hazard evolution (see ``CounterfactualBranch.HazardFrame``).  The two
+# belief first-passage forecasts at a later decision are therefore identical
+# across those candidates; only the post-processing mask differs.  Branch
+# workers set a scope ``(batch_token, tape_index)`` around each task; the live
+# simulator never sets one, so it never reads or writes the memo.
+
+_BELIEF_TRAJECTORY_MEMO: dict = {}
+_BELIEF_TRAJECTORY_MEMO_LIMIT = 96
+_BELIEF_MEMO_SCOPE = None
+_BELIEF_MEMO_STATISTICS = {"hits": 0, "misses": 0, "verified": 0}
+
+
+def set_belief_forecast_memo_scope(scope):
+    """Set the active memo scope and return the previous one."""
+    global _BELIEF_MEMO_SCOPE
+    previous = _BELIEF_MEMO_SCOPE
+    _BELIEF_MEMO_SCOPE = scope
+    return previous
+
+
+@contextlib.contextmanager
+def belief_forecast_memo_scope(scope):
+    """Context manager used by branch tasks; ``None`` disables the memo."""
+    previous = set_belief_forecast_memo_scope(scope)
+    try:
+        yield
+    finally:
+        set_belief_forecast_memo_scope(previous)
+
+
+def clear_belief_forecast_memo() -> None:
+    _BELIEF_TRAJECTORY_MEMO.clear()
+
+
+def belief_forecast_memo_statistics() -> dict:
+    return dict(_BELIEF_MEMO_STATISTICS, entries=len(_BELIEF_TRAJECTORY_MEMO))
+
+
+def _canonical_repr(value) -> str:
+    """Order-independent repr for the forecast fingerprint."""
+    if isinstance(value, Mapping):
+        return "{" + ",".join(
+            f"{_canonical_repr(k)}:{_canonical_repr(v)}"
+            for k, v in sorted(value.items(), key=lambda item: repr(item[0]))
+        ) + "}"
+    if isinstance(value, (list, tuple)):
+        return "[" + ",".join(_canonical_repr(v) for v in value) + "]"
+    if isinstance(value, np.ndarray):
+        return repr(np.ascontiguousarray(value).tolist())
+    return repr(value)
+
+
 class HazardDS:
     def __init__(
         self,
@@ -843,6 +1284,13 @@ class HazardDS:
         self.rng = rng if rng is not None else np.random.default_rng()
         self.intensity_multiplier = 1.0
         self.regime = None
+        # v65 forecast engine.  The kernel choice cannot change any number
+        # (the vectorized kernel is bit-identical); the memo is active only
+        # inside a branch-worker scope.  ``configure_forecast_engine`` is the
+        # single entry point used by Core and the testbed.
+        self.forecast_kernel = DEFAULT_FORECAST_KERNEL
+        self.forecast_memo_enabled = True
+        self.forecast_memo_verify_fraction = 0.0
 
     def configure_wind(
         self,
@@ -885,6 +1333,26 @@ class HazardDS:
                 "hazard intensity multiplier must be finite and positive"
             )
         self.intensity_multiplier = value
+
+    def configure_forecast_engine(
+        self,
+        *,
+        kernel: str = DEFAULT_FORECAST_KERNEL,
+        memo_enabled: bool = True,
+        memo_verify_fraction: float = 0.0,
+    ) -> None:
+        """Select the mean-field kernel and the branch-scope memo policy."""
+        kernel = str(kernel).strip().lower()
+        if kernel not in FORECAST_KERNELS:
+            raise ValueError(
+                f"forecast kernel must be one of {FORECAST_KERNELS}, got {kernel!r}"
+            )
+        fraction = float(memo_verify_fraction)
+        if not math.isfinite(fraction) or not 0.0 <= fraction <= 1.0:
+            raise ValueError("forecast memo verify fraction must lie in [0, 1]")
+        self.forecast_kernel = kernel
+        self.forecast_memo_enabled = bool(memo_enabled)
+        self.forecast_memo_verify_fraction = fraction
 
     def add_hazard_at(self, cell, sim_time) -> int:
         """Add a secondary ignition without consuming the hazard RNG stream."""
@@ -1444,7 +1912,40 @@ class HazardDS:
         configuration_by_step: Optional[Mapping[int, tuple]] = None,
         return_trajectory: bool = False,
     ) -> np.ndarray:
+        """Mean-field forecast; dispatches to the configured kernel.
+
+        ``vectorized`` (default) and ``reference`` return bit-identical arrays
+        and have identical side effects; ``reference`` is kept for audits and
+        the equivalence tests.
+        """
+        kernel = getattr(self, "forecast_kernel", DEFAULT_FORECAST_KERNEL)
+        if kernel == "reference":
+            return self._stochastic_forecast_danger_reference(
+                horizon_steps,
+                future_ignitions,
+                configuration_by_step=configuration_by_step,
+                return_trajectory=return_trajectory,
+            )
+        return _stochastic_forecast_danger_vectorized(
+            self,
+            horizon_steps,
+            future_ignitions,
+            configuration_by_step=configuration_by_step,
+            return_trajectory=return_trajectory,
+        )
+
+    def _stochastic_forecast_danger_reference(
+        self,
+        horizon_steps: int,
+        future_ignitions=(),
+        *,
+        configuration_by_step: Optional[Mapping[int, tuple]] = None,
+        return_trajectory: bool = False,
+    ) -> np.ndarray:
         """Mean-field forecast of the stochastic front with exact severity ages.
+
+        v65: retained unchanged as the reference implementation of
+        :func:`_stochastic_forecast_danger_vectorized`.
 
         The approximation preserves the stochastic spatial arrival process but
         uses the same elapsed-minute severity rule and source-distance caps as
@@ -1788,6 +2289,211 @@ class HazardDS:
             "uncertainty": uncertainty.astype(np.float32),
         }
 
+    def _compute_belief_member_trajectories(
+        self,
+        horizon: int,
+        count: int,
+        rng: Optional[np.random.Generator],
+        use_belief: bool,
+    ) -> tuple[list, Optional[dict]]:
+        """Simulate the forecast ensemble; the v64 member loop, unchanged.
+
+        Returns the per-member danger trajectories (``(horizon, cells)``
+        float64, or the current danger as one row when ``horizon == 0``) and
+        the caller generator's state after particle sampling.
+        """
+        node_count = int(self.cellTracker.number_of_cells)
+        current = np.asarray(self._current_danger(), dtype=np.float64).reshape(
+            node_count
+        )
+        if use_belief:
+            forecast_rng = rng if rng is not None else np.random.default_rng(0)
+            particles = tuple(self.regime.belief_particles(count, forecast_rng))
+        else:
+            particles = (None,)
+        original = (
+            self.wind_speed_m_per_minute,
+            self.wind_direction_degrees,
+            self.wind_influence,
+            self.time_step_minutes,
+            self.intensity_multiplier,
+        )
+        samples = []
+        try:
+            for particle in particles:
+                if particle is None:
+                    if str(self.cell_state_evolution_mode).lower() == "deterministic":
+                        raw = self._deterministic_forecast_states(
+                            horizon, return_trajectory=True
+                        )
+                        trajectory = np.asarray(raw, dtype=np.float64) / 5.0
+                    else:
+                        trajectory = np.asarray(
+                            self._stochastic_forecast_danger(
+                                horizon, return_trajectory=True
+                            ),
+                            dtype=np.float64,
+                        )
+                else:
+                    trajectory = np.asarray(
+                        self._regime_particle_forecast_trajectory(
+                            horizon, particle
+                        ),
+                        dtype=np.float64,
+                    )
+                if horizon == 0:
+                    samples.append(current.reshape(1, node_count))
+                    continue
+                samples.append(trajectory)
+        finally:
+            self.configure_wind(
+                speed_m_per_minute=original[0],
+                direction_degrees=original[1],
+                influence=original[2],
+                time_step_minutes=original[3],
+            )
+            self.set_intensity(original[4])
+        rng_state_after = (
+            copy.deepcopy(rng.bit_generator.state)
+            if use_belief and rng is not None
+            else None
+        )
+        return samples, rng_state_after
+
+    def _belief_memo_key(
+        self,
+        horizon: int,
+        count: int,
+        rng: Optional[np.random.Generator],
+        use_belief: bool,
+    ):
+        """Return the memo key, or ``None`` when memoization is inactive.
+
+        The key is ``(scope, fingerprint)``.  The scope (batch token, tape)
+        is what makes reuse exact: within one tape the hazard and regime
+        evolve identically for every candidate.  The fingerprint covers every
+        input the ensemble reads, so a scope misuse can only cause a miss.
+        """
+        scope = _BELIEF_MEMO_SCOPE
+        if (
+            scope is None
+            or not bool(getattr(self, "forecast_memo_enabled", True))
+            or self.cellTracker is None
+        ):
+            return None
+        digest = hashlib.sha256()
+
+        def put(label: str, value) -> None:
+            digest.update(label.encode("utf-8"))
+            digest.update(_canonical_repr(value).encode("utf-8"))
+
+        put("ensemble", (int(horizon), int(count), str(self.cell_state_evolution_mode)))
+        put(
+            "rng",
+            rng.bit_generator.state if use_belief and rng is not None else None,
+        )
+        digest.update(
+            np.ascontiguousarray(self._current_danger(), dtype="<f8").tobytes()
+        )
+        for hazard_id in sorted(self.hazardList, key=repr):
+            put(
+                "hazard",
+                (hazard_id, self._forecast_hazard_record(self.hazardList[hazard_id])),
+            )
+        put(
+            "physics",
+            (
+                self.wind_speed_m_per_minute,
+                self.wind_direction_degrees,
+                self.wind_influence,
+                self.time_step_minutes,
+                self.intensity_multiplier,
+                self.spread_speed_m_per_minute,
+                self.severity_transition_minutes,
+                self.severe_radius_m,
+                tuple(self.spreadRate),
+            ),
+        )
+        if use_belief:
+            regime = self.regime
+            put(
+                "regime",
+                (
+                    getattr(regime, "current_time", None),
+                    getattr(regime, "public", {}),
+                    getattr(regime, "wind_direction_degrees", None),
+                    getattr(regime, "base_wind_direction_degrees", None),
+                    getattr(regime, "base_wind_speed_m_per_minute", None),
+                    getattr(regime, "wind_speed_multiplier", None),
+                    getattr(regime, "intensity_multiplier", None),
+                    getattr(regime, "intensity_states", None),
+                    getattr(regime, "intensity_belief", None),
+                    getattr(regime, "intensity_belief_time", None),
+                    getattr(regime, "intensity_belief_updates", None),
+                    sorted(
+                        getattr(
+                            getattr(regime, "map_ds", None), "closed_edges", {}
+                        ).items(),
+                        key=lambda item: repr(item[0]),
+                    ),
+                ),
+            )
+        return (scope, digest.hexdigest())
+
+    def _belief_member_trajectories(
+        self,
+        horizon: int,
+        count: int,
+        rng: Optional[np.random.Generator],
+    ) -> tuple[list, bool]:
+        """Ensemble trajectories, memoized inside a branch-worker scope (S3)."""
+        regime = self.regime
+        use_belief = regime is not None and bool(getattr(regime, "enabled", False))
+        key = self._belief_memo_key(horizon, count, rng, use_belief)
+        if key is not None:
+            cached = _BELIEF_TRAJECTORY_MEMO.get(key)
+            if cached is not None:
+                samples, rng_state_after = cached
+                fraction = float(getattr(self, "forecast_memo_verify_fraction", 0.0))
+                if fraction > 0.0 and int(key[1][:8], 16) < fraction * float(1 << 32):
+                    probe = None if rng is None else copy.deepcopy(rng)
+                    fresh, fresh_state = self._compute_belief_member_trajectories(
+                        horizon, count, probe, use_belief
+                    )
+                    if (
+                        len(fresh) != len(samples)
+                        or any(
+                            not np.array_equal(left, right)
+                            for left, right in zip(fresh, samples)
+                        )
+                        or fresh_state != rng_state_after
+                    ):
+                        raise RuntimeError(
+                            "Belief forecast memo hit differs from recomputation: "
+                            f"scope={key[0]!r}. The hazard is not action-"
+                            "independent within this branch scope."
+                        )
+                    _BELIEF_MEMO_STATISTICS["verified"] += 1
+                if rng is not None and rng_state_after is not None:
+                    rng.bit_generator.state = copy.deepcopy(rng_state_after)
+                _BELIEF_MEMO_STATISTICS["hits"] += 1
+                return list(samples), use_belief
+            _BELIEF_MEMO_STATISTICS["misses"] += 1
+        samples, rng_state_after = self._compute_belief_member_trajectories(
+            horizon, count, rng, use_belief
+        )
+        if key is not None:
+            frozen = []
+            for sample in samples:
+                sample = np.array(sample, dtype=np.float64, copy=True)
+                sample.setflags(write=False)
+                frozen.append(sample)
+            while len(_BELIEF_TRAJECTORY_MEMO) >= _BELIEF_TRAJECTORY_MEMO_LIMIT:
+                _BELIEF_TRAJECTORY_MEMO.pop(next(iter(_BELIEF_TRAJECTORY_MEMO)))
+            _BELIEF_TRAJECTORY_MEMO[key] = (tuple(frozen), rng_state_after)
+            samples = frozen
+        return samples, use_belief
+
     def belief_overrun_first_passage_by_cell(
         self,
         horizon_steps: int,
@@ -1880,54 +2586,20 @@ class HazardDS:
         )
         currently_overrun = current >= threshold - 1e-12
 
-        regime = self.regime
-        use_belief = regime is not None and bool(getattr(regime, "enabled", False))
-        if use_belief:
-            forecast_rng = rng if rng is not None else np.random.default_rng(0)
-            particles = tuple(regime.belief_particles(count, forecast_rng))
-        else:
-            particles = (None,)
-
+        # v65 (S3): member trajectories come from one helper that a branch
+        # worker may memoize across candidates of the same future.  The
+        # threshold, first-passage and mask post-processing below is
+        # unchanged and runs on every call.
+        trajectory_samples, use_belief = self._belief_member_trajectories(
+            horizon, count, rng
+        )
         censored = horizon + 1
         first_passage = np.full(
-            (len(particles), node_count), censored, dtype=np.int32
+            (len(trajectory_samples), node_count), censored, dtype=np.int32
         )
         first_passage[:, currently_overrun] = 0
-        original = (
-            self.wind_speed_m_per_minute,
-            self.wind_direction_degrees,
-            self.wind_influence,
-            self.time_step_minutes,
-            self.intensity_multiplier,
-        )
-        trajectory_samples = []
-
-        try:
-            for member_index, particle in enumerate(particles):
-                if particle is None:
-                    if str(self.cell_state_evolution_mode).lower() == "deterministic":
-                        raw = self._deterministic_forecast_states(
-                            horizon, return_trajectory=True
-                        )
-                        trajectory = np.asarray(raw, dtype=np.float64) / 5.0
-                    else:
-                        trajectory = np.asarray(
-                            self._stochastic_forecast_danger(
-                                horizon, return_trajectory=True
-                            ),
-                            dtype=np.float64,
-                        )
-                else:
-                    trajectory = np.asarray(
-                        self._regime_particle_forecast_trajectory(
-                            horizon, particle
-                        ),
-                        dtype=np.float64,
-                    )
-                if horizon == 0:
-                    trajectory_samples.append(current.reshape(1, node_count))
-                    continue
-                trajectory_samples.append(trajectory)
+        if horizon > 0:
+            for member_index, trajectory in enumerate(trajectory_samples):
                 crossed_by_step = trajectory >= threshold - 1e-12
                 has_crossing = np.any(crossed_by_step, axis=0)
                 first_indices = np.argmax(crossed_by_step, axis=0)
@@ -1937,14 +2609,6 @@ class HazardDS:
                 first_passage[member_index, newly_crossed] = (
                     first_indices[newly_crossed] + 1
                 )
-        finally:
-            self.configure_wind(
-                speed_m_per_minute=original[0],
-                direction_degrees=original[1],
-                influence=original[2],
-                time_step_minutes=original[3],
-            )
-            self.set_intensity(original[4])
 
         endpoint_samples = np.stack(
             [sample[-1] for sample in trajectory_samples], axis=0
@@ -2035,8 +2699,8 @@ class HazardDS:
                 next_priority_probability[tied_priority] += (
                     1.0 / float(tied_priority.size)
                 )
-        next_probability /= float(len(particles))
-        next_priority_probability /= float(len(particles))
+        next_probability /= float(len(trajectory_samples))
+        next_priority_probability /= float(len(trajectory_samples))
         next_rank = np.zeros(node_count, dtype=np.int32)
         candidates = np.flatnonzero(next_probability > 0.0)
         if candidates.size:

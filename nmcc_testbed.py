@@ -174,6 +174,11 @@ class TestbedCore:
         self.actionSpace = "cell"
         self.forecastEnsembleSize = 8
         self.nmccFrontForecastIntervals = 4
+        self.hazardForecastKernel = "vectorized"
+        self.forecastMemoEnabled = True
+        self.forecastMemoVerifyFraction = 0.0
+        self.branchTaskChunking = "tape_affine"
+        self.observationEveryMinute = False
 
         seeds = {
             "hazard_evolution": int(
@@ -219,6 +224,11 @@ class TestbedCore:
             severe_radius_m=self.hazardSevereRadiusM,
         )
         self.hazardDS.cell_state_evolution_mode = str(hazard_mode)
+        self.hazardDS.configure_forecast_engine(
+            kernel=self.hazardForecastKernel,
+            memo_enabled=self.forecastMemoEnabled,
+            memo_verify_fraction=self.forecastMemoVerifyFraction,
+        )
         self.cellTracker = CellTracker(self.cellX, self.cellY)
         self.forceTracker = ForceProcessor()
         # Production samples ``shelterCanVol`` candidates (20 for State

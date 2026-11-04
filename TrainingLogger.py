@@ -11,7 +11,7 @@ import csv
 from collections import deque
 from typing import Dict
 
-CSV_SCHEMA_VERSION = 7
+CSV_SCHEMA_VERSION = 8
 
 CSV_COLUMNS = [
     "timestep",
@@ -53,6 +53,7 @@ CSV_COLUMNS = [
     "completed_action",
     "feasible_cells",
     "feasible_candidates",
+    "observation_built",
     "remaining_deployments",
     "arrival",
     "casualty",
@@ -215,6 +216,7 @@ class trainingLog:
             int(metrics.get("completed_action", -1)),
             int(metrics.get("feasible_cells", 0)),
             int(metrics.get("feasible_candidates", 0)),
+            int(metrics.get("observation_built", 0)),
             int(metrics.get("remaining_deployments", 0)),
             arrival,
             casualty,

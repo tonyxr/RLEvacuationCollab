@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "panel_id": "mip",
+  "description": "Optional B2 comparator: rolling-horizon MIP plug-in (comparators/rolling_horizon_mip.py) on the main-panel pairs. Run only if the plug-in passes its own tests within the timebox.",
+  "campaign_dir": "runs/paper_v65",
+  "training": {
+    "sources": [
+      "runs/paper_v65_seed1",
+      "runs/paper_v65_seed2",
+      "runs/paper_v65_seed3"
+    ]
+  },
+  "cities": [
+    "state_college_pa",
+    "spokane_wa"
+  ],
+  "replications": [
+    1,
+    20
+  ],
+  "arms": [
+    {
+      "arm": "mip_rolling_horizon",
+      "strategy": "external",
+      "overrides": {
+        "externalPolicy": "comparators.rolling_horizon_mip:RollingHorizonMIP"
+      }
+    },
+    {
+      "arm": "objective_greedy"
+    },
+    {
+      "arm": "rl",
+      "policies": [
+        1,
+        2,
+        3
+      ]
+    }
+  ],
+  "labels": {
+    "block": "mip"
+  }
+}

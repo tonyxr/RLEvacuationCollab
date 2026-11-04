@@ -87,11 +87,19 @@ LEARNER_STAGE_OVERRIDES = frozenset(
         "hazardSecondaryIgnitionWindow",
         "forecastEnsembleSize",
         "nmccFrontForecastIntervals",
+        "hazardForecastKernel",
+        "forecastMemoEnabled",
+        "forecastMemoVerifyFraction",
+        "branchTaskChunking",
+        "observationEveryMinute",
         "actionSpace",
         "nmccPiAllocation",
         "nmccPiTargetFutureMode",
         "deadlineGreedyThreshold",
         "constructedDecoyDemand",
+        # v65.1: the base wind speed is part of the scenario contract and is
+        # declared in the curriculum instead of a launch-time --override.
+        "hazardWindSpeedMPerMinute",
     }
     | {attribute for attribute, _, _, _ in NMCC_PI_ALL_CORE_FIELDS}
 )

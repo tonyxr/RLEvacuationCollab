@@ -93,6 +93,7 @@ DYNAMIC_STRATEGIES = (
     "regime_oracle_greedy",
     "deadline_greedy",
     "belief_rollout",
+    "external",
 )
 STATIC_STRATEGIES = ("static_greedy", "rl_precommit")
 LEARNED_STRATEGIES = (
@@ -1398,6 +1399,23 @@ def main(argv=None) -> int:
         if args.training_curriculum
         else None
     )
+    if training_curriculum is not None:
+        # The curriculum's stage overrides are applied after --override in
+        # both training and evaluation, so an override of a declared key was
+        # silently ignored before v65.1.  Fail closed instead.
+        declared_keys = {
+            key
+            for stage in training_curriculum.stages
+            for variant in stage.variants
+            for key in variant.overrides
+        }
+        shadowed = sorted(declared_keys.intersection(user_overrides))
+        if shadowed:
+            raise ValueError(
+                "These --override keys are declared by the training curriculum "
+                f"and would be ignored: {shadowed}. Change the curriculum file "
+                "instead (v65.1 declares hazardWindSpeedMPerMinute there)."
+            )
     declared_rollout = (
         None
         if training_curriculum is None

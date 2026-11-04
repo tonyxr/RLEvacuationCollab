@@ -9,7 +9,7 @@ import hashlib
 import math
 import os
 import time
-from typing import Dict, Iterator, Mapping, Optional, Sequence
+from typing import Dict, Iterator, Mapping, Optional, Sequence, Union
 
 import numpy as np
 import torch
@@ -22,6 +22,8 @@ import RolloutPolicyIteration as RPI
 from CAProcessor import authoritative_grid_shape
 from DecisionInterface import (
     AccessibilityDeficitHeuristic,
+    load_external_policy,
+    validated_external_decision,
     ActivePopulationHeuristic,
     CANDIDATE_FEATURE_NAMES,
     CELL_FEATURE_NAMES,
@@ -40,6 +42,7 @@ from DecisionInterface import (
     PED_FEATURE_NAMES,
     PED_FEATURE_SLICE,
     HazardWeightedDemandHeuristic,
+    LedgerObservation,
     OutcomeSnapshot,
     PolicyDecision,
     RegionalActionReceipt,
@@ -72,7 +75,34 @@ from RewardProcessor import (
 )
 
 
-MODEL_VERSION = 64
+MODEL_VERSION = 65
+
+# Strategies that install shelters on the shared decision timetable inside
+# ``RLBridge.step``.  (Moved to module level in v65 so the S2 observation
+# gate and the decision logic read one definition.)
+DYNAMIC_DEPLOYMENT_STRATEGIES = frozenset(
+    {
+        "rl",
+        "rl_forecast_ablated",
+        "rl_early_search",
+        "objective_greedy",
+        "objective_greedy_legacy",
+        "random",
+        "heuristic",
+        "risk_reduction",
+        "route_saving",
+        "hazard_weighted",
+        "accessibility_deficit",
+        "initial_only",
+        "static_greedy",
+        "forecast_greedy",
+        "regime_oracle_greedy",
+        "deadline_greedy",
+        "belief_rollout",
+        "hindsight_rollout",
+        "external",
+    }
+)
 EXOGENOUS_CRITIC_FEATURE_NAMES = (
     "next_wind_cos",
     "next_wind_sin",
@@ -759,6 +789,7 @@ class RLBridge:
             "deadline_greedy",
             "belief_rollout",
             "hindsight_rollout",
+            "external",
         }:
             raise ValueError(f"Unsupported deployment strategy: {deployment_strategy!r}")
         if self.train_mode and strategy != "rl":
@@ -842,6 +873,13 @@ class RLBridge:
         )
         self.objective_latest_outcome = self.objective_initial_outcome
         self.objective_last_time = 0
+        # v65 (S2) observation gate.  ``observationEveryMinute`` restores the
+        # v64 every-minute build (audits and the equivalence test only).
+        self.observation_every_minute = bool(
+            getattr(core, "observationEveryMinute", False)
+        )
+        self.last_feasible_counts = (0, 0)
+        self.full_observations_built = 0
         self.objective_active_person_time = 0.0
         self.objective_hazard_exposure_person_time = 0.0
         self.objective_expected_casualty_person_time = 0.0
@@ -861,6 +899,12 @@ class RLBridge:
         )
         self.policy_seed = int(policy_seed)
         self.random_policy = UniformRegionalPolicy(self.policy_seed)
+        # v65.1: comparator plug-in.  Inert unless the strategy is "external";
+        # the class lives outside the fingerprinted dynamics sources so new
+        # comparators can be added after training without changing them.
+        self.external_policy = (
+            load_external_policy(core) if strategy == "external" else None
+        )
         self._objective_greedy_brancher = None
 
         self.policy = None
@@ -1075,9 +1119,26 @@ class RLBridge:
             dtype=np.float64,
         )
 
+    @staticmethod
+    def _assert_ledger_matches_observation(
+        ledger: LedgerObservation,
+        observation: RegionalObservation,
+    ) -> None:
+        """Fail closed if the S2 ledger view ever drifts from a full build."""
+        if not (
+            np.array_equal(ledger.active_by_cell, observation.active_by_cell)
+            and np.array_equal(ledger.danger_by_cell, observation.danger_by_cell)
+            and ledger.outcome == observation.outcome
+        ):
+            raise RuntimeError(
+                "Ledger snapshot disagrees with the full regional observation "
+                f"at t={observation.simulation_time}; the per-minute objective "
+                "ledger would differ from v64"
+            )
+
     def _accumulate_policy_objective(
         self,
-        observation: RegionalObservation,
+        observation: Union[RegionalObservation, LedgerObservation],
         simulation_time: int,
         *,
         terminal: bool,
@@ -3306,6 +3367,11 @@ class RLBridge:
             )
         elif self.deployment_strategy == "random":
             decision = self.random_policy.select(observation, deterministic=False)
+        elif self.deployment_strategy == "external":
+            decision = validated_external_decision(
+                self.external_policy.select(observation, deterministic=True),
+                observation,
+            )
         elif self.deployment_strategy in {"initial_only", "static_greedy"}:
             if len(self.static_precommit_schedule) != int(self.maximum_deployments):
                 raise RuntimeError(
@@ -4337,12 +4403,15 @@ class RLBridge:
             raise ValueError("simulation_time must increase strictly")
 
         observation_started = time.perf_counter()
-        observation = self.observation_builder.build(
-            decision_index=self.decision_index,
-            simulation_time=simulation_time,
-            remaining_deployments=self.remaining_deployments,
+        # v65 (S2): every minute reads the ledger view first.  The full
+        # regional observation (forecasts, front and candidate features,
+        # action mask) is built only where something consumes it: the first
+        # step (matched-interface digest), a due decision epoch, and the
+        # terminal step.  Policies observe only at decision epochs, and the
+        # ledger fields are bitwise those of a full build.
+        ledger = self.observation_builder.ledger_snapshot(
+            simulation_time=simulation_time
         )
-        observation_ms = (time.perf_counter() - observation_started) * 1000.0
         # Dynamic policies keep their agreed installation schedule even if
         # evacuation finishes early, so every comparison arm receives the
         # same ten-shelter budget. Once the dynamic budget is exhausted, an
@@ -4350,10 +4419,42 @@ class RLBridge:
         # sequential too, but its complete site ordering was frozen from the
         # time-zero state.
         terminal = bool(is_terminal) or (
-            observation.outcome.active_population <= 0
+            ledger.outcome.active_population <= 0
             and self.remaining_deployments <= 0
             and int(self.core.pedDS.currentShelteredPopulation()) <= 0
         )
+        dynamic_strategy = self.deployment_strategy in DYNAMIC_DEPLOYMENT_STRATEGIES
+        deployment_due = bool(
+            not terminal
+            and dynamic_strategy
+            and self.remaining_deployments > 0
+            and self._decision_due(simulation_time)
+        )
+        observation_built = bool(
+            self.observation_every_minute
+            or self.initial_observation_digest is None
+            or terminal
+            or deployment_due
+        )
+        if observation_built:
+            observation = self.observation_builder.build(
+                decision_index=self.decision_index,
+                simulation_time=simulation_time,
+                remaining_deployments=self.remaining_deployments,
+            )
+            self._assert_ledger_matches_observation(ledger, observation)
+            self.last_feasible_counts = (
+                int(
+                    np.unique(
+                        observation.candidate_cell_indices[observation.action_mask]
+                    ).size
+                ),
+                int(observation.action_mask.sum()),
+            )
+            self.full_observations_built += 1
+        else:
+            observation = ledger
+        observation_ms = (time.perf_counter() - observation_started) * 1000.0
         self._accumulate_policy_objective(
             observation,
             simulation_time,
@@ -4366,32 +4467,6 @@ class RLBridge:
             self.pending.elapsed_timesteps += elapsed
         recurrent_step = None
         completed_action = -1
-        dynamic_strategy = self.deployment_strategy in {
-            "rl",
-            "rl_forecast_ablated",
-            "rl_early_search",
-            "objective_greedy",
-            "objective_greedy_legacy",
-            "random",
-            "heuristic",
-            "risk_reduction",
-            "route_saving",
-            "hazard_weighted",
-            "accessibility_deficit",
-            "initial_only",
-            "static_greedy",
-            "forecast_greedy",
-            "regime_oracle_greedy",
-            "deadline_greedy",
-            "belief_rollout",
-            "hindsight_rollout",
-        }
-        deployment_due = bool(
-            not terminal
-            and dynamic_strategy
-            and self.remaining_deployments > 0
-            and self._decision_due(simulation_time)
-        )
         if deployment_due and bool(
             getattr(
                 self.core,
@@ -4425,6 +4500,7 @@ class RLBridge:
             "objective_greedy_legacy",
             "deadline_greedy",
             "initial_only",
+            "external",
         }:
             observation = self._enrich_policy_observation(observation)
         if (
@@ -4845,12 +4921,11 @@ class RLBridge:
                 ),
                 "capacity_added": 0.0 if receipt is None else float(receipt.capacity_added),
                 "rerouted_population": 0 if receipt is None else int(receipt.rerouted_population),
-                "feasible_candidates": int(observation.action_mask.sum()),
-                "feasible_cells": int(
-                    np.unique(
-                        observation.candidate_cell_indices[observation.action_mask]
-                    ).size
-                ),
+                # v65 (S2): the mask exists only where a full observation was
+                # built; between decisions the last built counts are carried.
+                "feasible_cells": int(self.last_feasible_counts[0]),
+                "feasible_candidates": int(self.last_feasible_counts[1]),
+                "observation_built": int(observation_built),
                 "remaining_deployments": int(self.remaining_deployments),
                 "episode_return": float(self.episode_return),
                 "observation_build_latency_ms": (
@@ -4920,6 +4995,7 @@ class RLBridge:
             "rerouted_population": 0,
             "feasible_cells": 0,
             "feasible_candidates": 0,
+            "observation_built": 0,
             "remaining_deployments": 0,
             "episode_return": 0.0,
             # The complete realised objective includes the terminal residual
@@ -5235,6 +5311,9 @@ class RLBridge:
             "deployment_latency_observations": float(
                 len(self.deployment_latency_records)
             ),
+            # v65 (S2): full regional observations built in the live episode
+            # (first step, decision epochs, terminal step).
+            "full_observation_builds": float(self.full_observations_built),
             "mean_observation_build_latency_ms": float(
                 np.mean(latency["observation_ms"])
                 if latency["observation_ms"].size

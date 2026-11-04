@@ -73,7 +73,9 @@ import atexit
 import copy
 import hashlib
 import math
+import functools
 import os
+import uuid
 import pickle
 import random
 import select
@@ -89,6 +91,10 @@ from typing import Any, Callable, Optional, Sequence
 import numpy as np
 
 from CAProcessor import authoritative_grid_shape
+from HazardDatabase import (
+    belief_forecast_memo_scope,
+    clear_belief_forecast_memo,
+)
 from DecisionInterface import (
     OutcomeSnapshot,
     PolicyDecision,
@@ -1809,6 +1815,8 @@ class _LocalBranchBatch:
     endpoint_builder: Optional[RegionalObservationBuilder]
     rollout_policy: Optional[FrozenResidualPolicy] = None
     future_mode: str = "realized"
+    # v65 (S3): unique per batch; tasks run under scope (memo_token, tape).
+    memo_token: Optional[str] = None
 
 
 @dataclass
@@ -1827,6 +1835,7 @@ class _SpawnBranchBatch:
     numpy_legacy_state: tuple
     rollout_policy: Optional[FrozenResidualPolicy] = None
     future_mode: str = "realized"
+    memo_token: Optional[str] = None
 
 
 _SPAWN_BRANCH_BATCH: Optional[_LocalBranchBatch] = None
@@ -1867,6 +1876,9 @@ _PORTABLE_CORE_ATTRIBUTES = (
     "actionSpace",
     "forecastEnsembleSize",
     "nmccFrontForecastIntervals",
+    "hazardForecastKernel",
+    "forecastMemoEnabled",
+    "forecastMemoVerifyFraction",
     "random_stream_seeds",
 )
 
@@ -1901,6 +1913,9 @@ _PORTABLE_REQUIRED_SIMULATION_ATTRIBUTES = (
     "actionSpace",
     "forecastEnsembleSize",
     "nmccFrontForecastIntervals",
+    "hazardForecastKernel",
+    "forecastMemoEnabled",
+    "forecastMemoVerifyFraction",
     "random_stream_seeds",
 )
 
@@ -2129,6 +2144,29 @@ def _portable_branch_core(core, snapshot: SimulatorSnapshot) -> SimpleNamespace:
                 f"stopTime={portable.stopTime}"
             )
 
+    forecast_contract = (
+        (
+            "kernel",
+            str(portable.hazardForecastKernel).strip().lower(),
+            getattr(portable.hazardDS, "forecast_kernel", None),
+        ),
+        (
+            "memo",
+            bool(portable.forecastMemoEnabled),
+            getattr(portable.hazardDS, "forecast_memo_enabled", None),
+        ),
+        (
+            "memo verify fraction",
+            float(portable.forecastMemoVerifyFraction),
+            getattr(portable.hazardDS, "forecast_memo_verify_fraction", None),
+        ),
+    )
+    for name, configured, stored in forecast_contract:
+        if configured != stored:
+            raise RuntimeError(
+                f"Parallel branch forecast {name} disagrees across stores: "
+                f"core={configured!r}, hazard={stored!r}"
+            )
     portable.shelterDS.assertCapacityInvariant()
     portable.pedDS.assertShelterOccupancyInvariant()
     return portable
@@ -2155,6 +2193,31 @@ def _capture_endpoint_observation(
     return brancher.enrich_observation(observation)
 
 
+def _new_memo_token() -> str:
+    """Unique key prefix for one branch batch's belief-trajectory memo."""
+    return uuid.uuid4().hex
+
+
+def _within_task_memo_scope(executor):
+    """Run one branch task inside its (batch, tape) belief-memo scope (S3).
+
+    All candidates on one tape share the belief particle and the hazard
+    stream, and shelters cannot alter the hazard, so their later-decision
+    belief forecasts are identical.  Outside a task the scope is restored to
+    ``None``: the live simulator never reads or writes the memo.
+    """
+
+    @functools.wraps(executor)
+    def scoped(batch, task):
+        token = getattr(batch, "memo_token", None)
+        scope = None if token is None else (str(token), int(task.tape_index))
+        with belief_forecast_memo_scope(scope):
+            return executor(batch, task)
+
+    return scoped
+
+
+@_within_task_memo_scope
 def _execute_physical_branch(
     batch: _LocalBranchBatch,
     task: _PhysicalBranchTask,
@@ -2180,6 +2243,7 @@ def _execute_physical_branch(
     return task.tape_index, task.action_position, result
 
 
+@_within_task_memo_scope
 def _execute_random_continuation(
     batch: _LocalBranchBatch,
     task: _RandomContinuationTask,
@@ -2213,6 +2277,7 @@ def _execute_random_continuation(
     return task.tape_index, float(cost)
 
 
+@_within_task_memo_scope
 def _execute_rollout_continuation(
     batch: _LocalBranchBatch,
     task: _RolloutContinuationTask,
@@ -2282,7 +2347,9 @@ def _initialize_spawn_branch_worker(batch: _SpawnBranchBatch) -> None:
             horizon=batch.endpoint_spec.episode_horizon,
             maximum_deployments=batch.endpoint_spec.maximum_deployments,
         )
+    clear_belief_forecast_memo()
     _SPAWN_BRANCH_BATCH = _LocalBranchBatch(
+        memo_token=getattr(batch, "memo_token", None),
         brancher=brancher,
         snapshot=capture(batch.core, label="nmcc-spawn-worker-base"),
         future_seeds=batch.future_seeds,
@@ -2403,9 +2470,43 @@ def run_persistent_branch_worker(*, protocol_output=None) -> None:
             # arrays while the worker is idle.
             global _SPAWN_BRANCH_BATCH
             _SPAWN_BRANCH_BATCH = None
+            clear_belief_forecast_memo()
         with open(output_path, "wb") as handle:
             pickle.dump(completed, handle, protocol=pickle.HIGHEST_PROTOCOL)
         _write_message(protocol_output, True)
+
+
+def _branch_task_chunks(
+    tasks: Sequence[Any], process_count: int, chunking: str
+) -> list[tuple]:
+    """Split one batch over worker processes.
+
+    ``tape_affine`` (v65): stable-sort by ``tape_index`` and cut contiguous,
+    equal-size blocks, so each worker holds whole futures (or halves of one)
+    and its belief-trajectory memo hits on almost every later decision.
+    ``round_robin`` reproduces the v64 ``tasks[i::W]`` split.  Every task
+    restores the decision snapshot and reseeds its own streams, and every
+    consumer re-indexes results by (tape, position), so the split cannot
+    change any number.
+    """
+    chunking = str(chunking).strip().lower()
+    process_count = max(1, int(process_count))
+    if chunking == "round_robin":
+        return [tuple(tasks[index::process_count]) for index in range(process_count)]
+    if chunking != "tape_affine":
+        raise ValueError("branch task chunking must be tape_affine or round_robin")
+    order = sorted(
+        range(len(tasks)),
+        key=lambda index: (int(getattr(tasks[index], "tape_index", 0)), index),
+    )
+    base, extra = divmod(len(order), process_count)
+    chunks = []
+    start = 0
+    for worker in range(process_count):
+        size = base + (1 if worker < extra else 0)
+        chunks.append(tuple(tasks[index] for index in order[start:start + size]))
+        start += size
+    return chunks
 
 
 class _PersistentIsolatedBranchPool:
@@ -2491,13 +2592,12 @@ class _PersistentIsolatedBranchPool:
         self,
         batch: _SpawnBranchBatch,
         tasks: Sequence[Any],
+        *,
+        chunking: str = "tape_affine",
     ) -> list[Any]:
         try:
             process_count = min(self.worker_count, len(tasks))
-            chunks = [
-                tuple(tasks[index::process_count])
-                for index in range(process_count)
-            ]
+            chunks = _branch_task_chunks(tasks, process_count, chunking)
             with tempfile.TemporaryDirectory(prefix="nmcc-branches-") as directory:
                 batch_path = os.path.join(directory, "batch.pkl")
                 with open(batch_path, "wb") as handle:
@@ -3209,7 +3309,9 @@ class CounterfactualBrancher:
             horizon=self.episode_horizon,
             maximum_deployments=int(maximum_deployments),
         )
+        memo_token = _new_memo_token()
         local_batch = _LocalBranchBatch(
+            memo_token=memo_token,
             brancher=self,
             snapshot=snapshot,
             future_seeds=seeds,
@@ -3226,6 +3328,7 @@ class CounterfactualBrancher:
                 ]
             else:
                 spawn_batch = _SpawnBranchBatch(
+                    memo_token=memo_token,
                     core=_portable_branch_core(self.core, snapshot),
                     horizon=self.horizon,
                     reward_model=self.reward_model,
@@ -3240,9 +3343,16 @@ class CounterfactualBrancher:
                     numpy_legacy_state=snapshot.numpy_legacy_state,
                     future_mode=mode,
                 )
-                completed = self._pool().run(spawn_batch, tasks)
+                completed = self._pool().run(
+                    spawn_batch,
+                    tasks,
+                    chunking=str(
+                        getattr(self.core, "branchTaskChunking", "tape_affine")
+                    ),
+                )
         finally:
             restore(self.core, snapshot)
+            clear_belief_forecast_memo()
         by_tape = {int(index): float(cost) for index, cost in completed}
         if set(by_tape) != set(range(len(seeds))):
             raise RuntimeError("Random-policy continuation batch is incomplete")
@@ -3302,7 +3412,9 @@ class CounterfactualBrancher:
             horizon=self.episode_horizon,
             maximum_deployments=int(maximum_deployments),
         )
+        memo_token = _new_memo_token()
         local_batch = _LocalBranchBatch(
+            memo_token=memo_token,
             brancher=self,
             snapshot=snapshot,
             future_seeds=seeds,
@@ -3320,6 +3432,7 @@ class CounterfactualBrancher:
                 ]
             else:
                 spawn_batch = _SpawnBranchBatch(
+                    memo_token=memo_token,
                     core=_portable_branch_core(self.core, snapshot),
                     horizon=self.horizon,
                     reward_model=self.reward_model,
@@ -3335,9 +3448,16 @@ class CounterfactualBrancher:
                     rollout_policy=frozen_policy,
                     future_mode=mode,
                 )
-                completed = self._pool().run(spawn_batch, tasks)
+                completed = self._pool().run(
+                    spawn_batch,
+                    tasks,
+                    chunking=str(
+                        getattr(self.core, "branchTaskChunking", "tape_affine")
+                    ),
+                )
         finally:
             restore(self.core, snapshot)
+            clear_belief_forecast_memo()
 
         costs = np.full((len(seeds), len(cells)), np.nan, dtype=np.float64)
         for tape_index, action_position, cost in completed:
@@ -3613,7 +3733,9 @@ class CounterfactualBrancher:
                 horizon=endpoint_spec.episode_horizon,
                 maximum_deployments=endpoint_spec.maximum_deployments,
             )
+        memo_token = _new_memo_token()
         local_batch = _LocalBranchBatch(
+            memo_token=memo_token,
             brancher=self,
             snapshot=base,
             future_seeds=seeds,
@@ -3630,6 +3752,7 @@ class CounterfactualBrancher:
                 ]
             else:
                 spawn_batch = _SpawnBranchBatch(
+                    memo_token=memo_token,
                     core=_portable_branch_core(self.core, base),
                     horizon=self.horizon,
                     reward_model=self.reward_model,
@@ -3644,9 +3767,16 @@ class CounterfactualBrancher:
                     numpy_legacy_state=base.numpy_legacy_state,
                     future_mode=mode,
                 )
-                completed = self._pool().run(spawn_batch, tasks)
+                completed = self._pool().run(
+                    spawn_batch,
+                    tasks,
+                    chunking=str(
+                        getattr(self.core, "branchTaskChunking", "tape_affine")
+                    ),
+                )
         finally:
             restore(self.core, base)
+            clear_belief_forecast_memo()
 
         waited_by_tape: dict[int, BranchResult] = {}
         acted_by_tape: dict[int, dict[int, BranchResult]] = {

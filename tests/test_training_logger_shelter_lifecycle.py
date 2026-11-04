@@ -42,7 +42,8 @@ class TrainingLoggerShelterLifecycleTests(unittest.TestCase):
                 reader = csv.DictReader(handle)
                 row = next(reader)
 
-        self.assertEqual(CSV_SCHEMA_VERSION, 7)
+        self.assertEqual(CSV_SCHEMA_VERSION, 8)
+        self.assertIn("observation_built", CSV_COLUMNS)
         self.assertEqual(reader.fieldnames, CSV_COLUMNS)
         self.assertIsNone(row.get(None), "CSV row must align exactly with its header")
         self.assertEqual(row["shelter_closures"], "3")

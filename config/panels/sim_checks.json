@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "panel_id": "sim_checks",
+  "description": "D1/D2 simulator checks: link density distribution on the Weidmann diagram and cumulative-safe curves, objective_greedy on 5 tapes per city with link-density capture.",
+  "campaign_dir": "runs/paper_v65",
+  "training": {
+    "sources": [
+      "runs/paper_v65_seed1",
+      "runs/paper_v65_seed2",
+      "runs/paper_v65_seed3"
+    ]
+  },
+  "cities": [
+    "state_college_pa",
+    "spokane_wa"
+  ],
+  "replications": [
+    1,
+    5
+  ],
+  "capture": {
+    "link_density": true
+  },
+  "arms": [
+    {
+      "arm": "objective_greedy"
+    }
+  ],
+  "labels": {
+    "block": "sim_checks"
+  }
+}

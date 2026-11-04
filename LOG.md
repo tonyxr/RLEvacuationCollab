@@ -1,5 +1,90 @@
 # Engineering Review Log
 
+## 2026-10-28 — v65.1: campaign tooling and two pre-freeze contract items
+
+Dynamics are unchanged (MODEL_VERSION stays 65). Two items touch
+fingerprinted files and therefore must be in the code before the first
+paper-scale shard starts; everything else is outside
+`POLICY_DYNAMICS_SOURCES` and may still change during the campaign.
+
+### Fingerprinted (freeze before training)
+
+- Comparator plug-in: `deployment_strategy = "external"` loads
+  `Core.externalPolicy = "package.module:ClassName"` (parameters in
+  `Core.externalPolicyParams`) through `DecisionInterface.load_external_policy`.
+  The plug-in receives the same enriched public observation as
+  `objective_greedy`; infeasible actions fail closed. Inert for every other
+  strategy. New comparators (rolling-horizon MIP) live in `comparators/`,
+  outside the fingerprint, so they can be added after training without
+  invalidating trained checkpoints.
+- `hazardWindSpeedMPerMinute` is a curriculum learner key; the v65 paper and
+  smoke curricula declare 16.67 m/min. `multicity_backtest.py` now rejects any
+  `--override` of a key the curriculum declares (it was silently ignored).
+
+### Campaign tooling (not fingerprinted)
+
+- `scripts/panel_eval.py`: one evaluator for every held-out block. Rebuilds
+  each job exactly as `multicity_backtest --eval-only` does (verified job by
+  job against the real evaluation loop), checks the city-profile, curriculum
+  and dynamics fingerprints against the training manifest, stores every
+  episode atomically in a content-addressed store (crash-safe, resumable,
+  shared across panels), runs plain and branching strategies in separate
+  worker groups, and records planner cost matrices (Fig. 9) and link
+  densities (D1). Panel specs: `config/panels/*.json`.
+- `scripts/paper_results.py`: every results table and figure with a
+  column audit; `--check` mode for the micro-smoke.
+- `scripts/preflight_pipeline.py`: Phase-2 micro run of the entire pipeline
+  (`config/state_college_spokane_regime_v65_250_micro.json`, E2/P2) plus the
+  v64 r3 identity run, with a GO/NO-GO report.
+- `scripts/identity_check.py`, `scripts/city_build_profile.py`,
+  `scripts/resource_monitor.py`, `runbook/*.sh`.
+
+### Verification
+
+- New tests: `tests/test_v651_external_comparator.py`,
+  `tests/test_v651_panel_eval.py`, `tests/test_v651_paper_results.py`.
+
+## 2026-10-27 — Model v65 compute contract (S1 + S2 + S3)
+
+v65 changes compute only. For identical seeds every simulated state, every
+observation a policy receives, every rollout grade and every objective value
+is bitwise equal to v64.
+
+### Implementation
+
+- S1: `HazardDS._stochastic_forecast_danger` dispatches to a vectorized
+  mean-field kernel (`hazardForecastKernel = "vectorized"`). Edge
+  probabilities come from the unchanged scalar
+  `directional_spread_probability`, the per-target product is a left fold in
+  the reference source order and severity sums are left folds in arrival
+  order, so outputs are bit-identical. The v64 loop is kept as
+  `_stochastic_forecast_danger_reference`.
+- S2: `RLBridge.step` reads `RegionalObservationBuilder.ledger_snapshot()`
+  every minute and builds the full observation only at the first step, due
+  decision epochs and the terminal step (`observationEveryMinute = false`).
+  Every full build asserts that the ledger fields are bitwise equal.
+  `progress.csv` gains `observation_built` (schema 8); `feasible_*` carry the
+  last built value between decisions; episode summaries gain
+  `full_observation_builds`.
+- S3: belief-ensemble trajectories are memoized inside branch workers under
+  the scope `(batch token, tape)` and are shared by every candidate of one
+  common-random-number future. The memo is cleared per batch and verified on a
+  hashed fraction of hits (`forecastMemoVerifyFraction`). Pool tasks are split
+  in tape-affine blocks (`branchTaskChunking = "tape_affine"`).
+- Registered model version 65 and the curricula
+  `config/state_college_spokane_regime_v65_2500_paper.json` and
+  `config/state_college_spokane_regime_v65_250_smoke.json`; they equal the v64
+  curricula except for the five compute keys and the curriculum id.
+
+### Verification
+
+- New tests: `tests/test_v65_forecast_kernel.py`,
+  `tests/test_v65_ledger_snapshot.py`, `tests/test_v65_forecast_memo.py`,
+  `tests/test_v65_config.py` (fixtures in `tests/v65_testbed.py`).
+- Full suite: <fill in count> tests pass.
+- 250-person smoke `<run id>`: Stage-E rows 1-4 objective columns equal v64
+  smoke r3; E-episode <__> s, P-episode <__> s.
+
 ## 2026-10-24 — Model v64 front-aware resilient policy
 
 ### Implementation

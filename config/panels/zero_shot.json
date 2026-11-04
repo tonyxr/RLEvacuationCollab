@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "panel_id": "zero_shot",
+  "description": "Zero-shot transfer (descriptive): the pooled policies without retraining on Seattle and Chicago, 5 tapes each.",
+  "campaign_dir": "runs/paper_v65",
+  "training": {
+    "sources": [
+      "runs/paper_v65_seed1",
+      "runs/paper_v65_seed2",
+      "runs/paper_v65_seed3"
+    ]
+  },
+  "cities": [
+    "seattle_wa",
+    "chicago_il"
+  ],
+  "replications": [
+    1,
+    5
+  ],
+  "arms": [
+    {
+      "arm": "rl",
+      "policies": [
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "arm": "objective_greedy"
+    },
+    {
+      "arm": "heuristic"
+    },
+    {
+      "arm": "random"
+    },
+    {
+      "arm": "initial_only"
+    }
+  ],
+  "labels": {
+    "block": "zero_shot"
+  }
+}

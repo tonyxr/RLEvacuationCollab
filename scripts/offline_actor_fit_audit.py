@@ -60,6 +60,9 @@ FRONT_CELL_FEATURES = (
 )
 
 
+REPLAY_SCHEMA_MODEL_VERSIONS = (64, 65)
+
+
 def _load_checkpoint(path: Path) -> dict:
     try:
         payload = torch.load(path, map_location="cpu", weights_only=False)
@@ -68,9 +71,15 @@ def _load_checkpoint(path: Path) -> dict:
     if not isinstance(payload, dict):
         raise ValueError("checkpoint payload must be a dictionary")
     signature = payload.get("model_signature")
-    if not isinstance(signature, dict) or int(signature.get("version", -1)) != 64:
-        raise ValueError("offline actor audit requires a model-v64 checkpoint")
-    if int(MODEL_VERSION) != 64:
+    # v65 changed only compute (forecast kernel, observation schedule,
+    # branch memo); observation frames and the actor-replay schema are the
+    # v64 ones, so both versions are auditable by this script.
+    if (
+        not isinstance(signature, dict)
+        or int(signature.get("version", -1)) not in REPLAY_SCHEMA_MODEL_VERSIONS
+    ):
+        raise ValueError("offline actor audit requires a model-v64/v65 checkpoint")
+    if int(MODEL_VERSION) not in REPLAY_SCHEMA_MODEL_VERSIONS:
         raise RuntimeError("audit code and checkpoint model versions disagree")
     replay = payload.get("actor_replay")
     seeds = payload.get("actor_replay_scenario_seeds")

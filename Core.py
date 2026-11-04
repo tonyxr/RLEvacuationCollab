@@ -281,6 +281,17 @@ class Core:
         self.hazardSecondaryIgnitionWindow = [10, 90]
         self.forecastEnsembleSize = 8
         self.nmccFrontForecastIntervals = 4
+        # v65 compute contract.  None of these can change a simulated or
+        # observed number: the vectorized forecast kernel is bit-identical to
+        # the reference loop (S1); the belief-trajectory memo is used only by
+        # branch workers within one common-random-number future (S3); the
+        # every-minute observation switch only restores v64's redundant
+        # builds for audits (S2).
+        self.hazardForecastKernel = "vectorized"
+        self.forecastMemoEnabled = True
+        self.forecastMemoVerifyFraction = 0.0
+        self.branchTaskChunking = "tape_affine"
+        self.observationEveryMinute = False
         self.actionSpace = "cell"
         self.nmccPiAllocation = "uniform"
         # Information set of the futures that grade the actor's rollout
@@ -290,6 +301,9 @@ class Core:
         # only as an explicitly labelled hindsight ablation.
         self.nmccPiTargetFutureMode = "belief"
         self.deadlineGreedyThreshold = -1.0e30
+        # v65.1 comparator plug-in (deployment_strategy='external'); inert otherwise.
+        self.externalPolicy = ""
+        self.externalPolicyParams = {}
         self.constructedDecoyDemand = False
         # Evaluation stress scenarios (exogenous, pre-registered; off by
         # default and never set by the training curricula). See
@@ -904,6 +918,11 @@ class Core:
             raise ValueError(
                 "hazardEvolutionMode must be either 'deterministic' or 'stochastic'"
             )
+        self.hazardDS.configure_forecast_engine(
+            kernel=self.hazardForecastKernel,
+            memo_enabled=self.forecastMemoEnabled,
+            memo_verify_fraction=self.forecastMemoVerifyFraction,
+        )
         self.cellTracker = CellTracker(self.cellX, self.cellY)
         self.forceTracker = ForceProcessor(
             self_coefficient=self.socialForceSelfCoefficient,
@@ -1663,6 +1682,18 @@ class Core:
                 "intensity_transition_model": "marked_poisson",
             },
             "forecast_ensemble_size": int(self.forecastEnsembleSize),
+            "forecast_engine": {
+                "kernel": str(self.hazardForecastKernel),
+                "belief_trajectory_memo": bool(self.forecastMemoEnabled),
+                "memo_verify_fraction": float(self.forecastMemoVerifyFraction),
+                "branch_task_chunking": str(self.branchTaskChunking),
+                "contract": "bitwise_identical_to_reference_kernel",
+            },
+            "observation_schedule": (
+                "every_minute"
+                if bool(self.observationEveryMinute)
+                else "first_step_decision_epochs_and_terminal_v65"
+            ),
             "action_space": str(self.actionSpace),
             "nmcc_pi_allocation": str(self.nmccPiAllocation),
             "nmcc_pi_target_future_mode": str(self.nmccPiTargetFutureMode),
@@ -2087,6 +2118,15 @@ class Core:
         self.nmccFrontForecastIntervals = int(
             self.nmccFrontForecastIntervals
         )
+        self.hazardForecastKernel = (
+            str(self.hazardForecastKernel).strip().lower()
+        )
+        for flag in ("forecastMemoEnabled", "observationEveryMinute"):
+            if not isinstance(getattr(self, flag), (bool, np.bool_)):
+                raise ValueError(f"{flag} must be boolean")
+            setattr(self, flag, bool(getattr(self, flag)))
+        self.forecastMemoVerifyFraction = float(self.forecastMemoVerifyFraction)
+        self.branchTaskChunking = str(self.branchTaskChunking).strip().lower()
         self.actionSpace = str(self.actionSpace).strip().lower()
         self.nmccPiAllocation = str(self.nmccPiAllocation).strip().lower()
         self.nmccPiTargetFutureMode = (
@@ -2203,6 +2243,15 @@ class Core:
             raise ValueError("forecastEnsembleSize must be positive")
         if self.nmccFrontForecastIntervals < 1:
             raise ValueError("nmccFrontForecastIntervals must be at least 1")
+        if self.hazardForecastKernel not in {"vectorized", "reference"}:
+            raise ValueError("hazardForecastKernel must be vectorized or reference")
+        if not (
+            math.isfinite(self.forecastMemoVerifyFraction)
+            and 0.0 <= self.forecastMemoVerifyFraction <= 1.0
+        ):
+            raise ValueError("forecastMemoVerifyFraction must lie in [0, 1]")
+        if self.branchTaskChunking not in {"tape_affine", "round_robin"}:
+            raise ValueError("branchTaskChunking must be tape_affine or round_robin")
         if self.actionSpace not in {"cell", "region_defer"}:
             raise ValueError("actionSpace must be cell or region_defer")
         if self.nmccPiAllocation not in {"uniform", "ocba"}:
@@ -2211,6 +2260,10 @@ class Core:
             raise ValueError("nmccPiTargetFutureMode must be belief or realized")
         if not math.isfinite(self.deadlineGreedyThreshold):
             raise ValueError("deadlineGreedyThreshold must be finite")
+        if not isinstance(self.externalPolicy, str):
+            raise ValueError("externalPolicy must be a 'package.module:ClassName' string")
+        if not isinstance(self.externalPolicyParams, dict):
+            raise ValueError("externalPolicyParams must be a JSON object")
         if not math.isfinite(self.hazardWindInfluence) or self.hazardWindInfluence < 0.0:
             raise ValueError("hazardWindInfluence must be finite and non-negative")
         if not math.isfinite(self.maxSpeed) or self.maxSpeed <= 0.0:
@@ -2669,6 +2722,7 @@ class Core:
                 "completed_action": rl_out.get("completed_action", -1),
                 "feasible_cells": rl_out.get("feasible_cells", 0),
                 "feasible_candidates": rl_out.get("feasible_candidates", 0),
+                "observation_built": rl_out.get("observation_built", 0),
                 "remaining_deployments": rl_out.get("remaining_deployments", 0),
                 "capacity_added": rl_out.get("capacity_added", 0.0),
                 "rerouted_population": rl_out.get("rerouted_population", 0),

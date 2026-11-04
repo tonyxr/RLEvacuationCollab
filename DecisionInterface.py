@@ -386,6 +386,15 @@ BENCHMARK_POLICY_CONTRACTS = {
         "information": "complete realized exogenous tape",
         "timing": "region plus defer; never reported as a deployable policy",
     },
+    "external": {
+        "role": "plug_in_comparator",
+        "label": "comparator loaded from Core.externalPolicy (module:Class)",
+        "information": (
+            "declared by the plug-in's INFORMATION_CONTRACT; the plug-in "
+            "receives the public enriched regional observation at each epoch"
+        ),
+        "timing": "dynamic, on the shared decision timetable",
+    },
     "risk_reduction": {
         "role": "appendix_diagnostic",
         "label": "maximum observable local hazard-weighted demand served",
@@ -491,6 +500,21 @@ class OutcomeSnapshot:
     def hazard_exposure_mass(self) -> float:
         """Current active-population times normalized-danger mass."""
         return max(0.0, self.risk_mass - float(self.active_population))
+
+
+@dataclass(frozen=True)
+class LedgerObservation:
+    """Per-minute ledger view of the simulator (v65, S2).
+
+    Carries exactly the fields of :class:`RegionalObservation` that
+    ``RLBridge._accumulate_policy_objective`` and the terminal test read
+    between decision epochs.  It is never shown to a policy.
+    """
+
+    simulation_time: int
+    active_by_cell: np.ndarray
+    danger_by_cell: np.ndarray
+    outcome: OutcomeSnapshot
 
 
 @dataclass(frozen=True)
@@ -2689,15 +2713,9 @@ class RegionalObservationBuilder:
         maximum_route_time = float(self.horizon) * time_step
         speed_floor = max(1e-6, 0.1 * float(self.core.maxSpeed))
         for pedestrian in self.core.pedDS.pedAgentList.values():
-            if bool(getattr(pedestrian, "terminated", False)):
+            index = self._active_region_index(pedestrian)
+            if index is None:
                 continue
-            cell = getattr(pedestrian, "currCell", None)
-            if cell is None:
-                continue
-            i, j = int(cell[0]), int(cell[1])
-            if not (0 <= i < self.nx and 0 <= j < self.ny):
-                continue
-            index = i * self.ny + j
             group_size = max(1, int(getattr(pedestrian, "group_size", 1)))
             active[index] += group_size
             speed_sum[index] += group_size * max(0.0, float(getattr(pedestrian, "currSpeed", 0.0)))
@@ -3989,6 +4007,80 @@ class RegionalObservationBuilder:
             candidate_closed,
         )
 
+    # -- v65 (S2): the ledger subset shared with build() ------------------
+
+    def _active_region_index(self, pedestrian) -> Optional[int]:
+        """Flattened region of an active cohort, or ``None`` if it is not counted.
+
+        The single filter used by both ``_pedestrian_layer`` and
+        ``ledger_snapshot`` so the two can never count different cohorts.
+        """
+        if bool(getattr(pedestrian, "terminated", False)):
+            return None
+        cell = getattr(pedestrian, "currCell", None)
+        if cell is None:
+            return None
+        i, j = int(cell[0]), int(cell[1])
+        if not (0 <= i < self.nx and 0 <= j < self.ny):
+            return None
+        return i * self.ny + j
+
+    def _observed_danger_by_cell(self) -> np.ndarray:
+        danger = np.asarray(
+            getattr(self.core.cellTracker, "dangerLevelByCell", np.zeros(self.number_of_cells)),
+            dtype=np.float32,
+        ).reshape(self.number_of_cells)
+        danger = np.nan_to_num(danger, nan=0.0, posinf=1.0, neginf=0.0)
+        return np.clip(danger, 0.0, 1.0)
+
+    def _outcome_snapshot(
+        self, active: np.ndarray, danger: np.ndarray
+    ) -> OutcomeSnapshot:
+        results = getattr(self.core.pedDS, "result", {})
+        arrivals = max(0, int(results.get("arrival", 0)))
+        shelter_evacuated = max(0, int(results.get("evacuated", 0)))
+        casualties = max(0, int(results.get("casualty", 0)))
+        active_population = int(round(float(active.sum())))
+        safe_completed = arrivals + shelter_evacuated
+        risk_mass = float(np.sum(active * (1.0 + danger)))
+        return OutcomeSnapshot(
+            safe_completed=safe_completed,
+            casualties=casualties,
+            shelter_evacuated=shelter_evacuated,
+            ordinary_arrivals=arrivals,
+            active_population=active_population,
+            risk_mass=risk_mass,
+        )
+
+    def ledger_snapshot(self, *, simulation_time: int) -> "LedgerObservation":
+        """The three fields of ``build()`` that the per-minute ledger reads.
+
+        ``active_by_cell``, ``danger_by_cell`` and ``outcome`` are computed by
+        the same helpers and in the same order as in ``build()``, so they are
+        bitwise equal to the corresponding fields of a full observation built
+        at the same simulator state.  No forecast is run and no builder or
+        simulator state is touched.
+        """
+        runtime_shape = authoritative_grid_shape(self.core)
+        if runtime_shape != (self.nx, self.ny):
+            raise RuntimeError(
+                "RegionalObservationBuilder grid changed after construction: "
+                f"built={(self.nx, self.ny)}, runtime={runtime_shape}"
+            )
+        active = np.zeros(self.number_of_cells, dtype=np.float32)
+        for pedestrian in self.core.pedDS.pedAgentList.values():
+            index = self._active_region_index(pedestrian)
+            if index is None:
+                continue
+            active[index] += max(1, int(getattr(pedestrian, "group_size", 1)))
+        danger = self._observed_danger_by_cell()
+        return LedgerObservation(
+            simulation_time=int(simulation_time),
+            active_by_cell=active,
+            danger_by_cell=danger,
+            outcome=self._outcome_snapshot(active, danger),
+        )
+
     def build(
         self,
         *,
@@ -4020,12 +4112,7 @@ class RegionalObservationBuilder:
             route_edge_index,
             route_edge_weight,
         ) = self._pedestrian_layer()
-        danger = np.asarray(
-            getattr(self.core.cellTracker, "dangerLevelByCell", np.zeros(self.number_of_cells)),
-            dtype=np.float32,
-        ).reshape(self.number_of_cells)
-        danger = np.nan_to_num(danger, nan=0.0, posinf=1.0, neginf=0.0)
-        danger = np.clip(danger, 0.0, 1.0)
+        danger = self._observed_danger_by_cell()
         (
             remaining_capacity,
             operational_shelter_capacity,
@@ -4208,21 +4295,7 @@ class RegionalObservationBuilder:
             front_window,
         )
 
-        results = getattr(self.core.pedDS, "result", {})
-        arrivals = max(0, int(results.get("arrival", 0)))
-        shelter_evacuated = max(0, int(results.get("evacuated", 0)))
-        casualties = max(0, int(results.get("casualty", 0)))
-        active_population = int(round(float(active.sum())))
-        safe_completed = arrivals + shelter_evacuated
-        risk_mass = float(np.sum(active * (1.0 + danger)))
-        outcome = OutcomeSnapshot(
-            safe_completed=safe_completed,
-            casualties=casualties,
-            shelter_evacuated=shelter_evacuated,
-            ordinary_arrivals=arrivals,
-            active_population=active_population,
-            risk_mass=risk_mass,
-        )
+        outcome = self._outcome_snapshot(active, danger)
 
         remaining_deployments = max(0, int(remaining_deployments))
         action_mask = self._candidate_action_mask(
@@ -4561,3 +4634,66 @@ class RegionalShelterExecutor:
             capacity_added=max(0.0, float(getattr(shelter, "shelterCap", 0.0))),
             rerouted_population=max(0, rerouted),
         )
+
+
+# ---------------------------------------------------------------------------
+# v65.1: comparator plug-ins (deployment_strategy == "external")
+# ---------------------------------------------------------------------------
+EXTERNAL_POLICY_CONTRACT_FIELDS = ("role", "label", "information", "timing")
+
+
+def load_external_policy(core) -> Any:
+    """Instantiate the comparator named by ``core.externalPolicy``.
+
+    The specification is ``"package.module:ClassName"``.  The class is
+    constructed as ``ClassName(core=core, params=dict(core.externalPolicyParams))``
+    and must provide ``select(observation, deterministic=True) ->
+    PolicyDecision`` and an ``INFORMATION_CONTRACT`` mapping with the
+    fields in ``EXTERNAL_POLICY_CONTRACT_FIELDS``.  The plug-in module is
+    deliberately outside the fingerprinted dynamics sources, so a new
+    comparator never changes a trained policy's evaluation contract.  It is
+    the plug-in's obligation to read only public information.
+    """
+    import importlib
+
+    spec = str(getattr(core, "externalPolicy", "") or "").strip()
+    module_name, separator, class_name = spec.partition(":")
+    if not separator or not module_name or not class_name:
+        raise ValueError(
+            "deployment_strategy='external' requires externalPolicy="
+            "'package.module:ClassName'"
+        )
+    module = importlib.import_module(module_name)
+    policy_class = getattr(module, class_name, None)
+    if policy_class is None:
+        raise AttributeError(f"{module_name!r} has no attribute {class_name!r}")
+    params = getattr(core, "externalPolicyParams", None) or {}
+    if not isinstance(params, dict):
+        raise TypeError("externalPolicyParams must be a JSON object")
+    policy = policy_class(core=core, params=dict(params))
+    if not callable(getattr(policy, "select", None)):
+        raise TypeError(f"{spec} does not provide select(observation, deterministic)")
+    contract = getattr(policy, "INFORMATION_CONTRACT", None)
+    if not isinstance(contract, dict) or any(
+        not str(contract.get(field, "")).strip()
+        for field in EXTERNAL_POLICY_CONTRACT_FIELDS
+    ):
+        raise TypeError(
+            f"{spec} must declare INFORMATION_CONTRACT with fields "
+            f"{EXTERNAL_POLICY_CONTRACT_FIELDS}"
+        )
+    return policy
+
+
+def validated_external_decision(decision, observation) -> PolicyDecision:
+    """Fail closed on a plug-in action that the shared executor cannot run."""
+    if not isinstance(decision, PolicyDecision):
+        raise TypeError("External comparator must return a PolicyDecision")
+    action = int(decision.action_index)
+    mask = np.asarray(observation.action_mask, dtype=bool)
+    if not 0 <= action < mask.size or not bool(mask[action]):
+        raise RuntimeError(
+            f"External comparator selected infeasible action {action}"
+        )
+    return PolicyDecision(action_index=action, strategy="external")
+

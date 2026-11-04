@@ -139,7 +139,7 @@ class V64OfflineActorAuditTests(unittest.TestCase):
                     early_weight=2.0,
                 )
             )
-            self.assertEqual(report["model_version"], 64)
+            self.assertIn(report["model_version"], (64, 65))
             self.assertEqual(report["replay_episodes"], 5)
             self.assertEqual(len(report["rows"]), 6)
             self.assertFalse(
