@@ -73,6 +73,38 @@ DEPENDENTS = {
     "eval_identity": (),
 }
 WARN_ONLY_PANELS = {"zero_shot"}
+MAP_PREFLIGHT_CITIES = (
+    "state_college_pa",
+    "spokane_wa",
+    "seattle_wa",
+    "chicago_il",
+    "malibu_ca",
+)
+TRAINING_CITY_IDS = frozenset({"state_college_pa", "spokane_wa"})
+
+
+def map_preflight_issues(results: list[dict]) -> tuple[list[str], list[str]]:
+    """Return required-training and warn-only zero-shot map issues.
+
+    Map availability is a hard gate only for the two training cities.  The
+    execution manual explicitly makes unavailable zero-shot cities a WARN.
+    Missing rows count as issues so a killed subprocess cannot look like a
+    successful city check.
+    """
+    by_city = {str(row.get("city_id")): row for row in results}
+    issues = []
+    for city_id in MAP_PREFLIGHT_CITIES:
+        row = by_city.get(city_id)
+        if row is None:
+            issues.append(f"{city_id}:missing")
+        elif row.get("status") != "ready":
+            issues.append(
+                f"{city_id}:{row.get('status', 'failed')}"
+                + (f" ({row['error']})" if row.get("error") else "")
+            )
+    training = [issue for issue in issues if issue.split(":", 1)[0] in TRAINING_CITY_IDS]
+    zero_shot = [issue for issue in issues if issue.split(":", 1)[0] not in TRAINING_CITY_IDS]
+    return training, zero_shot
 
 
 def now() -> str:
@@ -183,25 +215,70 @@ class Pipeline:
         self._failed_since_step_start = False
         if self.done("maps"):
             return
-        # No curriculum: the two-city curriculum's 4-episode learner batch is not
-        # divisible by five cities, and map preflight needs no learner settings.
-        code = self.run("map_preflight", [PY, "multicity_backtest.py", "--cities", "all", "--launch-id",
-                                          "smoke_v65_map_preflight", "--training-curriculum", "",
-                                          "--preflight-maps-only"], timeout=3 * 3600)
-        detail = "runs/smoke_v65_map_preflight/map_preflight.json"
-        if code != 0:
-            path = RUNS / "smoke_v65_map_preflight" / "map_preflight.json"
-            if not path.is_file():
-                self.check("map preflight, five cities", False, "no map_preflight.json; see logs/map_preflight.log")
-                return
-            payload = json.loads(path.read_text())
-            failed = [r["city_id"] for r in payload["results"] if r["status"] != "ready"]
-            training_ok = not {"state_college_pa", "spokane_wa"} & set(failed)
-            self.check("map preflight, five cities", training_ok,
-                       f"failed: {failed} (zero-shot cities may be dropped; training cities may not)",
-                       warn_only=training_ok)
-        else:
-            self.check("map preflight, five cities", True, detail)
+        # Run cities in fresh subprocesses.  A single all-city process retained
+        # the 35-km Malibu graph while constructing later maps, exhausted swap,
+        # and could time out before writing any evidence.  Training cities are
+        # mandatory; the manual classifies zero-shot map failures as WARN.
+        map_dir = RUNS / "smoke_v65_map_preflight"
+        map_dir.mkdir(parents=True, exist_ok=True)
+        map_path = map_dir / "map_preflight.json"
+        results = []
+        for city_id in MAP_PREFLIGHT_CITIES:
+            launch_id = f"smoke_v65_map_preflight_{city_id}"
+            timeout = 3600 if city_id in TRAINING_CITY_IDS else 1800
+            code = self.run(
+                f"map_preflight_{city_id}",
+                [
+                    PY,
+                    "multicity_backtest.py",
+                    "--cities",
+                    city_id,
+                    "--launch-id",
+                    launch_id,
+                    "--training-curriculum",
+                    "",
+                    "--preflight-maps-only",
+                ],
+                timeout=timeout,
+            )
+            city_path = RUNS / launch_id / "map_preflight.json"
+            if city_path.is_file():
+                payload = json.loads(city_path.read_text())
+                row = payload.get("results", [{}])[0]
+            else:
+                row = {
+                    "city_id": city_id,
+                    "status": "timeout" if code == -9 else "failed",
+                    "error": f"exit {code}; see logs/map_preflight_{city_id}.log",
+                }
+            results.append(row)
+            map_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "requested_cities": list(MAP_PREFLIGHT_CITIES),
+                        "results": results,
+                        "complete": len(results) == len(MAP_PREFLIGHT_CITIES),
+                        "all_ready": all(
+                            item.get("status") == "ready" for item in results
+                        ),
+                    },
+                    indent=2,
+                )
+                + "\n"
+            )
+        training_issues, zero_shot_issues = map_preflight_issues(results)
+        self.check(
+            "map preflight, five cities",
+            not training_issues,
+            f"artifact={map_path}; training issues={training_issues or 'none'}",
+        )
+        self.check(
+            "zero-shot map availability",
+            None if zero_shot_issues else True,
+            f"issues={zero_shot_issues or 'none'}; unavailable cities are omitted",
+            warn_only=True,
+        )
         code = self.run("city_build_profile", [PY, "scripts/city_build_profile.py", "--out",
                                                str(CAMPAIGN / "city_build_profile.json")], timeout=3 * 3600)
         self.check("Table-1 city build profile", code == 0, str(CAMPAIGN / "city_build_profile.json"),
