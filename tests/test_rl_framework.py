@@ -3609,6 +3609,40 @@ class AccountingAndDiagnosticsTests(unittest.TestCase):
                 ("rl", "objective_greedy"),
             )
 
+        no_recourse_rows = [dict(row) for row in rows]
+        for row in rows:
+            if row["deployment_strategy"] != "objective_greedy":
+                continue
+            no_recourse_rows.append(
+                {
+                    **row,
+                    "deployment_strategy": "initial_only",
+                    "total_shelter_capacity": 970.0,
+                    "tokens_forfeited": 1,
+                    "forfeited_deployment_allocations_count": 1,
+                    "forfeited_planned_capacity": 30.0,
+                    "successful_deployments": 1,
+                }
+            )
+        self.assertTrue(
+            _verify_matched_interface(
+                no_recourse_rows,
+                ("rl", "objective_greedy", "initial_only"),
+            )["verified"]
+        )
+        unexplained_deficit = [dict(row) for row in no_recourse_rows]
+        static_row = next(
+            row
+            for row in unexplained_deficit
+            if row["deployment_strategy"] == "initial_only"
+        )
+        static_row["total_shelter_capacity"] = 969.0
+        with self.assertRaisesRegex(RuntimeError, "capacity"):
+            _verify_matched_interface(
+                unexplained_deficit,
+                ("rl", "objective_greedy", "initial_only"),
+            )
+
     def test_benchmark_analysis_uses_full_episode_objective_for_every_comparator(self):
         self.assertEqual(
             _evaluation_metric(

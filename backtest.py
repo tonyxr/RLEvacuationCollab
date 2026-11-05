@@ -1066,6 +1066,46 @@ def _verify_matched_interface(rows: list[dict], strategies: tuple[str, ...]) -> 
                 bool(reference.get("hazard_trajectory_digest")),
             )
         )
+        forfeited_count = int(
+            row.get(
+                "forfeited_deployment_allocations_count",
+                row.get("tokens_forfeited", 0),
+            )
+            or 0
+        )
+        forfeited_capacity = float(
+            row.get("forfeited_planned_capacity", 0.0) or 0.0
+        )
+        strict_no_recourse = bool(
+            strategy in {"initial_only", "static_greedy"}
+            and forfeited_count > 0
+        )
+        capacity_matches = bool(
+            "total_shelter_capacity" not in row
+            or "total_shelter_capacity" not in reference
+            or np.isclose(
+                float(row["total_shelter_capacity"]),
+                float(reference["total_shelter_capacity"]),
+                rtol=0.0,
+                atol=1e-9,
+            )
+            or (
+                strict_no_recourse
+                and np.isclose(
+                    float(row["total_shelter_capacity"])
+                    + forfeited_capacity,
+                    float(reference["total_shelter_capacity"]),
+                    rtol=0.0,
+                    atol=1e-9,
+                )
+            )
+        )
+        successful_deployments_match = bool(
+            not strict_no_recourse
+            or "successful_deployments" not in row
+            or int(row["successful_deployments"])
+            == int(row["deployments_made"]) - forfeited_count
+        )
         if any(
             (
                 not required_provenance_present,
@@ -1079,16 +1119,8 @@ def _verify_matched_interface(rows: list[dict], strategies: tuple[str, ...]) -> 
                     and int(row["deployments_made"])
                     != int(reference["deployments_made"])
                 ),
-                (
-                    "total_shelter_capacity" in row
-                    and "total_shelter_capacity" in reference
-                    and not np.isclose(
-                        float(row["total_shelter_capacity"]),
-                        float(reference["total_shelter_capacity"]),
-                        rtol=0.0,
-                        atol=1e-9,
-                    )
-                ),
+                not capacity_matches,
+                not successful_deployments_match,
                 row_random_streams != reference_random_streams,
                 row.get("hazard_trajectory_digest")
                 != reference.get("hazard_trajectory_digest"),
@@ -1103,8 +1135,8 @@ def _verify_matched_interface(rows: list[dict], strategies: tuple[str, ...]) -> 
                     "strategy": strategy,
                     "policy_replication": int(row.get("policy_replication", 0)),
                     "reason": (
-                        "city/map, scenario/component seed, initial observation, realized "
-                        "deployment count/capacity, or budget mismatch"
+                        "city/map, scenario/component seed, initial observation, ex-ante "
+                        "deployment budget, or unexplained realized-capacity mismatch"
                     ),
                 }
             )
@@ -1120,7 +1152,11 @@ def _verify_matched_interface(rows: list[dict], strategies: tuple[str, ...]) -> 
             "same scenario seed",
             "byte-identical first regional observation and feasible-action mask",
             "same maximum dynamic deployment budget",
-            "same realized dynamic deployment count and total installed capacity",
+            "same ex-ante dynamic deployment count and capacity budget",
+            (
+                "strict static-comparator realized capacity deficit equals "
+                "the recorded forfeited planned capacity"
+            ),
             "same independent hazard and pedestrian-outcome random streams",
             "byte-identical full exogenous hazard trajectory",
             "same RegionalObservation schema",
