@@ -8,6 +8,7 @@ from tempfile import TemporaryDirectory
 import json
 from types import SimpleNamespace
 from unittest import mock
+import sys
 
 import scripts.preflight_pipeline as preflight
 
@@ -19,6 +20,9 @@ from scripts.preflight_pipeline import (
 
 
 class V651PreflightPipelineTests(unittest.TestCase):
+    def test_repository_root_is_available_to_script_entrypoint_imports(self):
+        self.assertIn(str(preflight.ROOT), sys.path)
+
     def test_deterministic_training_pins_only_torch_openmp(self):
         base = {
             "OMP_NUM_THREADS": "8",
