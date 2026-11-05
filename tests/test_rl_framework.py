@@ -57,6 +57,7 @@ from backtest import (
     _verify_matched_interface,
     _write_paper_table,
 )
+from comparators.static_no_recourse import StaticNoRecourseRLBridge
 
 
 def make_observation(
@@ -2489,7 +2490,7 @@ class BridgeTests(unittest.TestCase):
     def test_initial_only_forfeits_unavailable_site_without_same_epoch_replacement(self):
         core = make_core()
         core.stopTime = 21
-        bridge = RLBridge(
+        bridge = StaticNoRecourseRLBridge(
             core,
             train_mode=False,
             deployment_strategy="initial_only",
@@ -2544,6 +2545,8 @@ class BridgeTests(unittest.TestCase):
                     "simulation_time": 10,
                     "candidate_osm_node_id": "101",
                     "candidate_cell_index": 1,
+                    "candidate_x_m": 0.0,
+                    "candidate_y_m": 1.0,
                     "planned_capacity": 20.0,
                     "reason": "committed_site_unavailable",
                 }
@@ -2552,7 +2555,7 @@ class BridgeTests(unittest.TestCase):
 
     def test_initial_only_can_forfeit_every_unavailable_allocation(self):
         core = make_core()
-        bridge = RLBridge(
+        bridge = StaticNoRecourseRLBridge(
             core,
             train_mode=False,
             deployment_strategy="initial_only",

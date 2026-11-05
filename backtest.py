@@ -230,28 +230,35 @@ def _run_episode(
     visualization_individual_snapshots: bool = True,
     visualization_vector_outputs: bool = True,
 ) -> dict:
-    from Core import Core
+    import Core as core_module
+    from comparators.static_no_recourse import StaticNoRecourseRLBridge
 
     wall_start = time.perf_counter()
     cpu_start = time.process_time()
-    core = Core(machine)
-    core.initSimulator(
-        replication=replication,
-        machine=machine,
-        config_overrides=overrides,
-        phase=phase,
-        train_mode=train_mode,
-        deployment_strategy=strategy,
-        run_tag=strategy,
-        scenario_seed=scenario_seed,
-        policy_seed=policy_seed,
-        checkpoint_path=checkpoint_path,
-        diagnostics_path=diagnostics_path,
-        visualization_enabled=visualization_enabled,
-        visualization_milestones=visualization_milestones,
-        visualization_individual_snapshots=visualization_individual_snapshots,
-        visualization_vector_outputs=visualization_vector_outputs,
-    )
+    core = core_module.Core(machine)
+    original_bridge_class = core_module.RLBridge
+    if strategy in {"initial_only", "static_greedy"}:
+        core_module.RLBridge = StaticNoRecourseRLBridge
+    try:
+        core.initSimulator(
+            replication=replication,
+            machine=machine,
+            config_overrides=overrides,
+            phase=phase,
+            train_mode=train_mode,
+            deployment_strategy=strategy,
+            run_tag=strategy,
+            scenario_seed=scenario_seed,
+            policy_seed=policy_seed,
+            checkpoint_path=checkpoint_path,
+            diagnostics_path=diagnostics_path,
+            visualization_enabled=visualization_enabled,
+            visualization_milestones=visualization_milestones,
+            visualization_individual_snapshots=visualization_individual_snapshots,
+            visualization_vector_outputs=visualization_vector_outputs,
+        )
+    finally:
+        core_module.RLBridge = original_bridge_class
     if core.episode_summary is None:
         raise RuntimeError("Core completed without an episode summary")
     forfeited_allocations = list(
@@ -366,6 +373,20 @@ def _run_episode(
         core.rl.deployments_made - forfeited_count
     )
     result["forfeited_deployment_allocations_count"] = int(forfeited_count)
+    result["tokens_forfeited"] = int(forfeited_count)
+    result["forfeited_planned_capacity"] = float(
+        sum(
+            float(event["planned_capacity"])
+            for event in forfeited_allocations
+        )
+    )
+    result["forfeited_deployment_allocations"] = [
+        dict(event) for event in forfeited_allocations
+    ]
+    result["deployment_attempt_times"] = [
+        int(value)
+        for value in getattr(core.rl, "deployment_attempt_times", ())
+    ]
     return result
 
 
