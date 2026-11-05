@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "purpose": "Exact v64 reference produced with Torch/OpenMP pinned to one thread after the historical eight-thread actor-fit gate proved nondeterministic",
+  "baseline_commit": "8ef5994",
+  "launch_id": "smoke_v64_identity_omp1_seed6418_bd05e52",
+  "launch_seed": 6418,
+  "rows": 12,
+  "torch_thread_contract": {
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "unmodified",
+    "MKL_NUM_THREADS": "unmodified",
+    "VECLIB_MAXIMUM_THREADS": "unmodified",
+    "NUMEXPR_NUM_THREADS": "unmodified"
+  },
+  "sha256": {
+    "training_episode_summary.csv": "b3cf1225417b1d17793c70167a887cb4cb3634d962f59cb148573f9f57cc108f",
+    "policies/policy_001/iteration_checkpoints/regional_policy_iteration_000.pt": "3018ccdb7b27c2a03aabd0584d86ebe83e4bce09a8cb45de697e393b157f61b1",
+    "policies/policy_001/iteration_checkpoints/regional_policy_iteration_001.pt": "1a18b89940b1529d44d8df2b0121c061a4fdeab40faecada3d9ebc928d67f46a"
+  },
+  "metadata_normalization": {
+    "stage_overrides": [
+      "branchTaskChunking",
+      "forecastMemoEnabled",
+      "forecastMemoVerifyFraction",
+      "hazardForecastKernel",
+      "hazardWindSpeedMPerMinute",
+      "observationEveryMinute"
+    ],
+    "map_provenance": [
+      "graph_cache_path",
+      "consolidated_graph_cache_path"
+    ]
+  }
+}

@@ -9,6 +9,10 @@ export CITIES="state_college_pa,spokane_wa"
 export CAMPAIGN="runs/paper_v65"
 export STRATEGIES="rl,rl_early_search,rl_forecast_ablated,rl_precommit,objective_greedy,objective_greedy_legacy,heuristic,random,initial_only,static_greedy,belief_rollout"
 export MPLBACKEND=Agg
+# Torch actor fitting is not bitwise deterministic with the historical
+# eight-thread OpenMP default.  Pin Torch/OpenMP only; do not pin Accelerate,
+# OpenBLAS, MKL, or NumExpr because the simulator needs their parallelism.
+export OMP_NUM_THREADS=1
 cd "$REPO" || return 1
 
 # bg NAME CMD... : run CMD detached under caffeinate; log runs/_logs/NAME.log; pid in runs/_logs/NAME.pid

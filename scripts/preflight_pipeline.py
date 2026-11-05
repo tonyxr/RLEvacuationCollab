@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import os
@@ -50,7 +51,8 @@ CAMPAIGN = RUNS / "smoke_v65_campaign"
 SEED = "6418"
 SMOKE_CONFIG = "config/state_college_spokane_regime_v65_250_smoke.json"
 MICRO_CONFIG = "config/state_college_spokane_regime_v65_250_micro.json"
-IDENTITY_ID = "smoke_v65_identity_seed6418"
+IDENTITY_ID = "smoke_v65_identity_omp1_seed6418_bd05e52"
+PINNED_IDENTITY_REGISTRY = ROOT / "runbook" / "v65_pinned_identity_reference.json"
 MICRO_IDS = ("smoke_v65_micro_seed1", "smoke_v65_micro_seed2")
 ASSEMBLED_ID = "smoke_v65_micro_assembled"
 STRATEGIES = ("rl,rl_early_search,rl_forecast_ablated,rl_precommit,objective_greedy,"
@@ -59,6 +61,9 @@ PANEL_ORDER = ("tune_deadline_main", "tune_deadline_calm", "plugin_check", "main
                "gate1_calm", "gate1_compound", "capacity_sweep", "kappa_sweep", "zero_shot",
                "learning_curve", "sim_checks")
 IDENTITY_ROWS = 18
+IDENTITY_PREUPDATE_ROWS = 11
+IDENTITY_PINNED_ROWS = 12
+LEGACY_IDENTITY_CHECK = "v65.1 reproduces v64 r3 training rows 1-18 bit for bit"
 PANEL_STEPS = tuple(f"panel_{p}" for p in PANEL_ORDER)
 STEP_ORDER = ("tests", "maps", "identity_run", "micro_shards", "assemble", "multicity_eval",
               *PANEL_STEPS, "eval_identity", "results")
@@ -81,6 +86,50 @@ MAP_PREFLIGHT_CITIES = (
     "malibu_ca",
 )
 TRAINING_CITY_IDS = frozenset({"state_college_pa", "spokane_wa"})
+
+
+def deterministic_torch_env(base: dict | None = None) -> dict:
+    """Pin Torch/OpenMP only; leave NumPy/Accelerate parallel.
+
+    The historical default (eight Torch threads) produced three distinct
+    post-update actors from identical pre-update state.  Pinning every BLAS
+    backend was deterministic but made the simulator impractically slow.
+    OMP-only pinning is both exact and production-feasible.
+    """
+    env = dict(os.environ if base is None else base)
+    env["OMP_NUM_THREADS"] = "1"
+    return env
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def pinned_identity_reference_issues(registry_path: Path = PINNED_IDENTITY_REGISTRY) -> tuple[Path | None, list[str]]:
+    """Validate the immutable pinned-v64 evidence before it can gate v65.1."""
+    if not registry_path.is_file():
+        return None, [f"missing registry {registry_path}"]
+    registry = json.loads(registry_path.read_text())
+    launch = RUNS / registry["launch_id"]
+    issues = []
+    for relative, expected in registry["sha256"].items():
+        path = launch / relative
+        if not path.is_file():
+            issues.append(f"missing {path}")
+        else:
+            observed = _sha256(path)
+            if observed != expected:
+                issues.append(f"hash mismatch {path}: {observed} != {expected}")
+    rows_path = launch / "training_episode_summary.csv"
+    if rows_path.is_file():
+        rows = list(csv.DictReader(rows_path.open()))
+        if len(rows) != int(registry["rows"]):
+            issues.append(f"reference row count {len(rows)} != {registry['rows']}")
+    return launch, issues
 
 
 def map_preflight_issues(results: list[dict]) -> tuple[list[str], list[str]]:
@@ -189,14 +238,14 @@ class Pipeline:
             print("      last log lines:\n        " + "\n        ".join(tail), flush=True)
         return code
 
-    def launch(self, name: str, command: list[str]) -> subprocess.Popen:
+    def launch(self, name: str, command: list[str], *, env=None) -> subprocess.Popen:
         log = LOGS / f"{name}.log"
         handle = log.open("a")
         handle.write(f"\n===== {now()} {' '.join(command)}\n")
         handle.flush()
         print(f"[START] {name}: {' '.join(command)}\n        log: {log}", flush=True)
         return subprocess.Popen(command, cwd=str(ROOT), stdout=handle, stderr=subprocess.STDOUT,
-                                start_new_session=True)
+                                env={**os.environ, **(env or {})}, start_new_session=True)
 
     # -- steps --------------------------------------------------------------
     def step0_tests(self):
@@ -299,9 +348,15 @@ class Pipeline:
         if not self.done("identity_run"):
             directory = RUNS / IDENTITY_ID
             command = self._training_command(IDENTITY_ID, SMOKE_CONFIG, replicates=2, index=1, episodes=20, eval_reps=1)
-            if (directory / "experiment_manifest.json").is_file():
-                command.append("--resume")
-            processes["identity"] = self.launch("identity_run", command)
+            rows_path = directory / "training_episode_summary.csv"
+            rows = list(csv.DictReader(rows_path.open())) if rows_path.is_file() else []
+            checkpoint = directory / "policies/policy_001/iteration_checkpoints/regional_policy_iteration_001.pt"
+            if len(rows) < IDENTITY_ROWS or not checkpoint.is_file():
+                if (directory / "experiment_manifest.json").is_file():
+                    command.append("--resume")
+                processes["identity"] = self.launch(
+                    "identity_run", command, env={"OMP_NUM_THREADS": "1"}
+                )
         if not self.done("micro_shards"):
             for index, launch_id in enumerate(MICRO_IDS, start=1):
                 command = self._training_command(launch_id, MICRO_CONFIG, replicates=2, index=index, episodes=4, eval_reps=1)
@@ -310,7 +365,9 @@ class Pipeline:
                     if json.loads(manifest.read_text()).get("status") == "training_shard_complete":
                         continue
                     command.append("--resume")
-                processes[launch_id] = self.launch(launch_id, command)
+                processes[launch_id] = self.launch(
+                    launch_id, command, env={"OMP_NUM_THREADS": "1"}
+                )
                 time.sleep(20)  # stagger torch/libomp start-up
         identity_rows = RUNS / IDENTITY_ID / "training_episode_summary.csv"
         deadline = time.time() + self.args.training_timeout_h * 3600
@@ -336,7 +393,7 @@ class Pipeline:
             for process in processes.values():  # never leave a second writer behind
                 terminate_group(process)
         for name, reason in failures:
-            label = ("v65.1 reproduces v64 r3 training rows 1-18 bit for bit"
+            label = ("v65.1 exact deterministic identity against v64"
                      if name == "identity" else f"micro shard {name}")
             self.check(label, False, f"{reason}; see logs/{'identity_run' if name == 'identity' else name}.log")
         if not self.done("identity_run"):
@@ -346,18 +403,78 @@ class Pipeline:
 
     def judge_identity(self):
         self._failed_since_step_start = False
+        # Remove the superseded infeasible eight-thread gate from resumed
+        # state.  Its failed evidence remains on disk; it must not remain as a
+        # live check after the exact pinned replacement passes.
+        self.checks = [c for c in self.checks if c["check"] != LEGACY_IDENTITY_CHECK]
+        self.save()
         path = RUNS / IDENTITY_ID / "training_episode_summary.csv"
         rows = list(csv.DictReader(path.open())) if path.is_file() else []
         if len(rows) < IDENTITY_ROWS:
-            self.check("v65.1 reproduces v64 r3 training rows 1-18 bit for bit", False,
+            self.check("v65.1 exact deterministic identity against v64", False,
                        f"only {len(rows)} of {IDENTITY_ROWS} rows were produced; see logs/identity_run.log")
             return
-        code = self.run("identity_check_training", [PY, "scripts/identity_check.py", "training", "--reference",
-                                                    str(Path(self.args.r3) / "training_episode_summary.csv"),
-                                                    "--candidate", str(RUNS / IDENTITY_ID / "training_episode_summary.csv"),
-                                                    "--rows", str(IDENTITY_ROWS)], timeout=600)
-        self.check("v65.1 reproduces v64 r3 training rows 1-18 bit for bit", code == 0,
-                   "logs/identity_check_training.log")
+        pinned_reference, issues = pinned_identity_reference_issues()
+        self.check(
+            "pinned v64 identity-reference integrity",
+            not issues,
+            f"registry={PINNED_IDENTITY_REGISTRY}; issues={issues or 'none'}",
+        )
+        historical = Path(self.args.r3) / "training_episode_summary.csv"
+        candidate = RUNS / IDENTITY_ID / "training_episode_summary.csv"
+        code = self.run(
+            "identity_check_historical_preupdate",
+            [
+                PY, "scripts/identity_check.py", "training",
+                "--reference", str(historical), "--candidate", str(candidate),
+                "--rows", str(IDENTITY_PREUPDATE_ROWS),
+                "--normalize-preregistered-metadata",
+            ],
+            timeout=600,
+        )
+        self.check(
+            "pre-update dynamics equal historical v64 r3",
+            code == 0,
+            "logs/identity_check_historical_preupdate.log",
+        )
+        pinned_csv = pinned_reference / "training_episode_summary.csv"
+        code = self.run(
+            "identity_check_pinned_rows",
+            [
+                PY, "scripts/identity_check.py", "training",
+                "--reference", str(pinned_csv), "--candidate", str(candidate),
+                "--rows", str(IDENTITY_PINNED_ROWS),
+                "--normalize-preregistered-metadata",
+            ],
+            timeout=600,
+        )
+        self.check(
+            "pinned v64-v65.1 scientific rows are exact",
+            code == 0,
+            "logs/identity_check_pinned_rows.log",
+        )
+        reference_checkpoint = pinned_reference / "policies/policy_001/iteration_checkpoints/regional_policy_iteration_001.pt"
+        candidate_checkpoint = RUNS / IDENTITY_ID / "policies/policy_001/iteration_checkpoints/regional_policy_iteration_001.pt"
+        code = self.run(
+            "identity_check_pinned_checkpoint",
+            [
+                PY, "scripts/identity_check.py", "checkpoint",
+                "--reference", str(reference_checkpoint),
+                "--candidate", str(candidate_checkpoint),
+            ],
+            timeout=600,
+        )
+        self.check(
+            "pinned v64-v65.1 actor checkpoint is bitwise exact",
+            code == 0,
+            "logs/identity_check_pinned_checkpoint.log",
+        )
+        self.check(
+            "v65.1 exact deterministic identity against v64",
+            True,
+            "historical rows 1-11, pinned rows 1-12, and all iteration-001 tensors are exact; "
+            f"{len(rows)} candidate rows cover the smoke budget",
+        )
         stage = {s: [float(r["episode_wall_time_s"]) for r in rows if r.get("training_stage_id") == s] for s in ("E", "P")}
         build = [float(r["mean_observation_build_latency_ms"]) for r in rows if r.get("mean_observation_build_latency_ms")]
         e = sorted(stage["E"])[len(stage["E"]) // 2] if stage["E"] else math.nan

@@ -18,12 +18,31 @@ import csv
 import math
 import re
 import sys
+from copy import deepcopy
 from pathlib import Path
 
 EXCLUDE = re.compile(
     r"(wall|cpu|latency|_seconds|seconds_|_time_s$|_ms$|episode_artifacts_dir|run_dir|phase|"
     r"^replication$|visualization|^panel_|^job_key$|^arm$|^captured_|checkpoint_path|^label_|"
     r"^evaluation_population$|^evaluation_variant_id$|^panel_id$|^machine$)"
+)
+
+# These fields were added by the preregistered v65.1 compute/provenance patch.
+# They describe how an otherwise identical episode was computed; they are not
+# scientific state.  Keep this allow-list narrow and fail closed on every
+# other finite value.
+PREREGISTERED_STAGE_METADATA = frozenset(
+    {
+        "branchTaskChunking",
+        "forecastMemoEnabled",
+        "forecastMemoVerifyFraction",
+        "hazardForecastKernel",
+        "hazardWindSpeedMPerMinute",
+        "observationEveryMinute",
+    }
+)
+PROVENANCE_PATH_FIELDS = frozenset(
+    {"graph_cache_path", "consolidated_graph_cache_path"}
 )
 
 
@@ -77,6 +96,28 @@ def _same(a: str, b: str) -> bool:
     return _equal(_structure(a), _structure(b))
 
 
+def normalize_preregistered_training_metadata(row: dict) -> dict:
+    """Remove only preregistered compute metadata and machine-local paths.
+
+    Hashes, map dimensions, configuration values, and every scientific field
+    remain in the comparison.  This lets a detached baseline worktree and the
+    production worktree share exact evidence without treating their absolute
+    cache paths as dynamics.
+    """
+    normalized = deepcopy(row)
+    stage = _structure(normalized.get("stage_overrides", ""))
+    if isinstance(stage, dict):
+        for key in PREREGISTERED_STAGE_METADATA:
+            stage.pop(key, None)
+        normalized["stage_overrides"] = repr(stage)
+    provenance = _structure(normalized.get("map_provenance", ""))
+    if isinstance(provenance, dict):
+        for key in PROVENANCE_PATH_FIELDS:
+            provenance.pop(key, None)
+        normalized["map_provenance"] = repr(provenance)
+    return normalized
+
+
 def compare_rows(left: list[dict], right: list[dict], keys: list[tuple]) -> tuple[list, list, list]:
     columns = sorted(set(left[0]) & set(right[0])) if left and right else []
     compared = [c for c in columns if not EXCLUDE.search(c)]
@@ -92,6 +133,9 @@ def compare_rows(left: list[dict], right: list[dict], keys: list[tuple]) -> tupl
 def command_training(args) -> int:
     reference = _read(Path(args.reference))
     candidate = _read(Path(args.candidate))
+    if args.normalize_preregistered_metadata:
+        reference = [normalize_preregistered_training_metadata(row) for row in reference]
+        candidate = [normalize_preregistered_training_metadata(row) for row in candidate]
     policy = str(args.policy)
     reference = [r for r in reference if str(r.get("policy_replication", "1")) == policy]
     candidate = [r for r in candidate if str(r.get("policy_replication", "1")) == policy]
@@ -109,6 +153,53 @@ def command_training(args) -> int:
     compared, excluded, differences = compare_rows(reference[:count], candidate[:count], keys)
     return _report(f"training rows 1..{count} (policy {policy})", compared, excluded, differences,
                    set(reference[0]) ^ set(candidate[0]))
+
+
+def checkpoint_tensor_differences(reference: Path, candidate: Path) -> tuple[int, int, list]:
+    """Return exact tensor coverage and differences for two Torch checkpoints."""
+    import torch
+
+    def tensors(value, prefix=""):
+        found = {}
+        if torch.is_tensor(value):
+            found[prefix] = value.detach().cpu()
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                child = f"{prefix}.{key}" if prefix else str(key)
+                found.update(tensors(item, child))
+        elif isinstance(value, (list, tuple)):
+            for index, item in enumerate(value):
+                found.update(tensors(item, f"{prefix}[{index}]"))
+        return found
+
+    left = tensors(torch.load(reference, map_location="cpu", weights_only=False))
+    right = tensors(torch.load(candidate, map_location="cpu", weights_only=False))
+    differences = []
+    for path in sorted(set(left) | set(right)):
+        if path not in left or path not in right:
+            differences.append((path, "missing tensor path"))
+            continue
+        a, b = left[path], right[path]
+        if a.dtype != b.dtype or a.shape != b.shape or not torch.equal(a, b):
+            differences.append((path, f"{a.dtype}/{tuple(a.shape)} != {b.dtype}/{tuple(b.shape)}"))
+    return len(left), len(right), differences
+
+
+def command_checkpoint(args) -> int:
+    left, right, differences = checkpoint_tensor_differences(
+        Path(args.reference), Path(args.candidate)
+    )
+    print(f"[CHECKPOINT IDENTITY] tensor paths: reference={left}, candidate={right}")
+    if differences:
+        print(f"[IDENTITY FAIL] {len(differences)} tensor difference(s); first 25:")
+        for path, detail in differences[:25]:
+            print(f"  {path}: {detail}")
+        return 1
+    if left == 0 or right == 0:
+        print("[IDENTITY FAIL] checkpoint contains no tensors")
+        return 1
+    print("[IDENTITY PASS] every checkpoint tensor is bitwise equal")
+    return 0
 
 
 def command_eval(args) -> int:
@@ -162,12 +253,20 @@ def main(argv=None) -> int:
     training.add_argument("--candidate", required=True)
     training.add_argument("--policy", type=int, default=1)
     training.add_argument("--rows", type=int, default=0)
+    training.add_argument("--normalize-preregistered-metadata", action="store_true")
     evaluation = sub.add_parser("eval")
     evaluation.add_argument("--multicity", required=True)
     evaluation.add_argument("--panel", required=True)
     evaluation.add_argument("--require-all", action="store_true")
+    checkpoint = sub.add_parser("checkpoint")
+    checkpoint.add_argument("--reference", required=True)
+    checkpoint.add_argument("--candidate", required=True)
     args = parser.parse_args(argv)
-    return command_training(args) if args.command == "training" else command_eval(args)
+    if args.command == "training":
+        return command_training(args)
+    if args.command == "checkpoint":
+        return command_checkpoint(args)
+    return command_eval(args)
 
 
 if __name__ == "__main__":
