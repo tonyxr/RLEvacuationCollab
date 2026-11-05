@@ -108,6 +108,70 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def multicity_eval_summary_issues(summary: Path) -> list[str]:
+    """Revalidate a preserved multicity evaluation before accepting resume.
+
+    ``multicity_backtest`` writes the CSV before running its matched-interface
+    audit. A repair to that audit can therefore make the preserved, complete
+    evaluation valid without changing any episode evidence. Resume must
+    rerun the audit and exact coverage checks instead of merely noticing that
+    the CSV exists (which would leave a stale FAIL in the report).
+    """
+    if not summary.is_file():
+        return [f"missing {summary}"]
+    rows = list(csv.DictReader(summary.open()))
+    if not rows:
+        return [f"empty {summary}"]
+
+    from backtest import LEARNED_STRATEGIES, _verify_matched_interface
+
+    cities = ("state_college_pa", "spokane_wa")
+    strategies = tuple(STRATEGIES.split(","))
+    expected = {
+        (city, 1, strategy, policy)
+        for city in cities
+        for strategy in strategies
+        for policy in ((1, 2) if strategy in LEARNED_STRATEGIES else (0,))
+    }
+    observed = [
+        (
+            row.get("city_id", ""),
+            int(row.get("city_scenario_replication", 0) or 0),
+            row.get("deployment_strategy", ""),
+            int(row.get("policy_replication", 0) or 0),
+        )
+        for row in rows
+    ]
+    observed_set = set(observed)
+    issues = []
+    if len(observed) != len(observed_set):
+        issues.append("duplicate city/scenario/strategy/policy rows")
+    missing = sorted(expected - observed_set)
+    unexpected = sorted(observed_set - expected)
+    if missing:
+        issues.append(f"missing evaluation rows: {missing[:3]}")
+    if unexpected:
+        issues.append(f"unexpected evaluation rows: {unexpected[:3]}")
+
+    gaps = []
+    for row in rows:
+        try:
+            gap = float(row.get("reward_accounting_gap", "nan"))
+        except (TypeError, ValueError):
+            gap = math.nan
+        if not math.isfinite(gap) or abs(gap) > 1e-9:
+            gaps.append(gap)
+    if gaps:
+        issues.append(f"non-finite or unbalanced reward ledgers: {gaps[:3]}")
+
+    if not issues:
+        try:
+            _verify_matched_interface(rows, strategies)
+        except (KeyError, TypeError, ValueError, RuntimeError) as exc:
+            issues.append(str(exc))
+    return issues
+
+
 def pinned_identity_reference_issues(registry_path: Path = PINNED_IDENTITY_REGISTRY) -> tuple[Path | None, list[str]]:
     """Validate the immutable pinned-v64 evidence before it can gate v65.1."""
     if not registry_path.is_file():
@@ -561,10 +625,22 @@ class Pipeline:
 
     def step5_multicity_eval(self):
         self._failed_since_step_start = False
-        if self.done("multicity_eval"):
-            return
         summary = RUNS / ASSEMBLED_ID / "evaluation_episode_summary.csv"
+        if self.done("multicity_eval"):
+            issues = multicity_eval_summary_issues(summary)
+            self.check(
+                "multicity --eval-only on the assembled launch",
+                not issues,
+                f"{summary}; resumed artifact validation issues={issues or 'none'}",
+            )
+            return
         if summary.exists():
+            issues = multicity_eval_summary_issues(summary)
+            self.check(
+                "multicity --eval-only on the assembled launch",
+                not issues,
+                f"{summary}; resumed artifact validation issues={issues or 'none'}",
+            )
             self.mark("multicity_eval")
             return
         command = [PY, "multicity_backtest.py", "--cities", "state_college_pa,spokane_wa", "--launch-seed", SEED,
@@ -574,7 +650,12 @@ class Pipeline:
                    "--no-require-convergence", "--visualize-eval-pairs-per-city", "0", "--no-policy-cache",
                    "--eval-only"]
         code = self.run("multicity_eval", command, timeout=self.args.eval_timeout_h * 3600)
-        self.check("multicity --eval-only on the assembled launch", code == 0 and summary.is_file(), str(summary))
+        issues = multicity_eval_summary_issues(summary) if summary.is_file() else [f"missing {summary}"]
+        self.check(
+            "multicity --eval-only on the assembled launch",
+            code == 0 and not issues,
+            f"{summary}; artifact validation issues={issues or 'none'}",
+        )
         self.mark("multicity_eval")
 
     def _panel(self, verb: str, spec: Path, extra: list[str], *, name: str, timeout: float) -> int:

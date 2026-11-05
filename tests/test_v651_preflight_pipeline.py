@@ -6,6 +6,10 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import json
+from types import SimpleNamespace
+from unittest import mock
+
+import scripts.preflight_pipeline as preflight
 
 from scripts.preflight_pipeline import (
     deterministic_torch_env,
@@ -72,6 +76,57 @@ class V651PreflightPipelineTests(unittest.TestCase):
         training, zero_shot = map_preflight_issues(results)
         self.assertEqual(training, ["spokane_wa:missing"])
         self.assertEqual(zero_shot, [])
+
+    def test_completed_eval_is_revalidated_and_replaces_stale_failure(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            report = root / "report"
+            logs = report / "logs"
+            summary = (
+                root
+                / preflight.ASSEMBLED_ID
+                / "evaluation_episode_summary.csv"
+            )
+            summary.parent.mkdir(parents=True)
+            summary.write_text("preserved evidence\n")
+            report.mkdir()
+            (report / "state.json").write_text(
+                json.dumps(
+                    {
+                        "multicity_eval": {"status": "done"},
+                        "_checks": [
+                            {
+                                "check": "multicity --eval-only on the assembled launch",
+                                "status": "FAIL",
+                                "detail": "stale pre-repair audit",
+                                "utc": "earlier",
+                            }
+                        ],
+                    }
+                )
+            )
+            args = SimpleNamespace(redo=None, keep_going=False, eval_timeout_h=1)
+            with (
+                mock.patch.object(preflight, "RUNS", root),
+                mock.patch.object(preflight, "REPORT", report),
+                mock.patch.object(preflight, "LOGS", logs),
+                mock.patch.object(
+                    preflight, "multicity_eval_summary_issues", return_value=[]
+                ) as validate,
+            ):
+                pipeline = preflight.Pipeline(args)
+                pipeline.step5_multicity_eval()
+
+            validate.assert_called_once_with(summary)
+            matching = [
+                row
+                for row in pipeline.checks
+                if row["check"]
+                == "multicity --eval-only on the assembled launch"
+            ]
+            self.assertEqual(len(matching), 1)
+            self.assertEqual(matching[0]["status"], "PASS")
+            self.assertIn("issues=none", matching[0]["detail"])
 
 
 if __name__ == "__main__":
