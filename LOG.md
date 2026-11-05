@@ -1,5 +1,28 @@
 # Engineering Review Log
 
+## 2026-11-05 — v65.1 prospective no-recourse site-loss amendment
+
+- Before Phase 3 freeze or any paper-scale training, the State College
+  Phase-2 evaluator exposed a valid extreme case: `initial_only` committed OSM
+  4938 at time zero for the t=75 epoch, but the live fire retired that site
+  before deployment.
+- The registered resource comparison is now explicitly ex ante. For
+  `initial_only` and sequential `static_greedy`, an unavailable exact
+  commitment forfeits its scheduled deployment allocation. Nothing is
+  installed at that epoch, no alternate building or cell is selected, and no
+  make-up allocation is created. The remaining time-zero commitments proceed
+  at their original later epochs.
+- The evaluator records the unavailable site identity, epoch, planned
+  capacity, successful-installation times, and all scheduled-attempt times.
+  It requires the realized shelter-count and capacity deficit to equal the
+  recorded forfeitures exactly. Evacuation time, exposure, casualties, and
+  realized capacity therefore retain the physical consequence of unexpected
+  fire spread rather than receiving adaptive comparator recourse.
+- Dynamic policies, hazard dynamics, reward accounting, and the fixed
+  deployment cadence are unchanged. This amendment was made prospectively
+  while the campaign remained at Phase-2 NO-GO; no frozen training evidence
+  existed.
+
 ## 2026-10-28 — v65.1: campaign tooling and two pre-freeze contract items
 
 Dynamics are unchanged (MODEL_VERSION stays 65). Two items touch

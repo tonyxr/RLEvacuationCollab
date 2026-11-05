@@ -2486,6 +2486,109 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(bridge.deployment_times, [5, 10])
         self.assertEqual(bridge.remaining_deployments, 0)
 
+    def test_initial_only_forfeits_unavailable_site_without_same_epoch_replacement(self):
+        core = make_core()
+        core.stopTime = 21
+        bridge = RLBridge(
+            core,
+            train_mode=False,
+            deployment_strategy="initial_only",
+            target_active_shelters=3,
+            shelter_action_interval=5,
+            first_decision_time=5,
+        )
+
+        def stable_initial_ranking(observation):
+            values = np.full(observation.number_of_actions, -np.inf)
+            feasible = np.flatnonzero(observation.action_mask)
+            values[feasible] = -feasible.astype(float)
+            return values
+
+        bridge._public_regional_objective_values = stable_initial_ranking
+        schedule = bridge.precommit_static_schedule()
+        self.assertEqual(schedule, (("100", 0), ("101", 1), ("102", 2)))
+        first = bridge.step(simulation_time=5)
+        self.assertEqual(first["candidate_osm_node_id"], "100")
+        self.assertEqual(first["added_shelters"], 1)
+
+        unavailable_osm_id, unavailable_cell = schedule[1]
+        cell_i, cell_j = divmod(unavailable_cell, bridge.ny)
+        core.shelterDS.shelterCanByCell[cell_i][cell_j] = [
+            candidate
+            for candidate in core.shelterDS.shelterCanByCell[cell_i][cell_j]
+            if str(candidate.OSMID) != unavailable_osm_id
+        ]
+
+        forfeited = bridge.step(simulation_time=10)
+        self.assertEqual(forfeited["decision_made"], 1)
+        self.assertEqual(forfeited["deployment_allocation_forfeited"], 1)
+        self.assertEqual(forfeited["added_shelters"], 0)
+        self.assertEqual(forfeited["candidate_osm_node_id"], "101")
+        self.assertEqual(forfeited["capacity_added"], 0.0)
+        self.assertEqual(len(core.shelterDS.shelterList), 1)
+        self.assertEqual(bridge.remaining_deployments, 1)
+
+        third = bridge.step(simulation_time=15)
+        self.assertEqual(third["candidate_osm_node_id"], "102")
+        self.assertEqual(third["added_shelters"], 1)
+        self.assertEqual(bridge.deployment_attempt_times, [5, 10, 15])
+        self.assertEqual(bridge.deployment_times, [5, 15])
+        self.assertEqual(bridge.deployments_made, 3)
+        self.assertEqual(bridge.remaining_deployments, 0)
+        self.assertEqual(len(core.shelterDS.shelterList), 2)
+        self.assertEqual(
+            bridge.forfeited_deployment_allocations,
+            [
+                {
+                    "allocation_index": 1,
+                    "simulation_time": 10,
+                    "candidate_osm_node_id": "101",
+                    "candidate_cell_index": 1,
+                    "planned_capacity": 20.0,
+                    "reason": "committed_site_unavailable",
+                }
+            ],
+        )
+
+    def test_initial_only_can_forfeit_every_unavailable_allocation(self):
+        core = make_core()
+        bridge = RLBridge(
+            core,
+            train_mode=False,
+            deployment_strategy="initial_only",
+            target_active_shelters=2,
+            shelter_action_interval=5,
+            first_decision_time=5,
+        )
+
+        def stable_initial_ranking(observation):
+            values = np.full(observation.number_of_actions, -np.inf)
+            feasible = np.flatnonzero(observation.action_mask)
+            values[feasible] = -feasible.astype(float)
+            return values
+
+        bridge._public_regional_objective_values = stable_initial_ranking
+        self.assertEqual(
+            bridge.precommit_static_schedule(),
+            (("100", 0), ("101", 1)),
+        )
+        for i in range(bridge.nx):
+            for j in range(bridge.ny):
+                core.shelterDS.shelterCanByCell[i][j].clear()
+
+        first = bridge.step(simulation_time=5)
+        second = bridge.step(simulation_time=10)
+        self.assertEqual(first["deployment_allocation_forfeited"], 1)
+        self.assertEqual(second["deployment_allocation_forfeited"], 1)
+        self.assertEqual(first["added_shelters"], 0)
+        self.assertEqual(second["added_shelters"], 0)
+        self.assertEqual(bridge.deployment_attempt_times, [5, 10])
+        self.assertEqual(bridge.deployment_times, [])
+        self.assertEqual(bridge.deployments_made, 2)
+        self.assertEqual(bridge.remaining_deployments, 0)
+        self.assertEqual(len(bridge.forfeited_deployment_allocations), 2)
+        self.assertEqual(core.shelterDS.shelterList, {})
+
     def test_static_greedy_precommits_demand_sites_but_not_capacity(self):
         core = make_core()
         bridge = RLBridge(

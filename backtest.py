@@ -254,12 +254,26 @@ def _run_episode(
     )
     if core.episode_summary is None:
         raise RuntimeError("Core completed without an episode summary")
+    forfeited_allocations = list(
+        getattr(core.rl, "forfeited_deployment_allocations", ())
+    )
+    if forfeited_allocations and strategy not in {
+        "initial_only",
+        "static_greedy",
+    }:
+        raise RuntimeError(
+            f"{strategy} reported a forfeited precommitment outside the "
+            "strict open-loop comparator contract"
+        )
+    forfeited_count = int(len(forfeited_allocations))
     installed_shelters = int(len(core.shelterDS.shelterList))
     expected_shelters = int(core.targetActiveShelters)
-    if installed_shelters != expected_shelters:
+    expected_realized_shelters = int(expected_shelters - forfeited_count)
+    if installed_shelters != expected_realized_shelters:
         raise RuntimeError(
             f"Benchmark shelter-budget mismatch for {strategy}: installed "
-            f"{installed_shelters}, expected {expected_shelters}"
+            f"{installed_shelters}, expected {expected_realized_shelters} "
+            f"after {forfeited_count} unavailable scheduled site(s)"
         )
     if bool(core.requirePopulationMatchedShelterCapacity):
         required_shelters = int(core.initShelterVol + core.maxAdditionalShelters)
@@ -275,10 +289,20 @@ def _run_episode(
             )
         )
         required_capacity = int(core.pedVol + core.shelterCapacitySurplus)
-        if installed_capacity != required_capacity:
+        forfeited_capacity = int(
+            round(
+                sum(
+                    float(event["planned_capacity"])
+                    for event in forfeited_allocations
+                )
+            )
+        )
+        expected_realized_capacity = int(required_capacity - forfeited_capacity)
+        if installed_capacity != expected_realized_capacity:
             raise RuntimeError(
                 f"Matched-capacity run installed {installed_capacity} places, "
-                f"expected {required_capacity}"
+                f"expected {expected_realized_capacity} after forfeiting "
+                f"{forfeited_capacity} planned places"
             )
         unassigned = core.finalInstallationUnassignedRationalPopulation
         core.shelterDS.assertPopulationMatchedAssignment(
@@ -306,10 +330,26 @@ def _run_episode(
             int(core.shelterActionInterval) * index
             for index in range(1, expected_additions + 1)
         )
-        if tuple(core.rl.deployment_times) != expected_times:
+        if tuple(core.rl.deployment_attempt_times) != expected_times:
             raise RuntimeError(
-                f"{strategy} did not execute its precommitted sites on the "
+                f"{strategy} did not process its precommitted allocations on the "
                 f"common schedule: expected {expected_times}, observed "
+                f"{tuple(core.rl.deployment_attempt_times)}"
+            )
+        forfeited_indices = {
+            int(event["allocation_index"])
+            for event in forfeited_allocations
+        }
+        expected_success_times = tuple(
+            time
+            for index, time in enumerate(expected_times)
+            if index not in forfeited_indices
+        )
+        if tuple(core.rl.deployment_times) != expected_success_times:
+            raise RuntimeError(
+                f"{strategy} substituted for or mis-timed an unavailable "
+                f"commitment: expected successful installations at "
+                f"{expected_success_times}, observed "
                 f"{tuple(core.rl.deployment_times)}"
             )
     result = dict(core.episode_summary)
@@ -322,6 +362,10 @@ def _run_episode(
     result["replication"] = int(replication)
     result["maximum_dynamic_deployments"] = int(core.rl.maximum_deployments)
     result["deployments_made"] = int(core.rl.deployments_made)
+    result["successful_deployments"] = int(
+        core.rl.deployments_made - forfeited_count
+    )
+    result["forfeited_deployment_allocations_count"] = int(forfeited_count)
     return result
 
 

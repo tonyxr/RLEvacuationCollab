@@ -93,10 +93,17 @@ the other four cities.
 - `random`: dynamic uniform feasible-candidate policy, retained as a negative
   control.
 
-Every policy receives the same final shelter-count budget. `initial_only` also
-receives the same capacity timing as RL; only `static_greedy` and
-`rl_precommit` retain an inherent early-capacity advantage and must be reported
-as timing diagnostics rather than equal online competitors.
+Every policy receives the same ex-ante shelter-allocation budget.
+`initial_only` also receives the same scheduled capacity timing as RL. Its
+exact time-zero site commitments have no recourse: a site that becomes
+unavailable before its scheduled epoch forfeits that allocation, with no
+same-epoch substitute or later make-up placement. Subsequent commitments keep
+their original epochs. Realized shelter count and capacity are therefore
+reported outcomes under hazard-driven site loss, alongside evacuation time
+and casualties. Only `static_greedy` and `rl_precommit` retain an inherent
+early-capacity advantage and must be reported as timing diagnostics rather
+than equal online competitors; when `static_greedy` is run sequentially, it
+uses the same no-recourse rule.
 
 ## Outcomes
 

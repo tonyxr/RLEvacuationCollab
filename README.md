@@ -399,11 +399,15 @@ clearance, congestion-delay reduction, route-time reduction, and forecast-
 exposure reduction.
 
 The Seattle curriculum resets exploration and actor/critic learning-rate decay
-inside each E/A/F stage. Every comparison arm receives ten equal-capacity
-shelters totalling `population + 200`. RL and dynamic heuristics choose and
-install at minutes 15,30,...,120. `initial_only` fixes its complete site order
-from the time-zero state, then installs that open-loop schedule at the same
-minutes, so it no longer receives an early-capacity advantage:
+inside each E/A/F stage. Every comparison arm receives the same ex-ante budget
+of ten equal-capacity shelter allocations totalling `population + 200`. RL and
+dynamic heuristics choose and install at minutes 15,30,...,120. `initial_only`
+fixes its complete site order from the time-zero state, then attempts that
+open-loop schedule at the same minutes. A committed site made unavailable by
+the hazard forfeits its allocation without a same-epoch substitute; later
+placements retain their original schedule. Realized capacity loss is reported
+with evacuation-time and casualty outcomes, and the comparator still receives
+no early-capacity advantage:
 
 ```bash
 python multicity_backtest.py \

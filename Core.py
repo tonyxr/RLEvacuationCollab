@@ -2987,14 +2987,26 @@ class Core:
             "remaining_candidates": int(self.shelterDS.remainingCandidateCount()),
             "retired_candidates": int(self.shelterDS.retiredCandidateCount),
             "tokens_forfeited": int(
-                max(0, self.rl.maximum_deployments - self.rl.deployments_made)
+                len(self.rl.forfeited_deployment_allocations)
             ),
+            "forfeited_planned_capacity": float(
+                sum(
+                    float(event["planned_capacity"])
+                    for event in self.rl.forfeited_deployment_allocations
+                )
+            ),
+            "forfeited_deployment_allocations": [
+                dict(event) for event in self.rl.forfeited_deployment_allocations
+            ],
             "initial_observation_digest": self.rl.initial_observation_digest,
             "precommit_initial_observation_digest": (
                 self.rl.precommit_initial_observation_digest
             ),
             "deployment_times": [
                 int(value) for value in self.rl.deployment_times
+            ],
+            "deployment_attempt_times": [
+                int(value) for value in self.rl.deployment_attempt_times
             ],
             "ppo_rollout_episodes": int(self.rl.rollout_episodes),
             "visualization_manifest": (

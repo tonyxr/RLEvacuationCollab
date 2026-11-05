@@ -1098,7 +1098,10 @@ class RLBridge:
         self.initial_observation_digest: Optional[str] = None
         self.precommit_initial_observation_digest: Optional[str] = None
         self.static_precommit_schedule: tuple[tuple[str, int], ...] = tuple()
+        self.static_precommit_capacities: tuple[float, ...] = tuple()
         self.deployment_times: list[int] = []
+        self.deployment_attempt_times: list[int] = []
+        self.forfeited_deployment_allocations: list[dict[str, object]] = []
         self.deployment_latency_records: list[dict[str, float]] = []
 
     def _cell_centers(self) -> np.ndarray:
@@ -3373,35 +3376,59 @@ class RLBridge:
                 observation,
             )
         elif self.deployment_strategy in {"initial_only", "static_greedy"}:
-            if len(self.static_precommit_schedule) != int(self.maximum_deployments):
+            (expected_osm_id, expected_cell), action = (
+                self._precommitted_expected_action(observation)
+            )
+            if action is None:
                 raise RuntimeError(
-                    "initial_only requires a complete time-zero precommitment schedule"
-                )
-            if int(self.deployments_made) >= len(self.static_precommit_schedule):
-                raise RuntimeError("initial_only exhausted its precommitted schedule")
-            expected_osm_id, expected_cell = self.static_precommit_schedule[
-                int(self.deployments_made)
-            ]
-            matches = [
-                action
-                for action in np.flatnonzero(observation.action_mask)
-                if str(observation.candidate_osm_node_ids[int(action)])
-                == str(expected_osm_id)
-                and int(observation.candidate_cell_indices[int(action)])
-                == int(expected_cell)
-            ]
-            if len(matches) != 1:
-                raise RuntimeError(
-                    "Precommitted shelter is not uniquely executable at its "
-                    f"scheduled epoch: OSM={expected_osm_id!r}, cell={expected_cell}"
+                    "Precommitted shelter is unavailable at its scheduled "
+                    f"epoch: OSM={expected_osm_id!r}, cell={expected_cell}"
                 )
             decision = PolicyDecision(
-                action_index=int(matches[0]),
+                action_index=int(action),
                 strategy=self.deployment_strategy,
             )
         else:
             raise RuntimeError(f"Strategy {self.deployment_strategy!r} cannot make dynamic decisions")
         return decision
+
+    def _precommitted_expected_action(
+        self,
+        observation: RegionalObservation,
+    ) -> tuple[tuple[str, int], Optional[int]]:
+        """Resolve one frozen site without substituting another candidate.
+
+        A missing site is a physically failed scheduled allocation for the
+        strict open-loop comparators.  The caller records that forfeiture and
+        advances to the next scheduled epoch; ambiguity remains an integrity
+        error because it would make the committed identity non-unique.
+        """
+        if len(self.static_precommit_schedule) != int(self.maximum_deployments):
+            raise RuntimeError(
+                "Static comparator requires a complete time-zero precommitment schedule"
+            )
+        schedule_index = int(self.deployments_made)
+        if schedule_index >= len(self.static_precommit_schedule):
+            raise RuntimeError("Static comparator exhausted its precommitted schedule")
+        expected_osm_id, expected_cell = self.static_precommit_schedule[
+            schedule_index
+        ]
+        matches = [
+            int(action)
+            for action in np.flatnonzero(observation.action_mask)
+            if str(observation.candidate_osm_node_ids[int(action)])
+            == str(expected_osm_id)
+            and int(observation.candidate_cell_indices[int(action)])
+            == int(expected_cell)
+        ]
+        if len(matches) > 1:
+            raise RuntimeError(
+                "Precommitted shelter identity is not unique at its scheduled "
+                f"epoch: OSM={expected_osm_id!r}, cell={expected_cell}"
+            )
+        return (str(expected_osm_id), int(expected_cell)), (
+            None if not matches else int(matches[0])
+        )
 
     def _public_regional_objective_values(
         self,
@@ -3871,6 +3898,7 @@ class RLBridge:
             self.tokens_remaining -= 1
             self.last_deployment_time = 0
             self.deployment_times.append(0)
+            self.deployment_attempt_times.append(0)
             self.decision_index += 1
         return tuple(receipts)
 
@@ -3907,6 +3935,7 @@ class RLBridge:
         )
         before = CB.live_state_digest(self.core)
         schedule: list[tuple[str, int]] = []
+        capacities: list[float] = []
         try:
             for planning_index in range(int(self.maximum_deployments)):
                 observation = self.observation_builder.build(
@@ -3943,8 +3972,9 @@ class RLBridge:
                     observation.candidate_osm_node_ids[action]
                 )
                 cell_index = int(observation.candidate_cell_indices[action])
-                self.executor.execute(observation, decision)
+                receipt = self.executor.execute(observation, decision)
                 schedule.append((candidate_osm_id, cell_index))
+                capacities.append(float(receipt.capacity_added))
         finally:
             CB.restore(self.core, base)
             if hasattr(
@@ -3980,6 +4010,7 @@ class RLBridge:
                 "Static precommitment changed the time-zero observation"
             )
         self.static_precommit_schedule = tuple(schedule)
+        self.static_precommit_capacities = tuple(capacities)
         return self.static_precommit_schedule
 
     def _decision_due(self, simulation_time: int) -> bool:
@@ -4454,6 +4485,27 @@ class RLBridge:
             self.full_observations_built += 1
         else:
             observation = ledger
+        precommit_expected_site: Optional[tuple[str, int]] = None
+        precommit_expected_capacity = 0.0
+        precommit_forfeiture_due = False
+        if deployment_due and self.deployment_strategy in {
+            "initial_only",
+            "static_greedy",
+        }:
+            precommit_expected_site, expected_action = (
+                self._precommitted_expected_action(observation)
+            )
+            precommit_forfeiture_due = expected_action is None
+            schedule_index = int(self.deployments_made)
+            if len(self.static_precommit_capacities) != int(
+                self.maximum_deployments
+            ):
+                raise RuntimeError(
+                    "Static comparator is missing time-zero capacity commitments"
+                )
+            precommit_expected_capacity = float(
+                self.static_precommit_capacities[schedule_index]
+            )
         observation_ms = (time.perf_counter() - observation_started) * 1000.0
         self._accumulate_policy_objective(
             observation,
@@ -4483,25 +4535,33 @@ class RLBridge:
                     f"decision time: expected t={scheduled_time}, observed "
                     f"t={simulation_time}"
                 )
-            if not observation.has_feasible_action:
+            if (
+                not observation.has_feasible_action
+                and not precommit_forfeiture_due
+            ):
                 raise RuntimeError(
                     "Population-matched shelter deployment has no feasible "
                     f"candidate at scheduled time t={scheduled_time}"
                 )
         decision_opportunity = bool(
-            deployment_due and observation.has_feasible_action
+            deployment_due
+            and (observation.has_feasible_action or precommit_forfeiture_due)
         )
-        if decision_opportunity and self.deployment_strategy in {
-            "rl",
-            "rl_forecast_ablated",
-            "rl_early_search",
-            "rl_precommit",
-            "objective_greedy",
-            "objective_greedy_legacy",
-            "deadline_greedy",
-            "initial_only",
-            "external",
-        }:
+        if (
+            decision_opportunity
+            and not precommit_forfeiture_due
+            and self.deployment_strategy in {
+                "rl",
+                "rl_forecast_ablated",
+                "rl_early_search",
+                "rl_precommit",
+                "objective_greedy",
+                "objective_greedy_legacy",
+                "deadline_greedy",
+                "initial_only",
+                "external",
+            }
+        ):
             observation = self._enrich_policy_observation(observation)
         if (
             decision_opportunity
@@ -4570,7 +4630,8 @@ class RLBridge:
         selection_ms = 0.0
         execution_ms = 0.0
         end_to_end_ms = 0.0
-        if decision_opportunity:
+        deployment_allocation_forfeited = 0
+        if decision_opportunity and not precommit_forfeiture_due:
             if self.pending is not None:
                 raise RuntimeError(
                     "A new action became due before the previous SMDP transition closed"
@@ -4682,6 +4743,7 @@ class RLBridge:
                 self.tokens_remaining -= 1
                 self.last_deployment_time = simulation_time
                 self.deployment_times.append(int(simulation_time))
+                self.deployment_attempt_times.append(int(simulation_time))
             else:
                 self.deferred_decisions += 1
             self.last_decision_time = simulation_time
@@ -4755,6 +4817,74 @@ class RLBridge:
                 deferred=not bool(receipt.installed),
             )
             self.decision_index += 1
+
+        if precommit_forfeiture_due:
+            if self.pending is not None:
+                raise RuntimeError(
+                    "A forfeited allocation became due before the previous "
+                    "SMDP transition closed"
+                )
+            if precommit_expected_site is None:
+                raise RuntimeError("Forfeiture is missing its committed site identity")
+            expected_osm_id, expected_cell = precommit_expected_site
+            schedule_index = int(self.deployments_made)
+            cell_i, cell_j = divmod(int(expected_cell), int(self.ny))
+            receipt = RegionalActionReceipt(
+                observation_id=(self.decision_index, simulation_time),
+                requested_candidate=-1,
+                executed_candidate=-1,
+                requested_cell=int(expected_cell),
+                executed_cell=-1,
+                shelter_id=-1,
+                candidate_osm_node_id=str(expected_osm_id),
+                candidate_x_m=float("nan"),
+                candidate_y_m=float("nan"),
+                candidate_cell_i=int(cell_i),
+                candidate_cell_j=int(cell_j),
+                capacity_added=0.0,
+                rerouted_population=0,
+                installed=False,
+            )
+            selected_cell = int(expected_cell)
+            deployment_allocation_forfeited = 1
+            self.forfeited_deployment_allocations.append(
+                {
+                    "allocation_index": int(schedule_index),
+                    "simulation_time": int(simulation_time),
+                    "candidate_osm_node_id": str(expected_osm_id),
+                    "candidate_cell_index": int(expected_cell),
+                    "planned_capacity": float(precommit_expected_capacity),
+                    "reason": "committed_site_unavailable",
+                }
+            )
+            self.deployment_attempt_times.append(int(simulation_time))
+            self.deployments_made += 1
+            self.tokens_remaining -= 1
+            self.last_deployment_time = int(simulation_time)
+            self.last_decision_time = int(simulation_time)
+            self.decision_index += 1
+            end_to_end_ms = float(observation_ms)
+            self.deployment_latency_records.append(
+                {
+                    "observation_ms": float(observation_ms),
+                    "policy_selection_ms": 0.0,
+                    "execution_ms": 0.0,
+                    "end_to_end_ms": float(end_to_end_ms),
+                }
+            )
+            if (
+                self.remaining_deployments == 0
+                and bool(
+                    getattr(
+                        self.core,
+                        "requirePopulationMatchedShelterCapacity",
+                        False,
+                    )
+                )
+            ):
+                self.core.finalInstallationUnassignedRationalPopulation = int(
+                    self.core.pedDS.unassigned_rational_population()
+                )
 
         self.last_simulation_time = simulation_time
         self.episode_done = terminal
@@ -4897,12 +5027,17 @@ class RLBridge:
                     else float(completed_reward.interval_cost)
                 ),
                 "decision_made": int(receipt is not None),
+                "deployment_allocation_forfeited": int(
+                    deployment_allocation_forfeited
+                ),
                 "selected_candidate": selected_candidate,
                 "heuristic_candidate": heuristic_candidate,
                 "selected_cell": selected_cell,
                 "heuristic_cell": heuristic_cell,
                 "completed_action": completed_action,
-                "added_shelters": int(receipt is not None),
+                "added_shelters": int(
+                    receipt is not None and bool(receipt.installed)
+                ),
                 "installed_shelter_id": -1 if receipt is None else int(receipt.shelter_id),
                 "candidate_osm_node_id": (
                     "" if receipt is None else str(receipt.candidate_osm_node_id)
@@ -4979,6 +5114,7 @@ class RLBridge:
             "hazard_exposure_action": 0.0,
             "raw_hazard_exposure_reduction": 0.0,
             "decision_made": 0,
+            "deployment_allocation_forfeited": 0,
             "selected_candidate": -1,
             "heuristic_candidate": -1,
             "selected_cell": -1,
@@ -5194,6 +5330,19 @@ class RLBridge:
                 else 0.0
             ),
             "deferred_decisions": float(self.deferred_decisions),
+            "forfeited_deployment_allocations": float(
+                len(self.forfeited_deployment_allocations)
+            ),
+            "forfeited_planned_capacity": float(
+                sum(
+                    float(event["planned_capacity"])
+                    for event in self.forfeited_deployment_allocations
+                )
+            ),
+            "successful_deployments": float(
+                int(self.deployments_made)
+                - len(self.forfeited_deployment_allocations)
+            ),
             "early_search_decisions": float(self.early_search_decisions),
             "early_search_changed": float(self.early_search_changed),
             "optimizer_updated": 0.0,
@@ -5305,7 +5454,7 @@ class RLBridge:
                 self.deployments_made
                 if self.deployment_strategy == "rl_precommit"
                 else len(self.static_precommit_schedule)
-                if self.deployment_strategy == "initial_only"
+                if self.deployment_strategy in {"initial_only", "static_greedy"}
                 else 0
             ),
             "deployment_latency_observations": float(

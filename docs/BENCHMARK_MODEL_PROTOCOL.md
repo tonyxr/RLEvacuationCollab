@@ -21,14 +21,18 @@ identifier as the tie break) common to every policy here and to RL. Exact
 score ties among cells use stable cell-table order. No benchmark contains a
 fitted coefficient.
 
-For the registered State College comparison, every strategy receives exactly
-ten equal-capacity shelters. Dynamic strategies start with two and install
-eight at the common decision epochs; their deployment schedule continues even
-if evacuation completes early. `initial_only` commits all eight later sites
-from the time-zero state and executes that fixed order at the same decision
-epochs. `static_greedy` and `rl_precommit` remain time-zero predeployment
-diagnostics. The evaluator fails the run rather than accepting a shelter-count
-mismatch.
+For the registered State College comparison, every strategy receives the same
+ex-ante budget of ten equal-capacity shelter allocations. Dynamic strategies
+start with two and install eight at the common decision epochs; their
+deployment schedule continues even if evacuation completes early.
+`initial_only` commits all eight later sites from the time-zero state and
+executes that fixed order at the same decision epochs. If a committed site is
+physically unavailable by its epoch, that allocation is forfeited: no site is
+installed at that epoch, no substitute is selected, and later commitments
+remain on their original schedule. The resulting shelter-count and capacity
+shortfall are recorded outcomes rather than silently repaired resources.
+`static_greedy` follows the same no-recourse rule; `rl_precommit` remains a
+time-zero predeployment diagnostic.
 
 ## Registered policies
 
@@ -136,13 +140,18 @@ later commitments complement earlier ones. Physical time, pedestrians, and
 hazards do not advance during planning, and the live simulator is restored
 exactly afterward.
 
-The committed sites are installed without re-ranking at the common epochs
-`t=15,30,...,120`. Thus it has the same capacity timing as RL but no access to
-later traffic, hazard, or pedestrian observations. A missing committed site is
-an experiment error; there is no adaptive replacement or fallback. This makes
-`initial_only` the open-loop static-schedule comparator for the value of
-feedback. `rl_precommit` remains a separate learned-selector predeployment
-diagnostic and `static_greedy` remains a time-zero expected-demand diagnostic.
+The committed sites are attempted without re-ranking at the common epochs
+`t=15,30,...,120`. Thus it has the same ex-ante allocation timing as RL but no
+access to later traffic, hazard, or pedestrian observations. If hazard spread
+has made the exact committed site unavailable, its scheduled allocation is
+forfeited. There is no same-epoch replacement, re-ranking, safety substitute,
+or later make-up deployment; subsequent committed sites are still attempted
+at their original epochs. This makes realized capacity loss part of the
+open-loop comparator's performance under unexpected fire spread while
+preserving the value-of-feedback contrast. `rl_precommit` remains a separate
+learned-selector predeployment diagnostic and `static_greedy` remains a
+time-zero expected-demand diagnostic governed by the same strict no-recourse
+execution rule.
 
 ## Literature basis
 
