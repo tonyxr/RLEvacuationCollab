@@ -69,7 +69,7 @@ import traceback
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Optional, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -356,6 +356,9 @@ class EvaluationEnvironment:
     rollout_episodes: int
     learning_rate: float
     fingerprint_sha256: str
+    # v66: files whose source differs from the training manifest, recorded
+    # only when the panel was run with --allow-dynamics-change.
+    dynamics_change: Optional[list] = None
 
     def city(self, city_id: str):
         return self.suite.select([city_id])[0]
@@ -1424,8 +1427,30 @@ def prepare(cli) -> tuple[dict, TrainingSource, EvaluationEnvironment, list[Job]
         str(arm.get("strategy", arm["arm"])) in LEARNED_STRATEGIES for arm in spec["arms"]
     )
     source = load_training_source(_training_paths(spec), allow_running=not learned)
-    env = build_environment(source)
+    allow_change = bool(getattr(cli, "allow_dynamics_change", False))
+    env = build_environment(source, check_code=not allow_change)
+    if allow_change:
+        # v66: evaluate frozen checkpoints under changed simulator code.  The
+        # job identity must then carry the CURRENT source fingerprint, or the
+        # episode store would hand back episodes simulated by the old code.
+        from multicity_backtest import POLICY_DYNAMICS_SOURCES, PROJECT_ROOT
+        from PolicyCache import source_fingerprint
+
+        current = source_fingerprint(PROJECT_ROOT, POLICY_DYNAMICS_SOURCES)
+        recorded = dict(source.manifest["policy_dynamics_source_sha256"])
+        env.dynamics_change = sorted(
+            name for name in set(current) | set(recorded)
+            if current.get(name) != recorded.get(name)
+        )
+        env.fingerprint_sha256 = sha256_text(
+            canonical_json({"recorded": recorded, "current": current})
+        )
     campaign = resolve_path(spec["campaign_dir"])
+    if allow_change and campaign.resolve() == (ROOT / "runs" / "paper_v65").resolve():
+        raise ValueError(
+            "--allow-dynamics-change must write to a new campaign directory, "
+            "never to runs/paper_v65"
+        )
     spec = resolve_tuned_values(spec, campaign, cli)
     jobs = build_jobs(spec, source, env)
     panel_dir = campaign / "panels" / spec["panel_id"]
@@ -1447,6 +1472,7 @@ def _panel_manifest(spec, source, env, jobs, status: str) -> dict:
         "training_statuses": source.statuses,
         "launch_seed": env.launch_seed,
         "dynamics_fingerprint_sha256": env.fingerprint_sha256,
+        "dynamics_change": env.dynamics_change,
         "curriculum_sha256": env.curriculum.source_sha256,
         "city_profile_sha256": env.suite.source_sha256,
         "jobs": [
@@ -1686,6 +1712,12 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--replications", help="override replications, e.g. 1:2")
         command.add_argument("--cities", help="override cities, comma-separated")
         command.add_argument("--policies", help="restrict learned arms to these policy indices (smoke)")
+        command.add_argument(
+            "--allow-dynamics-change",
+            action="store_true",
+            help="v66: evaluate frozen checkpoints under changed simulator code "
+            "(new campaign directory required; the changed files are recorded)",
+        )
         if name == "plan":
             command.add_argument("--show-job", action="store_true")
         if name == "run":

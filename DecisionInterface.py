@@ -602,6 +602,17 @@ class RemainingTimeEstimate:
         return self.plain_by_cell + self.hazard_exposure_by_cell
 
 
+def _departure_wait_minutes(pedestrian, current_time: int, step_minutes: float) -> float:
+    """v66: minutes a cohort still waits before departing (0 once departed)."""
+    if (
+        bool(getattr(pedestrian, "affected", False))
+        or bool(getattr(pedestrian, "panicked", False))
+    ):
+        return 0.0
+    departure = int(getattr(pedestrian, "departure_time", 0))
+    return float(max(0, departure - int(current_time))) * float(step_minutes)
+
+
 def estimate_remaining_time_to_safety(
     core,
     *,
@@ -759,8 +770,14 @@ def estimate_remaining_time_to_safety(
             speed_floor,
             float(getattr(pedestrian, "currSpeed", 0.0)),
         )
-        ordinary_minutes = 0.0
-        exposure_minutes = 0.0
+        # v66: a cohort that has not departed first waits at its origin.
+        wait_minutes = _departure_wait_minutes(
+            pedestrian, current_time, time_step_minutes
+        )
+        ordinary_minutes = wait_minutes
+        exposure_minutes = wait_minutes * cell_danger(
+            getattr(pedestrian, "currCell", None)
+        )
 
         current_distance = max(
             0.0,
@@ -3096,6 +3113,15 @@ class RegionalObservationBuilder:
                 )
                 arrival_steps = max(
                     1, int(np.ceil((distance / speed) / time_step))
+                ) + int(
+                    np.ceil(
+                        _departure_wait_minutes(
+                            pedestrian,
+                            int(getattr(pedestrian_store, "currTime", 0)),
+                            time_step,
+                        )
+                        / time_step
+                    )
                 )
             else:
                 arrival_steps = int(self.horizon) + 1
@@ -3155,7 +3181,16 @@ class RegionalObservationBuilder:
                     speed_floor,
                     float(getattr(pedestrian, "currSpeed", 0.0)),
                 )
-                tau = int(np.ceil((route_distance / speed) / time_step))
+                tau = int(np.ceil((route_distance / speed) / time_step)) + int(
+                    np.ceil(
+                        _departure_wait_minutes(
+                            pedestrian,
+                            int(getattr(self.core.pedDS, "currTime", 0)),
+                            time_step,
+                        )
+                        / time_step
+                    )
+                )
             else:
                 tau = window
             records[i * self.ny + j].append(

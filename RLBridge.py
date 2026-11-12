@@ -456,6 +456,7 @@ class RLBridge:
         critic_lr_min_fraction: float = DEFAULT_CRITIC_LR_MIN_FRACTION,
         actor_prior: str = "none",
         actor_prior_scale: float = 0.0,
+        actor_prior_defer_mode: str = "zero",
         representation_mode: str = DEFAULT_REPRESENTATION_MODE,
         representation_clone_coef: float = DEFAULT_REPRESENTATION_CLONE_COEF,
         representation_kl_cap: float = DEFAULT_REPRESENTATION_KL_CAP,
@@ -717,6 +718,9 @@ class RLBridge:
             raise ValueError("actor_prior_scale must be zero when actor_prior is none")
         if self.actor_prior != "none" and self.actor_prior_scale <= 0.0:
             raise ValueError("A configured actor prior requires a positive scale")
+        self.actor_prior_defer_mode = str(actor_prior_defer_mode).strip().lower()
+        if self.actor_prior_defer_mode not in {"zero", "below_sites"}:
+            raise ValueError("actor_prior_defer_mode must be zero or below_sites")
         # Exact NMCC remains the only action-improvement mechanism.  A natural
         # outcome head is instantiated solely when explicitly supervised for
         # environment-dynamics representation pretraining; it never supplies
@@ -939,6 +943,7 @@ class RLBridge:
                     verbose=False,
                     actor_prior=self.actor_prior,
                     actor_prior_scale=self.actor_prior_scale,
+                    actor_prior_defer_mode=self.actor_prior_defer_mode,
                     actor_prior_feature_index=(
                         CANDIDATE_FEATURE_NAMES.index(
                             "public_regional_objective_score"
@@ -4501,7 +4506,13 @@ class RLBridge:
             "deadline_greedy",
             "initial_only",
             "external",
-        }:
+        } or (
+            # v66: rank the planners' shortlist on the full index score.
+            decision_opportunity
+            and self.deployment_strategy in {"belief_rollout", "hindsight_rollout"}
+            and str(getattr(self.core, "plannerShortlistObservation", "raw"))
+            == "enriched"
+        ):
             observation = self._enrich_policy_observation(observation)
         if (
             decision_opportunity

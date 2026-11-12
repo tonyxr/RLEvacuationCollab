@@ -193,6 +193,17 @@ NMCC_PI_CONTINUATION_CORE_FIELDS = (
     ),
 )
 
+# v66 is additive in the same way: the default reproduces v65.1 exactly.
+#   actorPriorDeferMode "zero" (v65.1): the defer slot's prior logit is 0, so
+#   when every candidate score ties the zero-residual actor defers.
+#   "below_sites": the defer prior sits 1 logit below the lowest site prior,
+#   so the iteration-0 actor equals the index rule, ties included.
+NMCC_PI_V66_CORE_FIELDS = (
+    ("actorPriorDeferMode", "actor_prior_defer_mode", str, "zero"),
+)
+
 NMCC_PI_ALL_CORE_FIELDS = (
-    NMCC_PI_CORE_FIELDS + NMCC_PI_CONTINUATION_CORE_FIELDS
+    NMCC_PI_CORE_FIELDS
+    + NMCC_PI_CONTINUATION_CORE_FIELDS
+    + NMCC_PI_V66_CORE_FIELDS
 )

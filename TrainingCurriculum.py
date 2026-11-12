@@ -100,6 +100,13 @@ LEARNER_STAGE_OVERRIDES = frozenset(
         # v65.1: the base wind speed is part of the scenario contract and is
         # declared in the curriculum instead of a launch-time --override.
         "hazardWindSpeedMPerMinute",
+        # v66 validity options (scenario contract, constant across stages).
+        "candidateSamplingMode",
+        "initialShelterMode",
+        "plannerShortlistObservation",
+        "departureDelayMeanMinutes",
+        "departureDelayShape",
+        "departureDelayMaxMinutes",
     }
     | {attribute for attribute, _, _, _ in NMCC_PI_ALL_CORE_FIELDS}
 )

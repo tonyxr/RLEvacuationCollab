@@ -48,6 +48,11 @@ class PedDS:
         """Other key parameters"""
         self.currTime = 0
         self.maxSpeed = None
+        # v66 departure delay (mean 0 = immediate departure, as in v65.1).
+        self.departure_mean_minutes = 0.0
+        self.departure_shape = 1.5
+        self.departure_max_minutes = 90.0
+        self.departure_random_seed = 0
         self.timeStepMinutes = 1.0
         self.evacuation_horizon_timesteps = 1
         self.minOperationalSpeed = 1.0
@@ -192,6 +197,58 @@ class PedDS:
         self.panic_herd_probability = herd_probability
         self.panic_danger_threshold = danger_threshold
         self.panic_random_seed = int(random_seed) & ((1 << 64) - 1)
+
+    def configure_departure(
+        self,
+        *,
+        mean_minutes: float = 0.0,
+        shape: float = 1.5,
+        max_minutes: float = 90.0,
+        random_seed: int = 0,
+    ) -> None:
+        """v66: truncated-Weibull departure delays on a dedicated stream."""
+        mean_minutes = float(mean_minutes)
+        shape = float(shape)
+        max_minutes = float(max_minutes)
+        if not math.isfinite(mean_minutes) or mean_minutes < 0.0:
+            raise ValueError("departure mean must be finite and non-negative")
+        if not math.isfinite(shape) or shape <= 0.0:
+            raise ValueError("departure shape must be finite and positive")
+        if not math.isfinite(max_minutes) or max_minutes < 0.0:
+            raise ValueError("departure maximum must be finite and non-negative")
+        self.departure_mean_minutes = mean_minutes
+        self.departure_shape = shape
+        self.departure_max_minutes = max_minutes
+        self.departure_random_seed = int(random_seed) & ((1 << 64) - 1)
+
+    def _departure_uniform(self, agent_id: int) -> float:
+        """Counter-based uniform on (0, 1), keyed by scenario stream and agent."""
+        mask = (1 << 64) - 1
+        value = (int(self.departure_random_seed) ^ (0x9E3779B97F4A7C15 * (int(agent_id) + 1))) & mask
+        value = ((value ^ (value >> 30)) * 0xBF58476D1CE4E5B9) & mask
+        value = ((value ^ (value >> 27)) * 0x94D049BB133111EB) & mask
+        value ^= value >> 31
+        return (float(value >> 11) + 0.5) / float(1 << 53)
+
+    def _sample_departure_time(self, agent_id: int) -> int:
+        """Departure minute of one cohort; 0 when delays are disabled."""
+        if self.departure_mean_minutes <= 0.0:
+            return 0
+        shape = float(self.departure_shape)
+        scale = self.departure_mean_minutes / math.gamma(1.0 + 1.0 / shape)
+        u = self._departure_uniform(agent_id)
+        draw = scale * (-math.log(1.0 - u)) ** (1.0 / shape)
+        return int(round(min(draw, self.departure_max_minutes)))
+
+    def has_departed(self, ped) -> bool:
+        """A cohort moves once its departure minute passes, or when exposed or panicked."""
+        if self.departure_mean_minutes <= 0.0:
+            return True
+        return bool(
+            int(self.currTime) >= int(getattr(ped, "departure_time", 0))
+            or getattr(ped, "affected", False)
+            or getattr(ped, "panicked", False)
+        )
 
     def panic_contract(self) -> dict:
         return {
@@ -1594,6 +1651,7 @@ class PedDS:
             newAgent.edge_vec = None
             newAgent.edge_dest_node = None    
             newAgent.desired_speed = float(self.maxSpeed)
+            newAgent.departure_time = int(self._sample_departure_time(agentID))
             
             self.pedAgentList[agentID] = newAgent
             remaining_population -= represented_population
@@ -1929,6 +1987,16 @@ class PedDS:
 
             if self.shelterDS is not None:
                 self.shelterDS.reconcileReservations(active_pedestrians)
+
+            if self.departure_mean_minutes > 0.0:
+                # v66: cohorts that have not departed hold their reservation
+                # and stay exposed at their origin, but neither move nor load
+                # a link in this substep.
+                active_pedestrians = [
+                    ped for ped in active_pedestrians if self.has_departed(ped)
+                ]
+                if not active_pedestrians:
+                    continue
 
             # Every substep first updates intended routes, then freezes all
             # physical-link loads before anybody moves. Thus both speeds and

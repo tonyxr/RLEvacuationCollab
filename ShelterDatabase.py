@@ -32,6 +32,8 @@ class ShelterDS:
         self.reservedPopulationByShelter = {}
         
         self.shelterPerCellList = None
+        # v66: order in which the capped candidate pool is drawn.
+        self.candidateSamplingMode = "legacy_row_major"
         # When positive, every installed shelter consumes one identical
         # capacity token. This separates the location decision from resource
         # quantity and makes RL/heuristic comparisons capacity-fair.
@@ -368,6 +370,48 @@ class ShelterDS:
     """
     Build 2D arrays (candidates + active list). Sort candidates by descending capacity
     """
+    def _candidate_cell_order(self, cellXNum, cellYNum):
+        """Cell order for drawing the capped candidate pool (v66).
+
+        ``legacy_row_major`` is the v65.1 x-major scan.  ``spatial_maximin``
+        is a farthest-point (k-center) traversal of the occupied cells, using
+        each cell's largest candidate as its location.  It starts at the
+        occupied cell nearest the mean candidate location and breaks ties by
+        the lower cell index, so it is deterministic for a given map and
+        partition.
+        """
+        row_major = [(i, j) for i in range(cellXNum) for j in range(cellYNum)]
+        mode = str(getattr(self, "candidateSamplingMode", "legacy_row_major"))
+        if mode == "legacy_row_major":
+            return row_major
+        if mode != "spatial_maximin":
+            raise ValueError(f"Unknown candidateSamplingMode {mode!r}")
+        occupied = [cell for cell in row_major if self.shelterCanByCell[cell[0]][cell[1]]]
+        if not occupied:
+            return row_major
+        points = {}
+        for i, j in occupied:
+            node = self.shelterCanByCell[i][j][0]
+            points[(i, j)] = (float(getattr(node, "nodeX", 0.0)), float(getattr(node, "nodeY", 0.0)))
+        cx = sum(x for x, _ in points.values()) / len(points)
+        cy = sum(y for _, y in points.values()) / len(points)
+
+        def squared(a, b):
+            return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2
+
+        start = min(occupied, key=lambda cell: (squared(points[cell], (cx, cy)), cell))
+        order = [start]
+        remaining = [cell for cell in occupied if cell != start]
+        nearest = {cell: squared(points[cell], points[start]) for cell in remaining}
+        while remaining:
+            chosen = max(remaining, key=lambda cell: (nearest[cell], -cell[0], -cell[1]))
+            order.append(chosen)
+            remaining.remove(chosen)
+            for cell in remaining:
+                nearest[cell] = min(nearest[cell], squared(points[cell], points[chosen]))
+        listed = set(order)
+        return order + [cell for cell in row_major if cell not in listed]
+
     def shelterPerCell(self, cellTracker, mapDS = None):
         """Index candidates on the exact grid owned by ``cellTracker``."""
         cellXNum = int(cellTracker.cellXNum)
@@ -395,18 +439,21 @@ class ShelterDS:
         # concentrated in one dense cell.
         target = int(self.candidateVol) if int(self.candidateVol) > 0 else None
         if target is not None:
+            # v66: the round-robin follows an explicit cell order.  The legacy
+            # order is the x-major scan, which fills the pool from the first x
+            # strips; "spatial_maximin" spreads it over the occupied cells.
+            cell_order = self._candidate_cell_order(cellXNum, cellYNum)
             balanced = self.ensureGrid(cellXNum, cellYNum)
             filled = 0
             while filled < target:
                 any_picked = False
-                for i in range(cellXNum):
-                    for j in range(cellYNum):
-                        if filled >= target:
-                            break
-                        if self.shelterCanByCell[i][j]:
-                            balanced[i][j].append(self.shelterCanByCell[i][j].pop(0))
-                            filled += 1
-                            any_picked = True
+                for i, j in cell_order:
+                    if filled >= target:
+                        break
+                    if self.shelterCanByCell[i][j]:
+                        balanced[i][j].append(self.shelterCanByCell[i][j].pop(0))
+                        filled += 1
+                        any_picked = True
                 if not any_picked:
                     break
             self.shelterCanByCell = balanced

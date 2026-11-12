@@ -232,6 +232,28 @@ class Core:
         self.casualtyPriorityKappa = 2.0
         self.casualtyPriceRule = "legacy"
         self.publicObjectiveVariant = "legacy"
+        # v66 validity options.  Every default reproduces v65.1 bit for bit.
+        # candidateSamplingMode: order in which the capped candidate pool is
+        #   drawn from the regional grid ("legacy_row_major" = x-major scan,
+        #   which concentrates the pool in the first x strips;
+        #   "spatial_maximin" = farthest-point order over occupied cells).
+        self.candidateSamplingMode = "legacy_row_major"
+        # initialShelterMode: how the shelters open at t = 0 are placed
+        #   ("legacy_row_major" = first occupied cells of the x-major scan;
+        #   "demand_greedy" = the shared lower layer's static demand-greedy
+        #   rule on the planned initial population, identical for all arms).
+        self.initialShelterMode = "legacy_row_major"
+        # plannerShortlistObservation: observation used to rank the rollout
+        #   planners' shortlist ("raw" = v65.1, without the remaining-debt
+        #   term; "enriched" = the same observation the index rule reads).
+        self.plannerShortlistObservation = "raw"
+        # Departure delay.  Mean 0 keeps immediate departure.  Otherwise each
+        #   cohort's departure minute is a truncated Weibull draw keyed on the
+        #   scenario seed and the cohort id (common random numbers across arms).
+        #   A cohort also departs at once when it is exposed or panics.
+        self.departureDelayMeanMinutes = 0.0
+        self.departureDelayShape = 1.5
+        self.departureDelayMaxMinutes = 90.0
         # Explicit objective weights.  Defaults preserve historical runs;
         # experiment curricula may change them, but the same values are used
         # by the live reward, branch grading, heuristics and evaluation.
@@ -783,6 +805,12 @@ class Core:
             ),
             "policy": int(self.policy_seed),
         }
+        if float(getattr(self, "departureDelayMeanMinutes", 0.0)) > 0.0:
+            self.random_stream_seeds["pedestrian_departure"] = int(
+                np.random.SeedSequence([self.scenario_seed, 6]).generate_state(
+                    1, dtype=np.uint64
+                )[0]
+            )
 
         # Guidance is a deprecated compatibility surface, never an active
         # experiment factor or candidate population.
@@ -898,6 +926,12 @@ class Core:
             herd_probability=self.panicHerdProbability,
             danger_threshold=self.panicDangerThreshold,
             random_seed=self.random_stream_seeds["pedestrian_panic_behavior"],
+        )
+        self.pedDS.configure_departure(
+            mean_minutes=float(self.departureDelayMeanMinutes),
+            shape=float(self.departureDelayShape),
+            max_minutes=float(self.departureDelayMaxMinutes),
+            random_seed=int(self.random_stream_seeds.get("pedestrian_departure", 0)),
         )
         self.hazardDS = HazardDS(
             self.hazardVol,
@@ -1143,6 +1177,7 @@ class Core:
             if int(self.shelterCapacityToken) == 0
             else int(self.shelterCapacityToken)
         )
+        self.shelterDS.candidateSamplingMode = str(self.candidateSamplingMode)
         self.shelterDS.shelterPerCell(self.cellTracker)
         authoritative_grid_shape(self)
         available_shelters = int(self.shelterDS.remainingCandidateCount())
@@ -1193,7 +1228,22 @@ class Core:
                 f"[SHELTER FAIRNESS] strategy={deployment_strategy} pre-deploying "
                 f"{self.shelterDS.initVol} initial shelters to match end-of-episode shelter budget."
             )
-        self.shelterDS.initShelter()
+        if str(self.initialShelterMode) == "demand_greedy":
+            if planned_birth_osmids is None:
+                raise ValueError(
+                    "initialShelterMode=demand_greedy needs the planned "
+                    "population origins (cellPartitionMode="
+                    "population_density_adaptive)"
+                )
+            self.shelterDS.predeployStaticDemandGreedy(
+                self._initial_demand_by_cell(
+                    planned_birth_osmids, planned_group_sizes
+                ),
+                int(self.shelterDS.initVol),
+                self.cellTracker,
+            )
+        else:
+            self.shelterDS.initShelter()
         initialized_shelter_ids = sorted(int(value) for value in self.shelterDS.shelterList)
         self.baseline_initial_shelter_ids = frozenset(
             initialized_shelter_ids[:requested_initial_shelters]
@@ -1466,6 +1516,21 @@ class Core:
         self.simulationEnumerator()
         
     """Main Functions"""
+    def _initial_demand_by_cell(self, birth_osmids, group_sizes) -> list:
+        """v66: planned initial population per regional cell (row-major)."""
+        x_count = int(self.cellTracker.cellXNum)
+        y_count = int(self.cellTracker.cellYNum)
+        demand = [0.0] * (x_count * y_count)
+        lookup = getattr(self.mapDS, "nodeListByOSMID", {})
+        sizes = list(group_sizes) if group_sizes is not None else [1] * len(birth_osmids)
+        for osmid, size in zip(birth_osmids, sizes):
+            node = lookup.get(int(osmid))
+            if node is None:
+                continue
+            i, j = self.cellTracker.locateCell(node.nodeX, node.nodeY)
+            demand[int(i) * y_count + int(j)] += float(size)
+        return demand
+
     def _apply_configuration_overrides(self, overrides) -> None:
         unknown = sorted(key for key in overrides if not hasattr(self, key))
         if unknown:
@@ -1903,6 +1968,14 @@ class Core:
         self.publicObjectiveVariant = str(
             self.publicObjectiveVariant
         ).strip().lower()
+        self.candidateSamplingMode = str(self.candidateSamplingMode).strip().lower()
+        self.initialShelterMode = str(self.initialShelterMode).strip().lower()
+        self.plannerShortlistObservation = str(
+            self.plannerShortlistObservation
+        ).strip().lower()
+        self.departureDelayMeanMinutes = float(self.departureDelayMeanMinutes)
+        self.departureDelayShape = float(self.departureDelayShape)
+        self.departureDelayMaxMinutes = float(self.departureDelayMaxMinutes)
         self.activePersonTimeWeight = float(self.activePersonTimeWeight)
         self.hazardExposureTimeWeight = float(self.hazardExposureTimeWeight)
         self.clearanceTailFraction = float(self.clearanceTailFraction)
@@ -1932,6 +2005,28 @@ class Core:
             raise ValueError(
                 "publicObjectiveVariant must be legacy or front_aware"
             )
+        if self.candidateSamplingMode not in {"legacy_row_major", "spatial_maximin"}:
+            raise ValueError(
+                "candidateSamplingMode must be legacy_row_major or spatial_maximin"
+            )
+        if self.initialShelterMode not in {"legacy_row_major", "demand_greedy"}:
+            raise ValueError(
+                "initialShelterMode must be legacy_row_major or demand_greedy"
+            )
+        if self.plannerShortlistObservation not in {"raw", "enriched"}:
+            raise ValueError("plannerShortlistObservation must be raw or enriched")
+        if (
+            not math.isfinite(self.departureDelayMeanMinutes)
+            or self.departureDelayMeanMinutes < 0.0
+        ):
+            raise ValueError("departureDelayMeanMinutes must be finite and >= 0")
+        if not math.isfinite(self.departureDelayShape) or self.departureDelayShape <= 0.0:
+            raise ValueError("departureDelayShape must be finite and positive")
+        if (
+            not math.isfinite(self.departureDelayMaxMinutes)
+            or self.departureDelayMaxMinutes < 0.0
+        ):
+            raise ValueError("departureDelayMaxMinutes must be finite and >= 0")
         if (
             not math.isfinite(self.activePersonTimeWeight)
             or self.activePersonTimeWeight < 0.0

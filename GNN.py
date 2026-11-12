@@ -382,6 +382,26 @@ class _RelationalMessageLayer(nn.Module):
         return self.norm(x + update)
 
 
+def apply_defer_prior(prior_logits: torch.Tensor, mode: str) -> torch.Tensor:
+    """Set the prior logit of the leading defer slot (v66).
+
+    ``zero`` reproduces v65.1: the defer prior is 0, so under a zero residual
+    the actor defers whenever every site prior ties at 0 (argmax takes the
+    first maximal slot, which is defer).  ``below_sites`` places the defer
+    prior 1 logit below the lowest site prior, so a zero-residual actor never
+    defers while a site is feasible and breaks site ties exactly as the
+    index rule does (first feasible slot in table order).
+    """
+    out = prior_logits.clone()
+    if mode == "below_sites" and out.size(1) > 1:
+        out[:, 0] = out[:, 1:].amin(dim=1) - 1.0
+    elif mode in {"zero", "below_sites"}:
+        out[:, 0] = 0.0
+    else:
+        raise ValueError(f"Unknown defer prior mode {mode!r}")
+    return out
+
+
 class EvacPolicy(nn.Module):
     """Compact relational GNN actor-critic with variable region-node count.
 
@@ -407,6 +427,7 @@ class EvacPolicy(nn.Module):
         actor_prior: str = "none",
         actor_prior_scale: float = 0.0,
         actor_prior_feature_index: int = 7,
+        actor_prior_defer_mode: str = "zero",
         auxiliary_models_enabled: bool = True,
         d_critic_exogenous: int = 0,
     ):
@@ -446,6 +467,9 @@ class EvacPolicy(nn.Module):
         if not np.isfinite(self.actor_prior_scale) or self.actor_prior_scale < 0.0:
             raise ValueError("actor_prior_scale must be finite and non-negative")
         self.actor_prior_feature_index = int(actor_prior_feature_index)
+        self.actor_prior_defer_mode = str(actor_prior_defer_mode)
+        if self.actor_prior_defer_mode not in {"zero", "below_sites"}:
+            raise ValueError("actor_prior_defer_mode must be zero or below_sites")
         if self.actor_prior in {
             "risk_time_reduction",
             "route_time_saving",
@@ -933,8 +957,10 @@ class EvacPolicy(nn.Module):
             prior_feature = torch.zeros_like(relative_active)
         prior_logits = self.actor_prior_scale * prior_feature
         if defer_enabled:
-            prior_logits = prior_logits.clone()
-            prior_logits[:, 0] = 0.0
+            prior_logits = apply_defer_prior(
+                prior_logits,
+                self.actor_prior_defer_mode if self.actor_prior != "none" else "zero",
+            )
         return (
             prior_logits + learned_residual,
             prior_logits,
