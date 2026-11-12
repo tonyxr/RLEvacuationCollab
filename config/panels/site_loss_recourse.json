@@ -1,0 +1,1836 @@
+{
+ "schema_version": 1,
+ "panel_id": "site_loss_recourse",
+ "description": "Initial-site-loss corner case re-done with forward-looking evacuation orders (recourse). Every arm of panel site_loss appears three times: without recourse ('off'; identical episode keys, so the stored site_loss episodes are reused), with the forecast order rule at lead 30 minutes ('fL30', primary) and at lead 15 minutes ('fL15', sensitivity). The forecast rule orders the evacuation of a region whose shelters the public first-passage forecast gives at least a 0.5 probability of reaching the overrun level within the lead window; orders are checked every 5 minutes at the decision boundary and execute in the next minute's closure phase through the simulator's own closure transaction. The placement policies are unchanged. Analysis: scripts/site_loss_recourse_results.py.",
+ "campaign_dir": "runs/paper_v65_site_loss",
+ "training": {
+  "sources": [
+   "runs/paper_v65_seed1",
+   "runs/paper_v65_seed2",
+   "runs/paper_v65_seed3"
+  ]
+ },
+ "cities": [
+  "state_college_pa",
+  "spokane_wa"
+ ],
+ "replications": [
+  1,
+  20
+ ],
+ "labels": {
+  "family": "initial_site_loss_recourse"
+ },
+ "arms": [
+  {
+   "arm": "rl__base__off",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "labels": {
+    "policy": "rl",
+    "cell": "base",
+    "targets": 0,
+    "ignition_minute": null,
+    "recourse": "off"
+   },
+   "scenario": null,
+   "recourse": null
+  },
+  {
+   "arm": "rl__base__fL30",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "labels": {
+    "policy": "rl",
+    "cell": "base",
+    "targets": 0,
+    "ignition_minute": null,
+    "recourse": "fL30"
+   },
+   "scenario": null,
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 30,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "rl__base__fL15",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "labels": {
+    "policy": "rl",
+    "cell": "base",
+    "targets": 0,
+    "ignition_minute": null,
+    "recourse": "fL15"
+   },
+   "scenario": null,
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 15,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "rl__t1_m05__off",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "labels": {
+    "policy": "rl",
+    "cell": "t1_m05",
+    "targets": 1,
+    "ignition_minute": 5,
+    "recourse": "off"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 1,
+     "ignition_minute": 5
+    }
+   },
+   "recourse": null
+  },
+  {
+   "arm": "rl__t1_m05__fL30",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "labels": {
+    "policy": "rl",
+    "cell": "t1_m05",
+    "targets": 1,
+    "ignition_minute": 5,
+    "recourse": "fL30"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 1,
+     "ignition_minute": 5
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 30,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "rl__t1_m05__fL15",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "labels": {
+    "policy": "rl",
+    "cell": "t1_m05",
+    "targets": 1,
+    "ignition_minute": 5,
+    "recourse": "fL15"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 1,
+     "ignition_minute": 5
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 15,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "rl__t1_m35__off",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "labels": {
+    "policy": "rl",
+    "cell": "t1_m35",
+    "targets": 1,
+    "ignition_minute": 35,
+    "recourse": "off"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 1,
+     "ignition_minute": 35
+    }
+   },
+   "recourse": null
+  },
+  {
+   "arm": "rl__t1_m35__fL30",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "labels": {
+    "policy": "rl",
+    "cell": "t1_m35",
+    "targets": 1,
+    "ignition_minute": 35,
+    "recourse": "fL30"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 1,
+     "ignition_minute": 35
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 30,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "rl__t1_m35__fL15",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "labels": {
+    "policy": "rl",
+    "cell": "t1_m35",
+    "targets": 1,
+    "ignition_minute": 35,
+    "recourse": "fL15"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 1,
+     "ignition_minute": 35
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 15,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "rl__t2_m05__off",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "labels": {
+    "policy": "rl",
+    "cell": "t2_m05",
+    "targets": 2,
+    "ignition_minute": 5,
+    "recourse": "off"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 2,
+     "ignition_minute": 5
+    }
+   },
+   "recourse": null
+  },
+  {
+   "arm": "rl__t2_m05__fL30",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "labels": {
+    "policy": "rl",
+    "cell": "t2_m05",
+    "targets": 2,
+    "ignition_minute": 5,
+    "recourse": "fL30"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 2,
+     "ignition_minute": 5
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 30,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "rl__t2_m05__fL15",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "labels": {
+    "policy": "rl",
+    "cell": "t2_m05",
+    "targets": 2,
+    "ignition_minute": 5,
+    "recourse": "fL15"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 2,
+     "ignition_minute": 5
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 15,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "rl__t2_m35__off",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "labels": {
+    "policy": "rl",
+    "cell": "t2_m35",
+    "targets": 2,
+    "ignition_minute": 35,
+    "recourse": "off"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 2,
+     "ignition_minute": 35
+    }
+   },
+   "recourse": null
+  },
+  {
+   "arm": "rl__t2_m35__fL30",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "labels": {
+    "policy": "rl",
+    "cell": "t2_m35",
+    "targets": 2,
+    "ignition_minute": 35,
+    "recourse": "fL30"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 2,
+     "ignition_minute": 35
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 30,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "rl__t2_m35__fL15",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "labels": {
+    "policy": "rl",
+    "cell": "t2_m35",
+    "targets": 2,
+    "ignition_minute": 35,
+    "recourse": "fL15"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 2,
+     "ignition_minute": 35
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 15,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "objective_greedy__base__off",
+   "strategy": "objective_greedy",
+   "labels": {
+    "policy": "objective_greedy",
+    "cell": "base",
+    "targets": 0,
+    "ignition_minute": null,
+    "recourse": "off"
+   },
+   "scenario": null,
+   "recourse": null
+  },
+  {
+   "arm": "objective_greedy__base__fL30",
+   "strategy": "objective_greedy",
+   "labels": {
+    "policy": "objective_greedy",
+    "cell": "base",
+    "targets": 0,
+    "ignition_minute": null,
+    "recourse": "fL30"
+   },
+   "scenario": null,
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 30,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "objective_greedy__base__fL15",
+   "strategy": "objective_greedy",
+   "labels": {
+    "policy": "objective_greedy",
+    "cell": "base",
+    "targets": 0,
+    "ignition_minute": null,
+    "recourse": "fL15"
+   },
+   "scenario": null,
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 15,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "objective_greedy__t1_m05__off",
+   "strategy": "objective_greedy",
+   "labels": {
+    "policy": "objective_greedy",
+    "cell": "t1_m05",
+    "targets": 1,
+    "ignition_minute": 5,
+    "recourse": "off"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 1,
+     "ignition_minute": 5
+    }
+   },
+   "recourse": null
+  },
+  {
+   "arm": "objective_greedy__t1_m05__fL30",
+   "strategy": "objective_greedy",
+   "labels": {
+    "policy": "objective_greedy",
+    "cell": "t1_m05",
+    "targets": 1,
+    "ignition_minute": 5,
+    "recourse": "fL30"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 1,
+     "ignition_minute": 5
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 30,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "objective_greedy__t1_m05__fL15",
+   "strategy": "objective_greedy",
+   "labels": {
+    "policy": "objective_greedy",
+    "cell": "t1_m05",
+    "targets": 1,
+    "ignition_minute": 5,
+    "recourse": "fL15"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 1,
+     "ignition_minute": 5
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 15,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "objective_greedy__t1_m35__off",
+   "strategy": "objective_greedy",
+   "labels": {
+    "policy": "objective_greedy",
+    "cell": "t1_m35",
+    "targets": 1,
+    "ignition_minute": 35,
+    "recourse": "off"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 1,
+     "ignition_minute": 35
+    }
+   },
+   "recourse": null
+  },
+  {
+   "arm": "objective_greedy__t1_m35__fL30",
+   "strategy": "objective_greedy",
+   "labels": {
+    "policy": "objective_greedy",
+    "cell": "t1_m35",
+    "targets": 1,
+    "ignition_minute": 35,
+    "recourse": "fL30"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 1,
+     "ignition_minute": 35
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 30,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "objective_greedy__t1_m35__fL15",
+   "strategy": "objective_greedy",
+   "labels": {
+    "policy": "objective_greedy",
+    "cell": "t1_m35",
+    "targets": 1,
+    "ignition_minute": 35,
+    "recourse": "fL15"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 1,
+     "ignition_minute": 35
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 15,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "objective_greedy__t2_m05__off",
+   "strategy": "objective_greedy",
+   "labels": {
+    "policy": "objective_greedy",
+    "cell": "t2_m05",
+    "targets": 2,
+    "ignition_minute": 5,
+    "recourse": "off"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 2,
+     "ignition_minute": 5
+    }
+   },
+   "recourse": null
+  },
+  {
+   "arm": "objective_greedy__t2_m05__fL30",
+   "strategy": "objective_greedy",
+   "labels": {
+    "policy": "objective_greedy",
+    "cell": "t2_m05",
+    "targets": 2,
+    "ignition_minute": 5,
+    "recourse": "fL30"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 2,
+     "ignition_minute": 5
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 30,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "objective_greedy__t2_m05__fL15",
+   "strategy": "objective_greedy",
+   "labels": {
+    "policy": "objective_greedy",
+    "cell": "t2_m05",
+    "targets": 2,
+    "ignition_minute": 5,
+    "recourse": "fL15"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 2,
+     "ignition_minute": 5
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 15,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "objective_greedy__t2_m35__off",
+   "strategy": "objective_greedy",
+   "labels": {
+    "policy": "objective_greedy",
+    "cell": "t2_m35",
+    "targets": 2,
+    "ignition_minute": 35,
+    "recourse": "off"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 2,
+     "ignition_minute": 35
+    }
+   },
+   "recourse": null
+  },
+  {
+   "arm": "objective_greedy__t2_m35__fL30",
+   "strategy": "objective_greedy",
+   "labels": {
+    "policy": "objective_greedy",
+    "cell": "t2_m35",
+    "targets": 2,
+    "ignition_minute": 35,
+    "recourse": "fL30"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 2,
+     "ignition_minute": 35
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 30,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "objective_greedy__t2_m35__fL15",
+   "strategy": "objective_greedy",
+   "labels": {
+    "policy": "objective_greedy",
+    "cell": "t2_m35",
+    "targets": 2,
+    "ignition_minute": 35,
+    "recourse": "fL15"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 2,
+     "ignition_minute": 35
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 15,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "objective_greedy_legacy__base__off",
+   "strategy": "objective_greedy_legacy",
+   "labels": {
+    "policy": "objective_greedy_legacy",
+    "cell": "base",
+    "targets": 0,
+    "ignition_minute": null,
+    "recourse": "off"
+   },
+   "scenario": null,
+   "recourse": null
+  },
+  {
+   "arm": "objective_greedy_legacy__base__fL30",
+   "strategy": "objective_greedy_legacy",
+   "labels": {
+    "policy": "objective_greedy_legacy",
+    "cell": "base",
+    "targets": 0,
+    "ignition_minute": null,
+    "recourse": "fL30"
+   },
+   "scenario": null,
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 30,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "objective_greedy_legacy__base__fL15",
+   "strategy": "objective_greedy_legacy",
+   "labels": {
+    "policy": "objective_greedy_legacy",
+    "cell": "base",
+    "targets": 0,
+    "ignition_minute": null,
+    "recourse": "fL15"
+   },
+   "scenario": null,
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 15,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "objective_greedy_legacy__t1_m05__off",
+   "strategy": "objective_greedy_legacy",
+   "labels": {
+    "policy": "objective_greedy_legacy",
+    "cell": "t1_m05",
+    "targets": 1,
+    "ignition_minute": 5,
+    "recourse": "off"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 1,
+     "ignition_minute": 5
+    }
+   },
+   "recourse": null
+  },
+  {
+   "arm": "objective_greedy_legacy__t1_m05__fL30",
+   "strategy": "objective_greedy_legacy",
+   "labels": {
+    "policy": "objective_greedy_legacy",
+    "cell": "t1_m05",
+    "targets": 1,
+    "ignition_minute": 5,
+    "recourse": "fL30"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 1,
+     "ignition_minute": 5
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 30,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "objective_greedy_legacy__t1_m05__fL15",
+   "strategy": "objective_greedy_legacy",
+   "labels": {
+    "policy": "objective_greedy_legacy",
+    "cell": "t1_m05",
+    "targets": 1,
+    "ignition_minute": 5,
+    "recourse": "fL15"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 1,
+     "ignition_minute": 5
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 15,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "objective_greedy_legacy__t1_m35__off",
+   "strategy": "objective_greedy_legacy",
+   "labels": {
+    "policy": "objective_greedy_legacy",
+    "cell": "t1_m35",
+    "targets": 1,
+    "ignition_minute": 35,
+    "recourse": "off"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 1,
+     "ignition_minute": 35
+    }
+   },
+   "recourse": null
+  },
+  {
+   "arm": "objective_greedy_legacy__t1_m35__fL30",
+   "strategy": "objective_greedy_legacy",
+   "labels": {
+    "policy": "objective_greedy_legacy",
+    "cell": "t1_m35",
+    "targets": 1,
+    "ignition_minute": 35,
+    "recourse": "fL30"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 1,
+     "ignition_minute": 35
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 30,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "objective_greedy_legacy__t1_m35__fL15",
+   "strategy": "objective_greedy_legacy",
+   "labels": {
+    "policy": "objective_greedy_legacy",
+    "cell": "t1_m35",
+    "targets": 1,
+    "ignition_minute": 35,
+    "recourse": "fL15"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 1,
+     "ignition_minute": 35
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 15,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "objective_greedy_legacy__t2_m05__off",
+   "strategy": "objective_greedy_legacy",
+   "labels": {
+    "policy": "objective_greedy_legacy",
+    "cell": "t2_m05",
+    "targets": 2,
+    "ignition_minute": 5,
+    "recourse": "off"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 2,
+     "ignition_minute": 5
+    }
+   },
+   "recourse": null
+  },
+  {
+   "arm": "objective_greedy_legacy__t2_m05__fL30",
+   "strategy": "objective_greedy_legacy",
+   "labels": {
+    "policy": "objective_greedy_legacy",
+    "cell": "t2_m05",
+    "targets": 2,
+    "ignition_minute": 5,
+    "recourse": "fL30"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 2,
+     "ignition_minute": 5
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 30,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "objective_greedy_legacy__t2_m05__fL15",
+   "strategy": "objective_greedy_legacy",
+   "labels": {
+    "policy": "objective_greedy_legacy",
+    "cell": "t2_m05",
+    "targets": 2,
+    "ignition_minute": 5,
+    "recourse": "fL15"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 2,
+     "ignition_minute": 5
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 15,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "objective_greedy_legacy__t2_m35__off",
+   "strategy": "objective_greedy_legacy",
+   "labels": {
+    "policy": "objective_greedy_legacy",
+    "cell": "t2_m35",
+    "targets": 2,
+    "ignition_minute": 35,
+    "recourse": "off"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 2,
+     "ignition_minute": 35
+    }
+   },
+   "recourse": null
+  },
+  {
+   "arm": "objective_greedy_legacy__t2_m35__fL30",
+   "strategy": "objective_greedy_legacy",
+   "labels": {
+    "policy": "objective_greedy_legacy",
+    "cell": "t2_m35",
+    "targets": 2,
+    "ignition_minute": 35,
+    "recourse": "fL30"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 2,
+     "ignition_minute": 35
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 30,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "objective_greedy_legacy__t2_m35__fL15",
+   "strategy": "objective_greedy_legacy",
+   "labels": {
+    "policy": "objective_greedy_legacy",
+    "cell": "t2_m35",
+    "targets": 2,
+    "ignition_minute": 35,
+    "recourse": "fL15"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 2,
+     "ignition_minute": 35
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 15,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "static_greedy__base__off",
+   "strategy": "static_greedy",
+   "labels": {
+    "policy": "static_greedy",
+    "cell": "base",
+    "targets": 0,
+    "ignition_minute": null,
+    "recourse": "off"
+   },
+   "scenario": null,
+   "recourse": null
+  },
+  {
+   "arm": "static_greedy__base__fL30",
+   "strategy": "static_greedy",
+   "labels": {
+    "policy": "static_greedy",
+    "cell": "base",
+    "targets": 0,
+    "ignition_minute": null,
+    "recourse": "fL30"
+   },
+   "scenario": null,
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 30,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "static_greedy__base__fL15",
+   "strategy": "static_greedy",
+   "labels": {
+    "policy": "static_greedy",
+    "cell": "base",
+    "targets": 0,
+    "ignition_minute": null,
+    "recourse": "fL15"
+   },
+   "scenario": null,
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 15,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "static_greedy__t1_m05__off",
+   "strategy": "static_greedy",
+   "labels": {
+    "policy": "static_greedy",
+    "cell": "t1_m05",
+    "targets": 1,
+    "ignition_minute": 5,
+    "recourse": "off"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 1,
+     "ignition_minute": 5
+    }
+   },
+   "recourse": null
+  },
+  {
+   "arm": "static_greedy__t1_m05__fL30",
+   "strategy": "static_greedy",
+   "labels": {
+    "policy": "static_greedy",
+    "cell": "t1_m05",
+    "targets": 1,
+    "ignition_minute": 5,
+    "recourse": "fL30"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 1,
+     "ignition_minute": 5
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 30,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "static_greedy__t1_m05__fL15",
+   "strategy": "static_greedy",
+   "labels": {
+    "policy": "static_greedy",
+    "cell": "t1_m05",
+    "targets": 1,
+    "ignition_minute": 5,
+    "recourse": "fL15"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 1,
+     "ignition_minute": 5
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 15,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "static_greedy__t1_m35__off",
+   "strategy": "static_greedy",
+   "labels": {
+    "policy": "static_greedy",
+    "cell": "t1_m35",
+    "targets": 1,
+    "ignition_minute": 35,
+    "recourse": "off"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 1,
+     "ignition_minute": 35
+    }
+   },
+   "recourse": null
+  },
+  {
+   "arm": "static_greedy__t1_m35__fL30",
+   "strategy": "static_greedy",
+   "labels": {
+    "policy": "static_greedy",
+    "cell": "t1_m35",
+    "targets": 1,
+    "ignition_minute": 35,
+    "recourse": "fL30"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 1,
+     "ignition_minute": 35
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 30,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "static_greedy__t1_m35__fL15",
+   "strategy": "static_greedy",
+   "labels": {
+    "policy": "static_greedy",
+    "cell": "t1_m35",
+    "targets": 1,
+    "ignition_minute": 35,
+    "recourse": "fL15"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 1,
+     "ignition_minute": 35
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 15,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "static_greedy__t2_m05__off",
+   "strategy": "static_greedy",
+   "labels": {
+    "policy": "static_greedy",
+    "cell": "t2_m05",
+    "targets": 2,
+    "ignition_minute": 5,
+    "recourse": "off"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 2,
+     "ignition_minute": 5
+    }
+   },
+   "recourse": null
+  },
+  {
+   "arm": "static_greedy__t2_m05__fL30",
+   "strategy": "static_greedy",
+   "labels": {
+    "policy": "static_greedy",
+    "cell": "t2_m05",
+    "targets": 2,
+    "ignition_minute": 5,
+    "recourse": "fL30"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 2,
+     "ignition_minute": 5
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 30,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "static_greedy__t2_m05__fL15",
+   "strategy": "static_greedy",
+   "labels": {
+    "policy": "static_greedy",
+    "cell": "t2_m05",
+    "targets": 2,
+    "ignition_minute": 5,
+    "recourse": "fL15"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 2,
+     "ignition_minute": 5
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 15,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "static_greedy__t2_m35__off",
+   "strategy": "static_greedy",
+   "labels": {
+    "policy": "static_greedy",
+    "cell": "t2_m35",
+    "targets": 2,
+    "ignition_minute": 35,
+    "recourse": "off"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 2,
+     "ignition_minute": 35
+    }
+   },
+   "recourse": null
+  },
+  {
+   "arm": "static_greedy__t2_m35__fL30",
+   "strategy": "static_greedy",
+   "labels": {
+    "policy": "static_greedy",
+    "cell": "t2_m35",
+    "targets": 2,
+    "ignition_minute": 35,
+    "recourse": "fL30"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 2,
+     "ignition_minute": 35
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 30,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "static_greedy__t2_m35__fL15",
+   "strategy": "static_greedy",
+   "labels": {
+    "policy": "static_greedy",
+    "cell": "t2_m35",
+    "targets": 2,
+    "ignition_minute": 35,
+    "recourse": "fL15"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 2,
+     "ignition_minute": 35
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 15,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "heuristic__base__off",
+   "strategy": "heuristic",
+   "labels": {
+    "policy": "heuristic",
+    "cell": "base",
+    "targets": 0,
+    "ignition_minute": null,
+    "recourse": "off"
+   },
+   "scenario": null,
+   "recourse": null
+  },
+  {
+   "arm": "heuristic__base__fL30",
+   "strategy": "heuristic",
+   "labels": {
+    "policy": "heuristic",
+    "cell": "base",
+    "targets": 0,
+    "ignition_minute": null,
+    "recourse": "fL30"
+   },
+   "scenario": null,
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 30,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "heuristic__base__fL15",
+   "strategy": "heuristic",
+   "labels": {
+    "policy": "heuristic",
+    "cell": "base",
+    "targets": 0,
+    "ignition_minute": null,
+    "recourse": "fL15"
+   },
+   "scenario": null,
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 15,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "heuristic__t1_m05__off",
+   "strategy": "heuristic",
+   "labels": {
+    "policy": "heuristic",
+    "cell": "t1_m05",
+    "targets": 1,
+    "ignition_minute": 5,
+    "recourse": "off"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 1,
+     "ignition_minute": 5
+    }
+   },
+   "recourse": null
+  },
+  {
+   "arm": "heuristic__t1_m05__fL30",
+   "strategy": "heuristic",
+   "labels": {
+    "policy": "heuristic",
+    "cell": "t1_m05",
+    "targets": 1,
+    "ignition_minute": 5,
+    "recourse": "fL30"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 1,
+     "ignition_minute": 5
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 30,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "heuristic__t1_m05__fL15",
+   "strategy": "heuristic",
+   "labels": {
+    "policy": "heuristic",
+    "cell": "t1_m05",
+    "targets": 1,
+    "ignition_minute": 5,
+    "recourse": "fL15"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 1,
+     "ignition_minute": 5
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 15,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "heuristic__t1_m35__off",
+   "strategy": "heuristic",
+   "labels": {
+    "policy": "heuristic",
+    "cell": "t1_m35",
+    "targets": 1,
+    "ignition_minute": 35,
+    "recourse": "off"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 1,
+     "ignition_minute": 35
+    }
+   },
+   "recourse": null
+  },
+  {
+   "arm": "heuristic__t1_m35__fL30",
+   "strategy": "heuristic",
+   "labels": {
+    "policy": "heuristic",
+    "cell": "t1_m35",
+    "targets": 1,
+    "ignition_minute": 35,
+    "recourse": "fL30"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 1,
+     "ignition_minute": 35
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 30,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "heuristic__t1_m35__fL15",
+   "strategy": "heuristic",
+   "labels": {
+    "policy": "heuristic",
+    "cell": "t1_m35",
+    "targets": 1,
+    "ignition_minute": 35,
+    "recourse": "fL15"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 1,
+     "ignition_minute": 35
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 15,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "heuristic__t2_m05__off",
+   "strategy": "heuristic",
+   "labels": {
+    "policy": "heuristic",
+    "cell": "t2_m05",
+    "targets": 2,
+    "ignition_minute": 5,
+    "recourse": "off"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 2,
+     "ignition_minute": 5
+    }
+   },
+   "recourse": null
+  },
+  {
+   "arm": "heuristic__t2_m05__fL30",
+   "strategy": "heuristic",
+   "labels": {
+    "policy": "heuristic",
+    "cell": "t2_m05",
+    "targets": 2,
+    "ignition_minute": 5,
+    "recourse": "fL30"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 2,
+     "ignition_minute": 5
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 30,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "heuristic__t2_m05__fL15",
+   "strategy": "heuristic",
+   "labels": {
+    "policy": "heuristic",
+    "cell": "t2_m05",
+    "targets": 2,
+    "ignition_minute": 5,
+    "recourse": "fL15"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 2,
+     "ignition_minute": 5
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 15,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "heuristic__t2_m35__off",
+   "strategy": "heuristic",
+   "labels": {
+    "policy": "heuristic",
+    "cell": "t2_m35",
+    "targets": 2,
+    "ignition_minute": 35,
+    "recourse": "off"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 2,
+     "ignition_minute": 35
+    }
+   },
+   "recourse": null
+  },
+  {
+   "arm": "heuristic__t2_m35__fL30",
+   "strategy": "heuristic",
+   "labels": {
+    "policy": "heuristic",
+    "cell": "t2_m35",
+    "targets": 2,
+    "ignition_minute": 35,
+    "recourse": "fL30"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 2,
+     "ignition_minute": 35
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 30,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  },
+  {
+   "arm": "heuristic__t2_m35__fL15",
+   "strategy": "heuristic",
+   "labels": {
+    "policy": "heuristic",
+    "cell": "t2_m35",
+    "targets": 2,
+    "ignition_minute": 35,
+    "recourse": "fL15"
+   },
+   "scenario": {
+    "hook": "scenario_hooks.initial_site_loss:InitialSiteLoss",
+    "params": {
+     "targets": 2,
+     "ignition_minute": 35
+    }
+   },
+   "recourse": {
+    "controller": "recourse.controller:ShelterRecourseController",
+    "params": {
+     "rule": "forecast",
+     "lead_minutes": 15,
+     "threshold": 0.5,
+     "check_interval": 5
+    }
+   }
+  }
+ ]
+}

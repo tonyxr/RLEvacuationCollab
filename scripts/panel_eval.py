@@ -33,6 +33,23 @@ Commands::
 Overrides for smoke tests and re-use of a production spec::
 
     --campaign runs/smoke_campaign --training runs/a runs/b --replications 1:2
+
+* **Exogenous scenario hooks.**  A spec (or one arm) may name
+  ``"scenario": {"hook": "scenario_hooks.module:Class", "params": {...}}``.
+  The hook edits the exogenous event schedule of each episode after
+  initialization and before the first transition, through the simulator's
+  own event list; it is applied identically for every strategy on a tape,
+  and its parameters and the digest of its package enter the episode key.
+  Jobs without a hook keep exactly the keys they had before hooks existed.
+  An arm with ``"scenario": null`` is the unstressed (paired base) arm.
+* **Recourse controllers.**  A spec (or one arm) may name
+  ``"recourse": {"controller": "recourse.module:Class", "params": {...}}``:
+  a decision rule that can order the evacuation of shelters about to be
+  overrun, used together with the arm's placement policy.  It is wired into
+  the live episode by ``recourse.runtime`` (no frozen file is edited); its
+  parameters and the digest of the ``recourse`` package enter the key of the
+  jobs that use it, and every other job keeps its key.  ``"recourse": null``
+  is the arm without recourse.
 """
 
 from __future__ import annotations
@@ -99,6 +116,8 @@ SPEC_FIELDS = {
     "tuning",
     "labels",
     "timeouts_s",
+    "scenario",
+    "recourse",
 }
 ARM_FIELDS = {
     "arm",
@@ -112,6 +131,8 @@ ARM_FIELDS = {
     "heavy",
     "optional",
     "note",
+    "scenario",
+    "recourse",
 }
 
 
@@ -222,6 +243,14 @@ def load_spec(path: Path, cli: argparse.Namespace | None = None) -> dict:
         if name in names:
             raise ValueError(f"duplicate arm {name!r}")
         names.add(name)
+        if arm.get("scenario") is not None:
+            scenario_hook(arm["scenario"])  # validates hook name and params
+        if arm.get("recourse") is not None:
+            recourse_controller(arm["recourse"])  # validates controller name and params
+    if spec.get("scenario") is not None:
+        scenario_hook(spec["scenario"])
+    if spec.get("recourse") is not None:
+        recourse_controller(spec["recourse"])
     spec = copy.deepcopy(spec)
     spec["_spec_path"] = str(path)
     spec["_spec_sha256"] = sha256_file(path)
@@ -441,6 +470,10 @@ class Job:
     external_source_sha256: str | None = None
     labels: dict = field(default_factory=dict)
     capture: list = field(default_factory=list)
+    scenario: dict | None = None
+    scenario_source_sha256: str | None = None
+    recourse: dict | None = None
+    recourse_source_sha256: str | None = None
 
     def store_paths(self, campaign: Path) -> tuple[Path, Path]:
         base = campaign / "episode_store" / self.key[:2]
@@ -470,6 +503,62 @@ def _external_source_sha(overrides: Mapping) -> str | None:
         raise FileNotFoundError(f"External comparator module not found: {module_name}")
     package = ROOT / module_name.split(".")[0]
     files = sorted(package.rglob("*.py")) if package.is_dir() else [candidate.with_suffix(".py")]
+    return sha256_text(canonical_json({str(f.relative_to(ROOT)): sha256_file(f) for f in files}))
+
+
+def _scenario_block(spec: dict, arm: dict) -> dict | None:
+    """The arm's scenario, else the spec's; ``"scenario": null`` in an arm is the base arm."""
+    if "scenario" in arm:
+        return arm["scenario"]
+    return spec.get("scenario")
+
+
+def scenario_hook(block: Mapping):
+    """Instantiate a scenario hook from ``{"hook": "module:Class", "params": {...}}``."""
+    import importlib
+
+    if not isinstance(block, Mapping) or set(block) - {"hook", "params"} or "hook" not in block:
+        raise ValueError(f"scenario must be {{'hook': 'module:Class', 'params': {{...}}}}, got {block!r}")
+    module_name, _, class_name = str(block["hook"]).partition(":")
+    if not module_name.startswith("scenario_hooks") or not class_name:
+        raise ValueError("scenario hooks live in the scenario_hooks package: 'scenario_hooks.module:Class'")
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    hook_class = getattr(importlib.import_module(module_name), class_name)
+    return hook_class(**dict(block.get("params") or {}))
+
+
+def _scenario_source_sha() -> str:
+    package = ROOT / "scenario_hooks"
+    files = sorted(package.rglob("*.py"))
+    return sha256_text(canonical_json({str(f.relative_to(ROOT)): sha256_file(f) for f in files}))
+
+
+def _recourse_block(spec: dict, arm: dict) -> dict | None:
+    """The arm's recourse controller, else the spec's; ``"recourse": null`` in an arm means none."""
+    if "recourse" in arm:
+        return arm["recourse"]
+    return spec.get("recourse")
+
+
+def recourse_controller(block: Mapping):
+    """Instantiate ``{"controller": "recourse.module:Class", "params": {...}}``."""
+    import importlib
+
+    if not isinstance(block, Mapping) or set(block) - {"controller", "params"} or "controller" not in block:
+        raise ValueError(f"recourse must be {{'controller': 'module:Class', 'params': {{...}}}}, got {block!r}")
+    module_name, _, class_name = str(block["controller"]).partition(":")
+    if not module_name.startswith("recourse") or not class_name:
+        raise ValueError("recourse controllers live in the recourse package: 'recourse.module:Class'")
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    controller_class = getattr(importlib.import_module(module_name), class_name)
+    return controller_class(**dict(block.get("params") or {}))
+
+
+def _recourse_source_sha() -> str:
+    package = ROOT / "recourse"
+    files = sorted(package.rglob("*.py"))
     return sha256_text(canonical_json({str(f.relative_to(ROOT)): sha256_file(f) for f in files}))
 
 
@@ -642,6 +731,16 @@ def build_jobs(spec: dict, source: TrainingSource, env: EvaluationEnvironment) -
                         checkpoint = source.policy_dirs[first] / "regional_policy.pt"
                         digest = None
                     external_sha = _external_source_sha(overrides) if strategy == "external" else None
+                    scenario_block = _scenario_block(spec, arm)
+                    recourse_block = _recourse_block(spec, arm)
+                    recourse = None
+                    if recourse_block is not None:
+                        controller = recourse_controller(recourse_block)
+                        recourse = {"controller": str(recourse_block["controller"]), "params": controller.params()}
+                    scenario = None
+                    if scenario_block is not None:
+                        hook = scenario_hook(scenario_block)
+                        scenario = {"hook": str(scenario_block["hook"]), "params": hook.params()}
                     scenario_seed = multicity_seed(env.launch_seed, scenario_stream + city.scale_rank, replication)
                     policy_seed = multicity_seed(env.launch_seed, policy_stream + city.scale_rank, replication)
                     identity = {
@@ -656,6 +755,17 @@ def build_jobs(spec: dict, source: TrainingSource, env: EvaluationEnvironment) -
                         "evaluation_code_sha256": evaluation_code_sha(),
                         "external_source_sha256": external_sha,
                     }
+                    scenario_sha = None
+                    if scenario is not None:
+                        # Only hooked jobs carry this field, so every job
+                        # without a hook keeps its pre-hook key.
+                        scenario_sha = _scenario_source_sha()
+                        identity["scenario"] = {**scenario, "source_sha256": scenario_sha}
+                    recourse_sha = None
+                    if recourse is not None:
+                        # Only jobs with a controller carry this field.
+                        recourse_sha = _recourse_source_sha()
+                        identity["recourse"] = {**recourse, "source_sha256": recourse_sha}
                     heavy = bool(arm.get("heavy", strategy in HEAVY_STRATEGIES))
                     # Planner matrices are always recorded for branching
                     # strategies (passive, free); other captures are opt-in
@@ -689,6 +799,10 @@ def build_jobs(spec: dict, source: TrainingSource, env: EvaluationEnvironment) -
                             external_source_sha256=external_sha,
                             labels={**dict(spec.get("labels") or {}), **dict(arm.get("labels") or {})},
                             capture=capture,
+                            scenario=scenario,
+                            scenario_source_sha256=scenario_sha,
+                            recourse=recourse,
+                            recourse_source_sha256=recourse_sha,
                         )
                     )
     keys = [job.key for job in jobs]
@@ -772,6 +886,104 @@ def _pid_alive(pid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+# ---------------------------------------------------------------------------
+# scenario runtime (exogenous schedule edits, applied once per episode)
+# ---------------------------------------------------------------------------
+class _ScenarioRuntime:
+    def __init__(self):
+        self.reset(None)
+
+    def reset(self, block: Mapping | None):
+        self.block = None if block is None else dict(block)
+        self.hook = None if block is None else scenario_hook(block)
+        self.applied = None
+        self.audit = None
+        self.closures: list[dict] = []
+        self.shelter_ds = None
+
+    def begin(self, core) -> None:
+        if self.hook is not None and self.applied is None:
+            self.applied = self.hook.apply(core)
+            # Closures are recorded for this episode's shelter store only, not
+            # for the cloned stores that in-process planner branches advance.
+            self.shelter_ds = core.shelterDS
+
+    def end(self, core) -> None:
+        if self.hook is not None and self.applied is not None and self.audit is None:
+            self.audit = self.hook.audit(core, self.applied, list(self.closures))
+
+    def result(self) -> dict | None:
+        if self.hook is None:
+            return None
+        if self.applied is None:
+            raise RuntimeError(f"scenario {self.block} was declared but never applied")
+        return {"applied": self.applied, "audit": self.audit, "closures": list(self.closures)}
+
+
+SCENARIO = _ScenarioRuntime()
+
+
+def _is_live_shelter_store(store) -> bool:
+    """True for the live episode's shelter store during its closure phase.
+
+    With the recourse runtime installed (every panel worker), a closure is live
+    when it happens in the live closure phase on the live core's store; this
+    stays correct after in-process branches restore new store objects. Without
+    it (unit tests of the scenario runtime alone) the store is compared with
+    the one seen when the episode began.
+    """
+    try:
+        from recourse.runtime import LIVE
+    except ImportError:  # pragma: no cover - package missing
+        LIVE = None
+    if LIVE is not None and LIVE.core is not None:
+        return bool(LIVE.in_live_closure) and store is getattr(LIVE.core, "shelterDS", None)
+    return store is SCENARIO.shelter_ds
+
+
+def install_scenario_runtime(core_class) -> None:
+    """Wrap the episode loop and the shelter-closure transaction (once per process).
+
+    ``Core.simulationEnumerator`` runs after initialization is complete and
+    before the first transition, so a hook sees the initial shelters and the
+    drawn exogenous schedule and edits it before anything consumes it.  The
+    closure wrapper only records what the unmodified transaction returns.
+    """
+    import ShelterDatabase as SD
+
+    original_loop = core_class.simulationEnumerator
+    if not getattr(original_loop, "_panel_scenario", False):
+        def wrapped_loop(self, *args, **kwargs):
+            SCENARIO.begin(self)
+            try:
+                return original_loop(self, *args, **kwargs)
+            finally:
+                SCENARIO.end(self)
+
+        wrapped_loop._panel_scenario = True
+        core_class.simulationEnumerator = wrapped_loop
+    original_close = SD.ShelterDS.closeHazardOverrunShelters
+    if not getattr(original_close, "_panel_scenario", False):
+        def wrapped_close(self, cellTracker, simulation_time=None):
+            transitions = original_close(self, cellTracker, simulation_time=simulation_time)
+            if SCENARIO.hook is not None and _is_live_shelter_store(self):
+                from recourse.transaction import ORDER_IN_PROGRESS
+
+                for shelter, released, danger in transitions:
+                    ordered = int(shelter.shelterID) in ORDER_IN_PROGRESS
+                    SCENARIO.closures.append({
+                        "shelter_id": int(shelter.shelterID),
+                        "minute": int(self.currentSimulationTime),
+                        "released_population": int(released),
+                        "danger": int(ORDER_IN_PROGRESS.get(int(shelter.shelterID), danger)),
+                        "ordered": bool(ordered),
+                    })
+            return transitions
+
+        wrapped_close._panel_scenario = True
+        SD.ShelterDS.closeHazardOverrunShelters = wrapped_close
 
 
 # ---------------------------------------------------------------------------
@@ -871,6 +1083,10 @@ def execute_job(job: dict, *, capture: Iterable[str] = ()) -> dict:
     artifacts = Path(job["artifacts_dir"])
     artifacts.mkdir(parents=True, exist_ok=True)
     CAPTURE.reset(job["strategy"], job.get("capture", ()))
+    SCENARIO.reset(job.get("scenario"))
+    from recourse.runtime import LIVE
+
+    LIVE.reset(None if job.get("recourse") is None else recourse_controller(job["recourse"]))
     row = _run_episode(
         replication=int(job["city_scenario_replication"]),
         machine="local",
@@ -892,7 +1108,17 @@ def execute_job(job: dict, *, capture: Iterable[str] = ()) -> dict:
     if CAPTURE.records.get("link_density"):
         captured["link_density"] = str(artifacts / "link_density.json")
         atomic_write_json(artifacts / "link_density.json", CAPTURE.records["link_density"])
-    return {"row": row, "captured": captured}
+    result = {"row": row, "captured": captured}
+    scenario = SCENARIO.result()
+    if scenario is not None:
+        atomic_write_json(artifacts / "scenario.json", scenario)
+        result["scenario"] = scenario
+    recourse = LIVE.result()
+    if recourse is not None:
+        atomic_write_json(artifacts / "recourse.json", recourse)
+        result["recourse"] = recourse
+    LIVE.reset(None)
+    return result
 
 
 def _worker_main(connection, settings: dict) -> None:  # pragma: no cover - subprocess
@@ -914,6 +1140,11 @@ def _worker_main(connection, settings: dict) -> None:  # pragma: no cover - subp
             import Core as core_module
             import RLBridge  # noqa: F401
             install_capture_hooks(("planner_matrices", "link_density"))
+            install_scenario_runtime(core_module.Core)
+            import PedestrianDatabase
+            import recourse.runtime
+
+            recourse.runtime.install(core_module.Core, RLBridge.RLBridge, PedestrianDatabase.PedDS)
             run = execute_job
         connection.send(("ready", os.getpid(), None))
     except Exception:
@@ -1120,6 +1351,10 @@ class Scheduler:
                                 "attempt": attempts.get(job.key, 0) + 1,
                             },
                         }
+                        if detail.get("scenario") is not None:
+                            record["scenario"] = detail["scenario"]
+                        if detail.get("recourse") is not None:
+                            record["recourse"] = detail["recourse"]
                         self.store.write(job, record)
                         self.store.release(job)
                         finished += 1
@@ -1324,6 +1559,54 @@ def command_status(cli) -> int:
     return 0
 
 
+def _scenario_columns(job: Job, record: dict) -> dict:
+    if job.scenario is None:
+        return {}
+    scenario = record.get("scenario")
+    if scenario is None:
+        raise RuntimeError(f"episode {job.key} declares a scenario but its record has none")
+    applied, audit = scenario["applied"], scenario["audit"] or {}
+    columns = {"scenario_hook": job.scenario["hook"]}
+    columns.update({f"scenario_{k}": v for k, v in job.scenario["params"].items()})
+    columns.update({
+        "scenario_targeted_shelter_ids": applied.get("targeted_shelter_ids"),
+        "scenario_expected_overrun_minute": applied.get("expected_overrun_minute"),
+        "scenario_all_targets_overrun": audit.get("all_targets_overrun"),
+        "scenario_targets_overrun_as_designed": audit.get("targets_overrun_as_designed"),
+        "scenario_first_target_overrun_minute": audit.get("first_target_overrun_minute"),
+        "scenario_released_population_at_targets": audit.get("released_population_at_targets"),
+        "scenario_other_overruns": audit.get("other_overruns"),
+    })
+    return columns
+
+
+def _recourse_columns(job: Job, record: dict) -> dict:
+    if job.recourse is None:
+        return {}
+    recourse = record.get("recourse")
+    if recourse is None:
+        raise RuntimeError(f"episode {job.key} declares a recourse controller but its record has none")
+    executed = list(recourse.get("executed") or [])
+    columns = {"recourse_controller": job.recourse["controller"]}
+    columns.update({f"recourse_{k}": v for k, v in job.recourse["params"].items()})
+    columns.update({
+        "recourse_orders": len(recourse.get("orders") or []),
+        "recourse_closed_shelters": len(executed),
+        "recourse_closed_shelter_ids": [int(r["shelter_id"]) for r in executed],
+        "recourse_order_minutes": [int(r["minute"]) for r in executed],
+        "recourse_order_dangers": [int(r["danger"]) for r in executed],
+        "recourse_first_order_minute": min((int(r["minute"]) for r in executed), default=None),
+        "recourse_occupants_evacuated": int(sum(int(r["occupants_evacuated"]) for r in executed)),
+        "recourse_reservations_released": int(sum(int(r["reservations_released"]) for r in executed)),
+        "recourse_false_alarm_regions": int(recourse.get("false_alarm_regions", 0)),
+        "recourse_checks": int(recourse.get("checks", 0)),
+        "recourse_forecasts": int(recourse.get("forecasts", 0)),
+        "recourse_evaluations": len(recourse.get("evaluations") or []),
+        "recourse_wall_s": float(recourse.get("wall_s", 0.0)),
+    })
+    return columns
+
+
 def command_collect(cli) -> int:
     import csv
 
@@ -1353,6 +1636,8 @@ def command_collect(cli) -> int:
             "panel_worker_peak_rss_mb": record["evaluation"]["worker_peak_rss_mb"],
             "captured_planner_matrices": record["captured"].get("planner_matrices", ""),
             "captured_link_density": record["captured"].get("link_density", ""),
+            **_scenario_columns(job, record),
+            **_recourse_columns(job, record),
             **{f"label_{k}": v for k, v in job.labels.items()},
         })
         rows.append(row)
