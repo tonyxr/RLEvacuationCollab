@@ -1,0 +1,51 @@
+{
+ "schema_version": 1,
+ "panel_id": "v66_ppo",
+ "description": "Stage 9 (T2-3). Realized-return PPO (B6 checkpoints, same network, prior and environment) on the spatial candidate design, tapes 1-80. Plain arms must equal v66_main.",
+ "campaign_dir": "runs/paper_v66",
+ "training": {
+  "sources": [
+   "runs/paper_v65_ppo_seed1",
+   "runs/paper_v65_ppo_seed2",
+   "runs/paper_v65_ppo_seed3"
+  ]
+ },
+ "cities": [
+  "state_college_pa",
+  "spokane_wa"
+ ],
+ "replications": [
+  1,
+  80
+ ],
+ "overrides": {
+  "candidateSamplingMode": "spatial_maximin",
+  "initialShelterMode": "demand_greedy",
+  "plannerShortlistObservation": "enriched"
+ },
+ "arms": [
+  {
+   "arm": "rl_ppo",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "arm": "objective_greedy"
+  },
+  {
+   "arm": "heuristic"
+  },
+  {
+   "arm": "static_greedy"
+  }
+ ],
+ "labels": {
+  "block": "v66",
+  "path": "A",
+  "stage": 9
+ }
+}

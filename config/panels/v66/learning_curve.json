@@ -1,0 +1,101 @@
+{
+ "schema_version": 1,
+ "panel_id": "learning_curve",
+ "description": "v66 re-issue on the spatial candidate design, same panel id. Fixed-panel learning curve: iteration checkpoints 0-40 of every seed on main-panel pairs 1-8 per city. Final policies are in the main panel.",
+ "campaign_dir": "runs/paper_v66",
+ "training": {
+  "sources": [
+   "runs/paper_v65_seed1",
+   "runs/paper_v65_seed2",
+   "runs/paper_v65_seed3"
+  ]
+ },
+ "cities": [
+  "state_college_pa",
+  "spokane_wa"
+ ],
+ "replications": [
+  1,
+  8
+ ],
+ "arms": [
+  {
+   "arm": "rl_iter000",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "checkpoint": "iteration:0",
+   "labels": {
+    "iteration": 0
+   }
+  },
+  {
+   "arm": "rl_iter010",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "checkpoint": "iteration:10",
+   "labels": {
+    "iteration": 10
+   }
+  },
+  {
+   "arm": "rl_iter020",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "checkpoint": "iteration:20",
+   "labels": {
+    "iteration": 20
+   }
+  },
+  {
+   "arm": "rl_iter030",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "checkpoint": "iteration:30",
+   "labels": {
+    "iteration": 30
+   }
+  },
+  {
+   "arm": "rl_iter040",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "checkpoint": "iteration:40",
+   "labels": {
+    "iteration": 40
+   }
+  },
+  {
+   "arm": "objective_greedy"
+  }
+ ],
+ "labels": {
+  "block": "learning_curve",
+  "v66_path": "A",
+  "v65_panel": "learning_curve"
+ },
+ "overrides": {
+  "candidateSamplingMode": "spatial_maximin",
+  "initialShelterMode": "demand_greedy",
+  "plannerShortlistObservation": "enriched"
+ }
+}

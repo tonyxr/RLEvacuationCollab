@@ -1,0 +1,68 @@
+{
+ "schema_version": 1,
+ "panel_id": "v66_smoke",
+ "description": "Stage 0 smoke: every new code path once (spatial candidates, demand-greedy initial shelters, below-sites defer prior, departure delay, enriched planner shortlist) on tape 1.",
+ "campaign_dir": "runs/paper_v66b",
+ "training": {
+  "sources": [
+   "runs/paper_v66_seed1",
+   "runs/paper_v66_seed2",
+   "runs/paper_v66_seed3"
+  ]
+ },
+ "cities": [
+  "state_college_pa"
+ ],
+ "replications": [
+  1,
+  1
+ ],
+ "overrides": {
+  "candidateSamplingMode": "spatial_maximin",
+  "initialShelterMode": "demand_greedy",
+  "plannerShortlistObservation": "enriched"
+ },
+ "arms": [
+  {
+   "arm": "objective_greedy"
+  },
+  {
+   "arm": "heuristic"
+  },
+  {
+   "arm": "objective_greedy__depart_20",
+   "strategy": "objective_greedy",
+   "overrides": {
+    "departureDelayMeanMinutes": 20.0
+   }
+  },
+  {
+   "arm": "rl",
+   "policies": [
+    1
+   ]
+  },
+  {
+   "arm": "rl_iter000_bs",
+   "strategy": "rl",
+   "policies": [
+    1
+   ],
+   "checkpoint": "iteration:0",
+   "overrides": {
+    "actorPriorDeferMode": "below_sites"
+   },
+   "labels": {
+    "iteration": 0
+   }
+  },
+  {
+   "arm": "belief_rollout"
+  }
+ ],
+ "labels": {
+  "block": "v66",
+  "path": "B",
+  "stage": 0
+ }
+}

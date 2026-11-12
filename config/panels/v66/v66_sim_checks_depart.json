@@ -1,0 +1,43 @@
+{
+ "schema_version": 1,
+ "panel_id": "v66_sim_checks_depart",
+ "description": "Stage 4 (T1-2). Link-density capture of panel sim_checks with departure delay (mean 20 minutes), for the validation table.",
+ "campaign_dir": "runs/paper_v66",
+ "training": {
+  "sources": [
+   "runs/paper_v65_seed1",
+   "runs/paper_v65_seed2",
+   "runs/paper_v65_seed3"
+  ]
+ },
+ "cities": [
+  "state_college_pa",
+  "spokane_wa"
+ ],
+ "replications": [
+  1,
+  5
+ ],
+ "overrides": {
+  "candidateSamplingMode": "spatial_maximin",
+  "initialShelterMode": "demand_greedy",
+  "plannerShortlistObservation": "enriched"
+ },
+ "capture": {
+  "link_density": true
+ },
+ "arms": [
+  {
+   "arm": "objective_greedy__depart_20",
+   "strategy": "objective_greedy",
+   "overrides": {
+    "departureDelayMeanMinutes": 20.0
+   }
+  }
+ ],
+ "labels": {
+  "block": "v66",
+  "path": "A",
+  "stage": 4
+ }
+}

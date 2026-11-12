@@ -1,0 +1,102 @@
+{
+ "schema_version": 1,
+ "panel_id": "v66_iter0",
+ "description": "Stage 2 (T1-4, T2-2). Gate G2: the iteration-0 actor with the below-sites defer prior must equal the index rule bit for bit. rl_iter000 keeps the v65.1 zero defer prior and shows the tie rule. rl_iter000_bs_search is the index rule with exactly the early search of rl_early_search (top 5 + defer, 4 belief futures, decisions 1-3).",
+ "campaign_dir": "runs/paper_v66",
+ "training": {
+  "sources": [
+   "runs/paper_v65_seed1",
+   "runs/paper_v65_seed2",
+   "runs/paper_v65_seed3"
+  ]
+ },
+ "cities": [
+  "state_college_pa",
+  "spokane_wa"
+ ],
+ "replications": [
+  1,
+  20
+ ],
+ "overrides": {
+  "candidateSamplingMode": "spatial_maximin",
+  "initialShelterMode": "demand_greedy",
+  "plannerShortlistObservation": "enriched"
+ },
+ "arms": [
+  {
+   "arm": "objective_greedy",
+   "note": "reused from v66_main"
+  },
+  {
+   "arm": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "note": "reused from v66_main"
+  },
+  {
+   "arm": "rl_early_search",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "note": "reused from main"
+  },
+  {
+   "arm": "rl_iter000",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "checkpoint": "iteration:0",
+   "labels": {
+    "iteration": 0,
+    "defer_prior": "zero"
+   }
+  },
+  {
+   "arm": "rl_iter000_bs",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "checkpoint": "iteration:0",
+   "overrides": {
+    "actorPriorDeferMode": "below_sites"
+   },
+   "labels": {
+    "iteration": 0,
+    "defer_prior": "below_sites"
+   }
+  },
+  {
+   "arm": "rl_iter000_bs_search",
+   "strategy": "rl_early_search",
+   "policies": [
+    1
+   ],
+   "checkpoint": "iteration:0",
+   "overrides": {
+    "actorPriorDeferMode": "below_sites"
+   },
+   "labels": {
+    "iteration": 0,
+    "defer_prior": "below_sites",
+    "search": "early"
+   }
+  }
+ ],
+ "labels": {
+  "block": "v66",
+  "path": "A",
+  "stage": 2
+ }
+}

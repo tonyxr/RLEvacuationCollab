@@ -1,0 +1,60 @@
+{
+ "schema_version": 1,
+ "panel_id": "v66_identity",
+ "description": "Stage 0 gate G0. The v66 code with every v66 option at its default (legacy candidates, legacy initial shelters, zero defer prior, raw planner shortlist, immediate departure) must reproduce the v65.1 main panel bit for bit on tapes 1-2 (cost and decision sequence).",
+ "campaign_dir": "runs/paper_v66",
+ "training": {
+  "sources": [
+   "runs/paper_v65_seed1",
+   "runs/paper_v65_seed2",
+   "runs/paper_v65_seed3"
+  ]
+ },
+ "cities": [
+  "state_college_pa",
+  "spokane_wa"
+ ],
+ "replications": [
+  1,
+  2
+ ],
+ "arms": [
+  {
+   "arm": "objective_greedy"
+  },
+  {
+   "arm": "objective_greedy_legacy"
+  },
+  {
+   "arm": "heuristic"
+  },
+  {
+   "arm": "static_greedy"
+  },
+  {
+   "arm": "initial_only"
+  },
+  {
+   "arm": "random"
+  },
+  {
+   "arm": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "arm": "rl_early_search",
+   "policies": [
+    1
+   ]
+  }
+ ],
+ "labels": {
+  "block": "v66",
+  "path": "A",
+  "stage": 0
+ }
+}

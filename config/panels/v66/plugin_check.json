@@ -1,0 +1,43 @@
+{
+ "schema_version": 1,
+ "panel_id": "plugin_check",
+ "description": "v66 re-issue on the spatial candidate design, same panel id. Plug-in path regression: the reference plug-in must reproduce objective_greedy bit for bit on real maps.",
+ "campaign_dir": "runs/paper_v66",
+ "training": {
+  "sources": [
+   "runs/paper_v65_seed1",
+   "runs/paper_v65_seed2",
+   "runs/paper_v65_seed3"
+  ]
+ },
+ "cities": [
+  "state_college_pa",
+  "spokane_wa"
+ ],
+ "replications": [
+  1,
+  2
+ ],
+ "arms": [
+  {
+   "arm": "objective_greedy"
+  },
+  {
+   "arm": "plugin_public_score_greedy",
+   "strategy": "external",
+   "overrides": {
+    "externalPolicy": "comparators.public_score_greedy:PublicScoreGreedy"
+   }
+  }
+ ],
+ "labels": {
+  "block": "plugin_check",
+  "v66_path": "A",
+  "v65_panel": "plugin_check"
+ },
+ "overrides": {
+  "candidateSamplingMode": "spatial_maximin",
+  "initialShelterMode": "demand_greedy",
+  "plannerShortlistObservation": "enriched"
+ }
+}

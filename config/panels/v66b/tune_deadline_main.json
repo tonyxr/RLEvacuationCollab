@@ -1,0 +1,84 @@
+{
+ "schema_version": 1,
+ "panel_id": "tune_deadline_main",
+ "description": "v66 re-issue on the spatial candidate design, same panel id. Deadline-greedy threshold tuning on validation tapes (streams 700/800, disjoint from held-out 500/600) in the training environment (compound regime). One-SE rule against never-defer.",
+ "campaign_dir": "runs/paper_v66b",
+ "training": {
+  "sources": [
+   "runs/paper_v66_seed1",
+   "runs/paper_v66_seed2",
+   "runs/paper_v66_seed3"
+  ]
+ },
+ "cities": [
+  "state_college_pa",
+  "spokane_wa"
+ ],
+ "replications": [
+  1,
+  10
+ ],
+ "seed_streams": {
+  "scenario": 700,
+  "policy": 800
+ },
+ "arms": [
+  {
+   "arm": "deadline_never",
+   "strategy": "deadline_greedy",
+   "overrides": {
+    "deadlineGreedyThreshold": -1e+30
+   }
+  },
+  {
+   "arm": "deadline_t02",
+   "strategy": "deadline_greedy",
+   "overrides": {
+    "deadlineGreedyThreshold": 0.2
+   }
+  },
+  {
+   "arm": "deadline_t04",
+   "strategy": "deadline_greedy",
+   "overrides": {
+    "deadlineGreedyThreshold": 0.4
+   }
+  },
+  {
+   "arm": "deadline_t06",
+   "strategy": "deadline_greedy",
+   "overrides": {
+    "deadlineGreedyThreshold": 0.6
+   }
+  },
+  {
+   "arm": "deadline_t08",
+   "strategy": "deadline_greedy",
+   "overrides": {
+    "deadlineGreedyThreshold": 0.8
+   }
+  }
+ ],
+ "tuning": {
+  "parameter": "deadlineGreedyThreshold",
+  "baseline_arm": "deadline_never",
+  "arm_values": {
+   "deadline_never": -1e+30,
+   "deadline_t02": 0.2,
+   "deadline_t04": 0.4,
+   "deadline_t06": 0.6,
+   "deadline_t08": 0.8
+  }
+ },
+ "labels": {
+  "block": "tuning",
+  "family": "compound",
+  "v66_path": "B",
+  "v65_panel": "tune_deadline_main"
+ },
+ "overrides": {
+  "candidateSamplingMode": "spatial_maximin",
+  "initialShelterMode": "demand_greedy",
+  "plannerShortlistObservation": "enriched"
+ }
+}

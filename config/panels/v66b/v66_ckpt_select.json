@@ -1,0 +1,157 @@
+{
+ "schema_version": 1,
+ "panel_id": "v66_ckpt_select",
+ "description": "Stage 7 (T2-8). Learning curve and checkpoint selection on validation tapes (streams 700/800, disjoint from the test streams 500/600). Rule: per seed, the iteration with the lowest mean J over the 20 validation tapes; ties go to the later iteration.",
+ "campaign_dir": "runs/paper_v66b",
+ "training": {
+  "sources": [
+   "runs/paper_v66_seed1",
+   "runs/paper_v66_seed2",
+   "runs/paper_v66_seed3"
+  ]
+ },
+ "cities": [
+  "state_college_pa",
+  "spokane_wa"
+ ],
+ "replications": [
+  1,
+  10
+ ],
+ "overrides": {
+  "candidateSamplingMode": "spatial_maximin",
+  "initialShelterMode": "demand_greedy",
+  "plannerShortlistObservation": "enriched"
+ },
+ "seed_streams": {
+  "scenario": 700,
+  "policy": 800
+ },
+ "arms": [
+  {
+   "arm": "objective_greedy"
+  },
+  {
+   "arm": "rl_iter000",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "checkpoint": "iteration:0",
+   "labels": {
+    "iteration": 0
+   }
+  },
+  {
+   "arm": "rl_iter005",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "checkpoint": "iteration:5",
+   "labels": {
+    "iteration": 5
+   }
+  },
+  {
+   "arm": "rl_iter010",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "checkpoint": "iteration:10",
+   "labels": {
+    "iteration": 10
+   }
+  },
+  {
+   "arm": "rl_iter015",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "checkpoint": "iteration:15",
+   "labels": {
+    "iteration": 15
+   }
+  },
+  {
+   "arm": "rl_iter020",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "checkpoint": "iteration:20",
+   "labels": {
+    "iteration": 20
+   }
+  },
+  {
+   "arm": "rl_iter025",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "checkpoint": "iteration:25",
+   "labels": {
+    "iteration": 25
+   }
+  },
+  {
+   "arm": "rl_iter030",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "checkpoint": "iteration:30",
+   "labels": {
+    "iteration": 30
+   }
+  },
+  {
+   "arm": "rl_iter035",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "checkpoint": "iteration:35",
+   "labels": {
+    "iteration": 35
+   }
+  },
+  {
+   "arm": "rl_iter040",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "checkpoint": "iteration:40",
+   "labels": {
+    "iteration": 40
+   }
+  }
+ ],
+ "labels": {
+  "block": "v66",
+  "path": "B",
+  "stage": 7
+ }
+}

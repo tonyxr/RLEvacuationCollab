@@ -1,0 +1,77 @@
+{
+ "schema_version": 1,
+ "panel_id": "v66_main",
+ "description": "Stage 1 (T1-1, decision gate G1). Every plain rule and the learned policy on the spatial candidate design. Tapes 1-20 are the v65 main tapes; tapes 21-80 are the B2 tapes and form the primary test sample. Search, planner and ablation arms are in panel main (tapes 1-20), whose plain arms are these episodes.",
+ "campaign_dir": "runs/paper_v66",
+ "training": {
+  "sources": [
+   "runs/paper_v65_seed1",
+   "runs/paper_v65_seed2",
+   "runs/paper_v65_seed3"
+  ]
+ },
+ "cities": [
+  "state_college_pa",
+  "spokane_wa"
+ ],
+ "replications": [
+  1,
+  80
+ ],
+ "overrides": {
+  "candidateSamplingMode": "spatial_maximin",
+  "initialShelterMode": "demand_greedy",
+  "plannerShortlistObservation": "enriched"
+ },
+ "arms": [
+  {
+   "arm": "objective_greedy"
+  },
+  {
+   "arm": "objective_greedy_legacy"
+  },
+  {
+   "arm": "deadline_greedy_tuned",
+   "strategy": "deadline_greedy",
+   "overrides": {
+    "deadlineGreedyThreshold": {
+     "$tuned": {
+      "spec": "config/panels/v66/tune_deadline_main.json"
+     }
+    }
+   }
+  },
+  {
+   "arm": "heuristic"
+  },
+  {
+   "arm": "hazard_weighted"
+  },
+  {
+   "arm": "random"
+  },
+  {
+   "arm": "initial_only"
+  },
+  {
+   "arm": "static_greedy"
+  },
+  {
+   "arm": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "arm": "accessibility_deficit",
+   "optional": true
+  }
+ ],
+ "labels": {
+  "block": "v66",
+  "path": "A",
+  "stage": 1
+ }
+}

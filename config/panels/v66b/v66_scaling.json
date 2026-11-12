@@ -1,0 +1,141 @@
+{
+ "schema_version": 1,
+ "panel_id": "v66_scaling",
+ "description": "Stage 5 (T2-9). Simulator and decision time against population, 1,000 to 10,000 people, at a constant 20% capacity surplus (token = 1.2 x population / 10). Corrects B7, whose 5,000 and 10,000 arms failed the N-1 reserve check.",
+ "campaign_dir": "runs/paper_v66b",
+ "training": {
+  "sources": [
+   "runs/paper_v66_seed1",
+   "runs/paper_v66_seed2",
+   "runs/paper_v66_seed3"
+  ]
+ },
+ "cities": [
+  "state_college_pa",
+  "spokane_wa"
+ ],
+ "replications": [
+  1,
+  2
+ ],
+ "overrides": {
+  "candidateSamplingMode": "spatial_maximin",
+  "initialShelterMode": "demand_greedy",
+  "plannerShortlistObservation": "enriched"
+ },
+ "arms": [
+  {
+   "arm": "objective_greedy_n1000",
+   "strategy": "objective_greedy",
+   "overrides": {
+    "pedVol": 1000,
+    "shelterCapacityToken": 120,
+    "shelterCapacitySurplus": 200
+   },
+   "labels": {
+    "population": 1000
+   }
+  },
+  {
+   "arm": "rl_n1000",
+   "strategy": "rl",
+   "policies": [
+    1
+   ],
+   "overrides": {
+    "pedVol": 1000,
+    "shelterCapacityToken": 120,
+    "shelterCapacitySurplus": 200
+   },
+   "labels": {
+    "population": 1000
+   }
+  },
+  {
+   "arm": "objective_greedy_n2500",
+   "strategy": "objective_greedy",
+   "overrides": {
+    "pedVol": 2500,
+    "shelterCapacityToken": 300,
+    "shelterCapacitySurplus": 500
+   },
+   "labels": {
+    "population": 2500
+   }
+  },
+  {
+   "arm": "rl_n2500",
+   "strategy": "rl",
+   "policies": [
+    1
+   ],
+   "overrides": {
+    "pedVol": 2500,
+    "shelterCapacityToken": 300,
+    "shelterCapacitySurplus": 500
+   },
+   "labels": {
+    "population": 2500
+   }
+  },
+  {
+   "arm": "objective_greedy_n5000",
+   "strategy": "objective_greedy",
+   "overrides": {
+    "pedVol": 5000,
+    "shelterCapacityToken": 600,
+    "shelterCapacitySurplus": 1000
+   },
+   "labels": {
+    "population": 5000
+   }
+  },
+  {
+   "arm": "rl_n5000",
+   "strategy": "rl",
+   "policies": [
+    1
+   ],
+   "overrides": {
+    "pedVol": 5000,
+    "shelterCapacityToken": 600,
+    "shelterCapacitySurplus": 1000
+   },
+   "labels": {
+    "population": 5000
+   }
+  },
+  {
+   "arm": "objective_greedy_n10000",
+   "strategy": "objective_greedy",
+   "overrides": {
+    "pedVol": 10000,
+    "shelterCapacityToken": 1200,
+    "shelterCapacitySurplus": 2000
+   },
+   "labels": {
+    "population": 10000
+   }
+  },
+  {
+   "arm": "rl_n10000",
+   "strategy": "rl",
+   "policies": [
+    1
+   ],
+   "overrides": {
+    "pedVol": 10000,
+    "shelterCapacityToken": 1200,
+    "shelterCapacitySurplus": 2000
+   },
+   "labels": {
+    "population": 10000
+   }
+  }
+ ],
+ "labels": {
+  "block": "v66",
+  "path": "B",
+  "stage": 5
+ }
+}

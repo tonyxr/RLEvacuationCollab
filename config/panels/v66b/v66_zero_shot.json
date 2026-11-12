@@ -1,0 +1,59 @@
+{
+ "schema_version": 1,
+ "panel_id": "v66_zero_shot",
+ "description": "Stage 3 (T1-3). Zero-shot transfer on the spatial candidate design: Seattle and Chicago, 20 tapes each, no retraining.",
+ "campaign_dir": "runs/paper_v66b",
+ "training": {
+  "sources": [
+   "runs/paper_v66_seed1",
+   "runs/paper_v66_seed2",
+   "runs/paper_v66_seed3"
+  ]
+ },
+ "cities": [
+  "seattle_wa",
+  "chicago_il"
+ ],
+ "replications": [
+  1,
+  20
+ ],
+ "overrides": {
+  "candidateSamplingMode": "spatial_maximin",
+  "initialShelterMode": "demand_greedy",
+  "plannerShortlistObservation": "enriched"
+ },
+ "arms": [
+  {
+   "arm": "objective_greedy"
+  },
+  {
+   "arm": "heuristic"
+  },
+  {
+   "arm": "hazard_weighted"
+  },
+  {
+   "arm": "static_greedy"
+  },
+  {
+   "arm": "initial_only"
+  },
+  {
+   "arm": "random"
+  },
+  {
+   "arm": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ]
+  }
+ ],
+ "labels": {
+  "block": "v66",
+  "path": "B",
+  "stage": 3
+ }
+}

@@ -1,0 +1,110 @@
+{
+ "schema_version": 1,
+ "panel_id": "main",
+ "description": "v66 re-issue on the spatial candidate design, same panel id. Main panel (H1-H6, H8): 20 held-out CRN pairs per training city, multicity evaluation streams 500/600.",
+ "campaign_dir": "runs/paper_v66b",
+ "training": {
+  "sources": [
+   "runs/paper_v66_seed1",
+   "runs/paper_v66_seed2",
+   "runs/paper_v66_seed3"
+  ]
+ },
+ "cities": [
+  "state_college_pa",
+  "spokane_wa"
+ ],
+ "replications": [
+  1,
+  20
+ ],
+ "arms": [
+  {
+   "arm": "objective_greedy",
+   "note": "primary comparator (front-aware public score)"
+  },
+  {
+   "arm": "objective_greedy_legacy",
+   "note": "overrun-blind ablation (H5)"
+  },
+  {
+   "arm": "deadline_greedy_tuned",
+   "strategy": "deadline_greedy",
+   "overrides": {
+    "deadlineGreedyThreshold": {
+     "$tuned": {
+      "spec": "config/panels/v66b/tune_deadline_main.json"
+     }
+    }
+   }
+  },
+  {
+   "arm": "heuristic"
+  },
+  {
+   "arm": "random"
+  },
+  {
+   "arm": "initial_only"
+  },
+  {
+   "arm": "static_greedy"
+  },
+  {
+   "arm": "belief_rollout",
+   "note": "planner (H3); planner matrices captured for Fig. 9"
+  },
+  {
+   "arm": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "arm": "rl_forecast_ablated",
+   "policies": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "arm": "rl_precommit",
+   "policies": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "arm": "rl_early_search",
+   "policies": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "arm": "hazard_weighted",
+   "optional": true,
+   "note": "appendix heuristic"
+  },
+  {
+   "arm": "accessibility_deficit",
+   "optional": true,
+   "note": "appendix heuristic"
+  }
+ ],
+ "labels": {
+  "block": "main",
+  "v66_path": "B",
+  "v65_panel": "main"
+ },
+ "overrides": {
+  "candidateSamplingMode": "spatial_maximin",
+  "initialShelterMode": "demand_greedy",
+  "plannerShortlistObservation": "enriched"
+ }
+}

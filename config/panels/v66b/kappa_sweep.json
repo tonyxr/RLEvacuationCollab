@@ -1,0 +1,246 @@
+{
+ "schema_version": 1,
+ "panel_id": "kappa_sweep",
+ "description": "v66 re-issue on the spatial candidate design, same panel id. Robustness to the casualty price kappa in {1, 2, 4}. kappa = 2 arms equal main-panel episodes. RL was trained at kappa = 2.",
+ "campaign_dir": "runs/paper_v66b",
+ "training": {
+  "sources": [
+   "runs/paper_v66_seed1",
+   "runs/paper_v66_seed2",
+   "runs/paper_v66_seed3"
+  ]
+ },
+ "cities": [
+  "state_college_pa",
+  "spokane_wa"
+ ],
+ "replications": [
+  1,
+  10
+ ],
+ "arms": [
+  {
+   "arm": "objective_greedy_k1",
+   "strategy": "objective_greedy",
+   "overrides": {
+    "casualtyPriorityKappa": 1.0
+   },
+   "labels": {
+    "kappa": 1.0,
+    "base_arm": "objective_greedy"
+   }
+  },
+  {
+   "arm": "heuristic_k1",
+   "strategy": "heuristic",
+   "overrides": {
+    "casualtyPriorityKappa": 1.0
+   },
+   "labels": {
+    "kappa": 1.0,
+    "base_arm": "heuristic"
+   }
+  },
+  {
+   "arm": "initial_only_k1",
+   "strategy": "initial_only",
+   "overrides": {
+    "casualtyPriorityKappa": 1.0
+   },
+   "labels": {
+    "kappa": 1.0,
+    "base_arm": "initial_only"
+   }
+  },
+  {
+   "arm": "static_greedy_k1",
+   "strategy": "static_greedy",
+   "overrides": {
+    "casualtyPriorityKappa": 1.0
+   },
+   "labels": {
+    "kappa": 1.0,
+    "base_arm": "static_greedy"
+   }
+  },
+  {
+   "arm": "random_k1",
+   "strategy": "random",
+   "overrides": {
+    "casualtyPriorityKappa": 1.0
+   },
+   "labels": {
+    "kappa": 1.0,
+    "base_arm": "random"
+   }
+  },
+  {
+   "arm": "rl_k1",
+   "strategy": "rl",
+   "overrides": {
+    "casualtyPriorityKappa": 1.0
+   },
+   "labels": {
+    "kappa": 1.0,
+    "base_arm": "rl"
+   },
+   "policies": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "arm": "objective_greedy_k2",
+   "strategy": "objective_greedy",
+   "overrides": {
+    "casualtyPriorityKappa": 2.0
+   },
+   "labels": {
+    "kappa": 2.0,
+    "base_arm": "objective_greedy"
+   }
+  },
+  {
+   "arm": "heuristic_k2",
+   "strategy": "heuristic",
+   "overrides": {
+    "casualtyPriorityKappa": 2.0
+   },
+   "labels": {
+    "kappa": 2.0,
+    "base_arm": "heuristic"
+   }
+  },
+  {
+   "arm": "initial_only_k2",
+   "strategy": "initial_only",
+   "overrides": {
+    "casualtyPriorityKappa": 2.0
+   },
+   "labels": {
+    "kappa": 2.0,
+    "base_arm": "initial_only"
+   }
+  },
+  {
+   "arm": "static_greedy_k2",
+   "strategy": "static_greedy",
+   "overrides": {
+    "casualtyPriorityKappa": 2.0
+   },
+   "labels": {
+    "kappa": 2.0,
+    "base_arm": "static_greedy"
+   }
+  },
+  {
+   "arm": "random_k2",
+   "strategy": "random",
+   "overrides": {
+    "casualtyPriorityKappa": 2.0
+   },
+   "labels": {
+    "kappa": 2.0,
+    "base_arm": "random"
+   }
+  },
+  {
+   "arm": "rl_k2",
+   "strategy": "rl",
+   "overrides": {
+    "casualtyPriorityKappa": 2.0
+   },
+   "labels": {
+    "kappa": 2.0,
+    "base_arm": "rl"
+   },
+   "policies": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "arm": "objective_greedy_k4",
+   "strategy": "objective_greedy",
+   "overrides": {
+    "casualtyPriorityKappa": 4.0
+   },
+   "labels": {
+    "kappa": 4.0,
+    "base_arm": "objective_greedy"
+   }
+  },
+  {
+   "arm": "heuristic_k4",
+   "strategy": "heuristic",
+   "overrides": {
+    "casualtyPriorityKappa": 4.0
+   },
+   "labels": {
+    "kappa": 4.0,
+    "base_arm": "heuristic"
+   }
+  },
+  {
+   "arm": "initial_only_k4",
+   "strategy": "initial_only",
+   "overrides": {
+    "casualtyPriorityKappa": 4.0
+   },
+   "labels": {
+    "kappa": 4.0,
+    "base_arm": "initial_only"
+   }
+  },
+  {
+   "arm": "static_greedy_k4",
+   "strategy": "static_greedy",
+   "overrides": {
+    "casualtyPriorityKappa": 4.0
+   },
+   "labels": {
+    "kappa": 4.0,
+    "base_arm": "static_greedy"
+   }
+  },
+  {
+   "arm": "random_k4",
+   "strategy": "random",
+   "overrides": {
+    "casualtyPriorityKappa": 4.0
+   },
+   "labels": {
+    "kappa": 4.0,
+    "base_arm": "random"
+   }
+  },
+  {
+   "arm": "rl_k4",
+   "strategy": "rl",
+   "overrides": {
+    "casualtyPriorityKappa": 4.0
+   },
+   "labels": {
+    "kappa": 4.0,
+    "base_arm": "rl"
+   },
+   "policies": [
+    1,
+    2,
+    3
+   ]
+  }
+ ],
+ "labels": {
+  "block": "kappa_sweep",
+  "v66_path": "B",
+  "v65_panel": "kappa_sweep"
+ },
+ "overrides": {
+  "candidateSamplingMode": "spatial_maximin",
+  "initialShelterMode": "demand_greedy",
+  "plannerShortlistObservation": "enriched"
+ }
+}

@@ -1,0 +1,40 @@
+{
+ "schema_version": 1,
+ "panel_id": "g2_seed1",
+ "description": "v66 re-issue on the spatial candidate design, same panel id. Gate G2 (Nov 1): seed 1 vs the front-aware greedy on the 20 main-panel pairs per city. Every episode is shared with the main panel.",
+ "campaign_dir": "runs/paper_v66b",
+ "training": {
+  "sources": [
+   "runs/paper_v66_seed1"
+  ]
+ },
+ "cities": [
+  "state_college_pa",
+  "spokane_wa"
+ ],
+ "replications": [
+  1,
+  20
+ ],
+ "arms": [
+  {
+   "arm": "objective_greedy"
+  },
+  {
+   "arm": "rl",
+   "policies": [
+    1
+   ]
+  }
+ ],
+ "labels": {
+  "block": "g2",
+  "v66_path": "B",
+  "v65_panel": "g2_seed1"
+ },
+ "overrides": {
+  "candidateSamplingMode": "spatial_maximin",
+  "initialShelterMode": "demand_greedy",
+  "plannerShortlistObservation": "enriched"
+ }
+}

@@ -1,0 +1,438 @@
+{
+ "schema_version": 1,
+ "panel_id": "v66_sensitivity",
+ "description": "Stage 4 (T1-2, T2-5). One-at-a-time sensitivity on main tapes 1-10: fire spread x0.5 and x2, panic rate 0.25 and 0.75, departure delay with mean 10 and 20 minutes (truncated Weibull, shape 1.5, at most 90 minutes). The learned policy was trained without departure delay.",
+ "campaign_dir": "runs/paper_v66",
+ "training": {
+  "sources": [
+   "runs/paper_v65_seed1",
+   "runs/paper_v65_seed2",
+   "runs/paper_v65_seed3"
+  ]
+ },
+ "cities": [
+  "state_college_pa",
+  "spokane_wa"
+ ],
+ "replications": [
+  1,
+  10
+ ],
+ "overrides": {
+  "candidateSamplingMode": "spatial_maximin",
+  "initialShelterMode": "demand_greedy",
+  "plannerShortlistObservation": "enriched"
+ },
+ "arms": [
+  {
+   "arm": "objective_greedy__spread_half",
+   "strategy": "objective_greedy",
+   "overrides": {
+    "hazardSpreadSpeedMPerMinute": 16.666666666666668
+   },
+   "labels": {
+    "policy": "objective_greedy",
+    "setting": "spread_half"
+   }
+  },
+  {
+   "arm": "heuristic__spread_half",
+   "strategy": "heuristic",
+   "overrides": {
+    "hazardSpreadSpeedMPerMinute": 16.666666666666668
+   },
+   "labels": {
+    "policy": "heuristic",
+    "setting": "spread_half"
+   }
+  },
+  {
+   "arm": "static_greedy__spread_half",
+   "strategy": "static_greedy",
+   "overrides": {
+    "hazardSpreadSpeedMPerMinute": 16.666666666666668
+   },
+   "labels": {
+    "policy": "static_greedy",
+    "setting": "spread_half"
+   }
+  },
+  {
+   "arm": "initial_only__spread_half",
+   "strategy": "initial_only",
+   "overrides": {
+    "hazardSpreadSpeedMPerMinute": 16.666666666666668
+   },
+   "labels": {
+    "policy": "initial_only",
+    "setting": "spread_half"
+   }
+  },
+  {
+   "arm": "rl__spread_half",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "overrides": {
+    "hazardSpreadSpeedMPerMinute": 16.666666666666668
+   },
+   "labels": {
+    "policy": "rl",
+    "setting": "spread_half"
+   }
+  },
+  {
+   "arm": "objective_greedy__spread_double",
+   "strategy": "objective_greedy",
+   "overrides": {
+    "hazardSpreadSpeedMPerMinute": 66.66666666666667
+   },
+   "labels": {
+    "policy": "objective_greedy",
+    "setting": "spread_double"
+   }
+  },
+  {
+   "arm": "heuristic__spread_double",
+   "strategy": "heuristic",
+   "overrides": {
+    "hazardSpreadSpeedMPerMinute": 66.66666666666667
+   },
+   "labels": {
+    "policy": "heuristic",
+    "setting": "spread_double"
+   }
+  },
+  {
+   "arm": "static_greedy__spread_double",
+   "strategy": "static_greedy",
+   "overrides": {
+    "hazardSpreadSpeedMPerMinute": 66.66666666666667
+   },
+   "labels": {
+    "policy": "static_greedy",
+    "setting": "spread_double"
+   }
+  },
+  {
+   "arm": "initial_only__spread_double",
+   "strategy": "initial_only",
+   "overrides": {
+    "hazardSpreadSpeedMPerMinute": 66.66666666666667
+   },
+   "labels": {
+    "policy": "initial_only",
+    "setting": "spread_double"
+   }
+  },
+  {
+   "arm": "rl__spread_double",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "overrides": {
+    "hazardSpreadSpeedMPerMinute": 66.66666666666667
+   },
+   "labels": {
+    "policy": "rl",
+    "setting": "spread_double"
+   }
+  },
+  {
+   "arm": "objective_greedy__panic_low",
+   "strategy": "objective_greedy",
+   "overrides": {
+    "panicRate": 0.25
+   },
+   "labels": {
+    "policy": "objective_greedy",
+    "setting": "panic_low"
+   }
+  },
+  {
+   "arm": "heuristic__panic_low",
+   "strategy": "heuristic",
+   "overrides": {
+    "panicRate": 0.25
+   },
+   "labels": {
+    "policy": "heuristic",
+    "setting": "panic_low"
+   }
+  },
+  {
+   "arm": "static_greedy__panic_low",
+   "strategy": "static_greedy",
+   "overrides": {
+    "panicRate": 0.25
+   },
+   "labels": {
+    "policy": "static_greedy",
+    "setting": "panic_low"
+   }
+  },
+  {
+   "arm": "initial_only__panic_low",
+   "strategy": "initial_only",
+   "overrides": {
+    "panicRate": 0.25
+   },
+   "labels": {
+    "policy": "initial_only",
+    "setting": "panic_low"
+   }
+  },
+  {
+   "arm": "rl__panic_low",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "overrides": {
+    "panicRate": 0.25
+   },
+   "labels": {
+    "policy": "rl",
+    "setting": "panic_low"
+   }
+  },
+  {
+   "arm": "objective_greedy__panic_high",
+   "strategy": "objective_greedy",
+   "overrides": {
+    "panicRate": 0.75
+   },
+   "labels": {
+    "policy": "objective_greedy",
+    "setting": "panic_high"
+   }
+  },
+  {
+   "arm": "heuristic__panic_high",
+   "strategy": "heuristic",
+   "overrides": {
+    "panicRate": 0.75
+   },
+   "labels": {
+    "policy": "heuristic",
+    "setting": "panic_high"
+   }
+  },
+  {
+   "arm": "static_greedy__panic_high",
+   "strategy": "static_greedy",
+   "overrides": {
+    "panicRate": 0.75
+   },
+   "labels": {
+    "policy": "static_greedy",
+    "setting": "panic_high"
+   }
+  },
+  {
+   "arm": "initial_only__panic_high",
+   "strategy": "initial_only",
+   "overrides": {
+    "panicRate": 0.75
+   },
+   "labels": {
+    "policy": "initial_only",
+    "setting": "panic_high"
+   }
+  },
+  {
+   "arm": "rl__panic_high",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "overrides": {
+    "panicRate": 0.75
+   },
+   "labels": {
+    "policy": "rl",
+    "setting": "panic_high"
+   }
+  },
+  {
+   "arm": "objective_greedy__depart_10",
+   "strategy": "objective_greedy",
+   "overrides": {
+    "departureDelayMeanMinutes": 10.0
+   },
+   "labels": {
+    "policy": "objective_greedy",
+    "setting": "depart_10"
+   }
+  },
+  {
+   "arm": "heuristic__depart_10",
+   "strategy": "heuristic",
+   "overrides": {
+    "departureDelayMeanMinutes": 10.0
+   },
+   "labels": {
+    "policy": "heuristic",
+    "setting": "depart_10"
+   }
+  },
+  {
+   "arm": "static_greedy__depart_10",
+   "strategy": "static_greedy",
+   "overrides": {
+    "departureDelayMeanMinutes": 10.0
+   },
+   "labels": {
+    "policy": "static_greedy",
+    "setting": "depart_10"
+   }
+  },
+  {
+   "arm": "initial_only__depart_10",
+   "strategy": "initial_only",
+   "overrides": {
+    "departureDelayMeanMinutes": 10.0
+   },
+   "labels": {
+    "policy": "initial_only",
+    "setting": "depart_10"
+   }
+  },
+  {
+   "arm": "rl__depart_10",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "overrides": {
+    "departureDelayMeanMinutes": 10.0
+   },
+   "labels": {
+    "policy": "rl",
+    "setting": "depart_10"
+   }
+  },
+  {
+   "arm": "objective_greedy__depart_20",
+   "strategy": "objective_greedy",
+   "overrides": {
+    "departureDelayMeanMinutes": 20.0
+   },
+   "labels": {
+    "policy": "objective_greedy",
+    "setting": "depart_20"
+   }
+  },
+  {
+   "arm": "heuristic__depart_20",
+   "strategy": "heuristic",
+   "overrides": {
+    "departureDelayMeanMinutes": 20.0
+   },
+   "labels": {
+    "policy": "heuristic",
+    "setting": "depart_20"
+   }
+  },
+  {
+   "arm": "static_greedy__depart_20",
+   "strategy": "static_greedy",
+   "overrides": {
+    "departureDelayMeanMinutes": 20.0
+   },
+   "labels": {
+    "policy": "static_greedy",
+    "setting": "depart_20"
+   }
+  },
+  {
+   "arm": "initial_only__depart_20",
+   "strategy": "initial_only",
+   "overrides": {
+    "departureDelayMeanMinutes": 20.0
+   },
+   "labels": {
+    "policy": "initial_only",
+    "setting": "depart_20"
+   }
+  },
+  {
+   "arm": "rl__depart_20",
+   "strategy": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "overrides": {
+    "departureDelayMeanMinutes": 20.0
+   },
+   "labels": {
+    "policy": "rl",
+    "setting": "depart_20"
+   }
+  },
+  {
+   "arm": "objective_greedy",
+   "labels": {
+    "policy": "objective_greedy",
+    "setting": "base"
+   },
+   "note": "reused from v66_main"
+  },
+  {
+   "arm": "heuristic",
+   "labels": {
+    "policy": "heuristic",
+    "setting": "base"
+   },
+   "note": "reused from v66_main"
+  },
+  {
+   "arm": "static_greedy",
+   "labels": {
+    "policy": "static_greedy",
+    "setting": "base"
+   },
+   "note": "reused from v66_main"
+  },
+  {
+   "arm": "initial_only",
+   "labels": {
+    "policy": "initial_only",
+    "setting": "base"
+   },
+   "note": "reused from v66_main"
+  },
+  {
+   "arm": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "labels": {
+    "policy": "rl",
+    "setting": "base"
+   },
+   "note": "reused from v66_main"
+  }
+ ],
+ "labels": {
+  "block": "v66",
+  "path": "A",
+  "stage": 4
+ }
+}

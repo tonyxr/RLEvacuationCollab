@@ -1,0 +1,79 @@
+{
+ "schema_version": 1,
+ "panel_id": "v66_planner",
+ "description": "Stage 6 (T2-1). The v66 design ranks the planner's shortlist on the full index score; belief_rollout_raw restores the v65.1 shortlist (no debt term) on tapes 1-5 to document the change. The optional arm searches every decision with the index rule (iteration-0 actor, below-sites prior) over its top 10 sites plus defer on 8 belief futures.",
+ "campaign_dir": "runs/paper_v66b",
+ "training": {
+  "sources": [
+   "runs/paper_v66_seed1",
+   "runs/paper_v66_seed2",
+   "runs/paper_v66_seed3"
+  ]
+ },
+ "cities": [
+  "state_college_pa",
+  "spokane_wa"
+ ],
+ "replications": [
+  1,
+  5
+ ],
+ "overrides": {
+  "candidateSamplingMode": "spatial_maximin",
+  "initialShelterMode": "demand_greedy",
+  "plannerShortlistObservation": "enriched"
+ },
+ "arms": [
+  {
+   "arm": "objective_greedy",
+   "note": "reused from v66_main"
+  },
+  {
+   "arm": "belief_rollout",
+   "note": "reused from main"
+  },
+  {
+   "arm": "rl_early_search",
+   "policies": [
+    1,
+    2,
+    3
+   ],
+   "note": "reused from main"
+  },
+  {
+   "arm": "belief_rollout_raw",
+   "strategy": "belief_rollout",
+   "overrides": {
+    "plannerShortlistObservation": "raw"
+   },
+   "labels": {
+    "planner": "v65.1 shortlist"
+   }
+  },
+  {
+   "arm": "rl_iter000_bs_fullsearch",
+   "strategy": "rl_early_search",
+   "policies": [
+    1
+   ],
+   "checkpoint": "iteration:0",
+   "overrides": {
+    "actorPriorDeferMode": "below_sites",
+    "rlEarlySearchDecisions": 99,
+    "rlEarlySearchTopK": 10,
+    "rlEarlySearchFutures": 8
+   },
+   "labels": {
+    "iteration": 0,
+    "search": "every decision, top 10 + defer, 8 futures"
+   },
+   "optional": true
+  }
+ ],
+ "labels": {
+  "block": "v66",
+  "path": "B",
+  "stage": 6
+ }
+}

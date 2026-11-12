@@ -1,0 +1,165 @@
+{
+ "schema_version": 1,
+ "panel_id": "capacity_sweep",
+ "description": "v66 re-issue on the spatial candidate design, same panel id. H9: value of sequential placement vs capacity-arrival interval. 8 tokens; the last decision is at 8 x interval <= 180 min, so intervals above 22 min are infeasible (30 min was dropped). The 15-min arms equal main-panel episodes.",
+ "campaign_dir": "runs/paper_v66b",
+ "training": {
+  "sources": [
+   "runs/paper_v66_seed1",
+   "runs/paper_v66_seed2",
+   "runs/paper_v66_seed3"
+  ]
+ },
+ "cities": [
+  "state_college_pa",
+  "spokane_wa"
+ ],
+ "replications": [
+  1,
+  10
+ ],
+ "arms": [
+  {
+   "arm": "objective_greedy_i05",
+   "strategy": "objective_greedy",
+   "overrides": {
+    "shelterActionInterval": 5
+   },
+   "labels": {
+    "interval_min": 5,
+    "base_arm": "objective_greedy"
+   }
+  },
+  {
+   "arm": "static_greedy_i05",
+   "strategy": "static_greedy",
+   "overrides": {
+    "shelterActionInterval": 5
+   },
+   "labels": {
+    "interval_min": 5,
+    "base_arm": "static_greedy"
+   }
+  },
+  {
+   "arm": "initial_only_i05",
+   "strategy": "initial_only",
+   "overrides": {
+    "shelterActionInterval": 5
+   },
+   "labels": {
+    "interval_min": 5,
+    "base_arm": "initial_only"
+   }
+  },
+  {
+   "arm": "objective_greedy_i10",
+   "strategy": "objective_greedy",
+   "overrides": {
+    "shelterActionInterval": 10
+   },
+   "labels": {
+    "interval_min": 10,
+    "base_arm": "objective_greedy"
+   }
+  },
+  {
+   "arm": "static_greedy_i10",
+   "strategy": "static_greedy",
+   "overrides": {
+    "shelterActionInterval": 10
+   },
+   "labels": {
+    "interval_min": 10,
+    "base_arm": "static_greedy"
+   }
+  },
+  {
+   "arm": "initial_only_i10",
+   "strategy": "initial_only",
+   "overrides": {
+    "shelterActionInterval": 10
+   },
+   "labels": {
+    "interval_min": 10,
+    "base_arm": "initial_only"
+   }
+  },
+  {
+   "arm": "objective_greedy_i15",
+   "strategy": "objective_greedy",
+   "overrides": {
+    "shelterActionInterval": 15
+   },
+   "labels": {
+    "interval_min": 15,
+    "base_arm": "objective_greedy"
+   }
+  },
+  {
+   "arm": "static_greedy_i15",
+   "strategy": "static_greedy",
+   "overrides": {
+    "shelterActionInterval": 15
+   },
+   "labels": {
+    "interval_min": 15,
+    "base_arm": "static_greedy"
+   }
+  },
+  {
+   "arm": "initial_only_i15",
+   "strategy": "initial_only",
+   "overrides": {
+    "shelterActionInterval": 15
+   },
+   "labels": {
+    "interval_min": 15,
+    "base_arm": "initial_only"
+   }
+  },
+  {
+   "arm": "objective_greedy_i20",
+   "strategy": "objective_greedy",
+   "overrides": {
+    "shelterActionInterval": 20
+   },
+   "labels": {
+    "interval_min": 20,
+    "base_arm": "objective_greedy"
+   }
+  },
+  {
+   "arm": "static_greedy_i20",
+   "strategy": "static_greedy",
+   "overrides": {
+    "shelterActionInterval": 20
+   },
+   "labels": {
+    "interval_min": 20,
+    "base_arm": "static_greedy"
+   }
+  },
+  {
+   "arm": "initial_only_i20",
+   "strategy": "initial_only",
+   "overrides": {
+    "shelterActionInterval": 20
+   },
+   "labels": {
+    "interval_min": 20,
+    "base_arm": "initial_only"
+   }
+  }
+ ],
+ "labels": {
+  "block": "capacity_sweep",
+  "v66_path": "B",
+  "v65_panel": "capacity_sweep"
+ },
+ "overrides": {
+  "candidateSamplingMode": "spatial_maximin",
+  "initialShelterMode": "demand_greedy",
+  "plannerShortlistObservation": "enriched"
+ }
+}

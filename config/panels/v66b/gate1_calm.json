@@ -1,0 +1,90 @@
+{
+ "schema_version": 1,
+ "panel_id": "gate1_calm",
+ "description": "v66 re-issue on the spatial candidate design, same panel id. Gate 1 (H7), calm family: all regime processes off. State College, 10 held-out pairs (main-panel tapes 1-10 with the calm overrides).",
+ "campaign_dir": "runs/paper_v66b",
+ "training": {
+  "sources": [
+   "runs/paper_v66_seed1",
+   "runs/paper_v66_seed2",
+   "runs/paper_v66_seed3"
+  ]
+ },
+ "cities": [
+  "state_college_pa"
+ ],
+ "replications": [
+  1,
+  10
+ ],
+ "overrides": {
+  "candidateSamplingMode": "spatial_maximin",
+  "initialShelterMode": "demand_greedy",
+  "plannerShortlistObservation": "enriched",
+  "hazardWindShiftRatePerMinute": 0.0,
+  "hazardIntensitySwitchRatePerMinute": 0.0,
+  "hazardClosureRatePerMinute": 0.0,
+  "hazardSecondaryIgnitionRatePerMinute": 0.0
+ },
+ "arms": [
+  {
+   "arm": "objective_greedy"
+  },
+  {
+   "arm": "forecast_greedy"
+  },
+  {
+   "arm": "regime_oracle_greedy"
+  },
+  {
+   "arm": "deadline_greedy_tuned",
+   "strategy": "deadline_greedy",
+   "overrides": {
+    "deadlineGreedyThreshold": {
+     "$tuned": {
+      "spec": "config/panels/v66b/tune_deadline_calm.json"
+     }
+    }
+   }
+  },
+  {
+   "arm": "static_greedy"
+  },
+  {
+   "arm": "initial_only"
+  },
+  {
+   "arm": "belief_rollout"
+  },
+  {
+   "arm": "hindsight_rollout",
+   "replications": [
+    1,
+    5
+   ],
+   "note": "clairvoyant ceiling; never a deployable row"
+  },
+  {
+   "arm": "rl",
+   "policies": [
+    1,
+    2,
+    3
+   ]
+  },
+  {
+   "arm": "rl_forecast_ablated",
+   "policies": [
+    1,
+    2,
+    3
+   ]
+  }
+ ],
+ "labels": {
+  "block": "gate1",
+  "family": "calm",
+  "v66_path": "B",
+  "v65_panel": "gate1_calm"
+ }
+}
