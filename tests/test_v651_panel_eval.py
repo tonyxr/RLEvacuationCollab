@@ -228,6 +228,71 @@ class PanelEvaluatorEquivalenceTests(unittest.TestCase):
         _, _, _, main_jobs, _, _ = PE.prepare(PE.build_parser().parse_args(["plan", "--spec", str(main)]))
         self.assertTrue(all(j.overrides["deadlineGreedyThreshold"] == 0.2 for j in main_jobs))
 
+    def _changed_dynamics_tuning_fixture(self):
+        tune = self._spec(
+            panel_id="tune_changed_dynamics",
+            campaign_dir=str(self.tmp / "changed_dynamics_campaign"),
+            seed_streams={"scenario": 700, "policy": 800},
+            replications=[1, 6], cities=["state_college_pa"],
+            arms=[{"arm": arm, "strategy": "deadline_greedy",
+                   "overrides": {"deadlineGreedyThreshold": value}}
+                  for arm, value in (("never", -1e30), ("t02", 0.2), ("t04", 0.4))],
+            tuning={"parameter": "deadlineGreedyThreshold", "baseline_arm": "never",
+                    "arm_values": {"never": -1e30, "t02": 0.2, "t04": 0.4}},
+        )
+        source = PE.load_training_source([str(self.launch)])
+        manifest = json.loads(json.dumps(source.manifest))
+        manifest["policy_dynamics_source_sha256"]["Core.py"] = "0" * 64
+        changed = PE.TrainingSource(manifest, source.source_dirs, source.policy_dirs, {})
+        return tune, changed
+
+    def test_tuned_changed_dynamics_requires_explicit_permission(self):
+        tune, source = self._changed_dynamics_tuning_fixture()
+        cli = PE.build_parser().parse_args(["plan", "--spec", str(tune)])
+        with mock.patch.object(PE, "load_training_source", return_value=source):
+            with self.assertRaisesRegex(ValueError, "Dynamics sources differ"):
+                PE.select_tuned_value(PE.load_spec(tune), cli)
+
+    def test_tuned_changed_dynamics_reuses_only_current_fingerprint(self):
+        tune, source = self._changed_dynamics_tuning_fixture()
+        cli = PE.build_parser().parse_args(
+            ["plan", "--spec", str(tune), "--allow-dynamics-change"])
+        with mock.patch.object(PE, "load_training_source", return_value=source):
+            spec, _, env, jobs, campaign, _ = PE.prepare(cli)
+            old_env = PE.build_environment(source, check_code=False)
+            old_jobs = PE.build_jobs(spec, source, old_env)
+            self.assertNotEqual(env.fingerprint_sha256, old_env.fingerprint_sha256)
+            self.assertFalse({j.key for j in jobs} & {j.key for j in old_jobs})
+            store = PE.EpisodeStore(campaign)
+
+            def write_rows(items):
+                for job in items:
+                    sign = 1 if job.city_scenario_replication % 2 else -1
+                    shift = {"never": 0.0, "t02": -0.03, "t04": -0.031}[job.arm]
+                    noise = {"never": 0.0, "t02": 0.001, "t04": 0.3}[job.arm]
+                    store.write(job, {"job": {},
+                        "row": {"objective_normalized_cost": 0.5 + shift + noise * sign},
+                        "captured": {}, "evaluation": {"wall_s": 1.0}})
+
+            write_rows(old_jobs)
+            with self.assertRaisesRegex(RuntimeError, "18 episodes missing"):
+                PE.select_tuned_value(PE.load_spec(tune), cli)
+            write_rows(jobs)
+            selected = PE.select_tuned_value(PE.load_spec(tune), cli)
+            self.assertEqual(selected["selected_arm"], "t02")
+            self.assertEqual(selected["selected_value"], 0.2)
+            main = self._spec(
+                panel_id="uses_changed_tune", cities=["state_college_pa"],
+                campaign_dir=str(campaign),
+                arms=[{"arm": "deadline_tuned", "strategy": "deadline_greedy",
+                       "overrides": {"deadlineGreedyThreshold": {"$tuned": {"spec": str(tune)}}}}])
+            main_cli = PE.build_parser().parse_args(
+                ["plan", "--spec", str(main), "--allow-dynamics-change"])
+            _, _, main_env, main_jobs, _, _ = PE.prepare(main_cli)
+            self.assertEqual(main_env.fingerprint_sha256, env.fingerprint_sha256)
+            self.assertTrue(all(j.overrides["deadlineGreedyThreshold"] == 0.2
+                                for j in main_jobs))
+
     def test_cli_replication_limit_keeps_arm_subsets_valid(self):
         spec = self._spec(arms=[{"arm": "objective_greedy"},
                                 {"arm": "hindsight_rollout", "replications": [1, 3]},

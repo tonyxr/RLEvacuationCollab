@@ -631,6 +631,29 @@ def resolve_tuned_values(spec: dict, campaign: Path, cli) -> dict:
     return spec
 
 
+def panel_environment(source: TrainingSource, cli) -> EvaluationEnvironment:
+    """Use one dynamics contract for panel jobs and stored tuning jobs."""
+    allow_change = bool(getattr(cli, "allow_dynamics_change", False))
+    env = build_environment(source, check_code=not allow_change)
+    if allow_change:
+        # v66: evaluate frozen checkpoints under changed simulator code.  The
+        # job identity must then carry the CURRENT source fingerprint, or the
+        # episode store would hand back episodes simulated by the old code.
+        from multicity_backtest import POLICY_DYNAMICS_SOURCES, PROJECT_ROOT
+        from PolicyCache import source_fingerprint
+
+        current = source_fingerprint(PROJECT_ROOT, POLICY_DYNAMICS_SOURCES)
+        recorded = dict(source.manifest["policy_dynamics_source_sha256"])
+        env.dynamics_change = sorted(
+            name for name in set(current) | set(recorded)
+            if current.get(name) != recorded.get(name)
+        )
+        env.fingerprint_sha256 = sha256_text(
+            canonical_json({"recorded": recorded, "current": current})
+        )
+    return env
+
+
 def select_tuned_value(tune_spec: dict, cli) -> dict:
     """One-SE rule: keep a value only if it beats the baseline by >= 1 paired SE."""
     import numpy as np
@@ -639,7 +662,7 @@ def select_tuned_value(tune_spec: dict, cli) -> dict:
     if not tuning:
         raise ValueError(f"{tune_spec['_spec_path']} has no 'tuning' block")
     source = load_training_source(_training_paths(tune_spec), allow_running=True)
-    env = build_environment(source)
+    env = panel_environment(source, cli)
     jobs = build_jobs(tune_spec, source, env)
     campaign = resolve_path(tune_spec["campaign_dir"])
     costs: dict[str, dict[tuple, float]] = {}
@@ -1428,23 +1451,7 @@ def prepare(cli) -> tuple[dict, TrainingSource, EvaluationEnvironment, list[Job]
     )
     source = load_training_source(_training_paths(spec), allow_running=not learned)
     allow_change = bool(getattr(cli, "allow_dynamics_change", False))
-    env = build_environment(source, check_code=not allow_change)
-    if allow_change:
-        # v66: evaluate frozen checkpoints under changed simulator code.  The
-        # job identity must then carry the CURRENT source fingerprint, or the
-        # episode store would hand back episodes simulated by the old code.
-        from multicity_backtest import POLICY_DYNAMICS_SOURCES, PROJECT_ROOT
-        from PolicyCache import source_fingerprint
-
-        current = source_fingerprint(PROJECT_ROOT, POLICY_DYNAMICS_SOURCES)
-        recorded = dict(source.manifest["policy_dynamics_source_sha256"])
-        env.dynamics_change = sorted(
-            name for name in set(current) | set(recorded)
-            if current.get(name) != recorded.get(name)
-        )
-        env.fingerprint_sha256 = sha256_text(
-            canonical_json({"recorded": recorded, "current": current})
-        )
+    env = panel_environment(source, cli)
     campaign = resolve_path(spec["campaign_dir"])
     if allow_change and campaign.resolve() == (ROOT / "runs" / "paper_v65").resolve():
         raise ValueError(
